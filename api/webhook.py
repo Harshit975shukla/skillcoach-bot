@@ -4,7 +4,9 @@ import base64
 import requests
 from datetime import datetime
 import pytz
-from http.server import BaseHTTPRequestHandler
+from flask import Flask, request
+
+app = Flask(__name__)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
@@ -38,7 +40,11 @@ def get_data():
 def push_data(data, sha, message="Bot: progress update"):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}"
     encoded = base64.b64encode(json.dumps(data, indent=2).encode()).decode()
-    requests.put(url, headers=_gh_headers(), json={"message": message, "content": encoded, "sha": sha}, timeout=20).raise_for_status()
+    requests.put(
+        url, headers=_gh_headers(),
+        json={"message": message, "content": encoded, "sha": sha},
+        timeout=20,
+    ).raise_for_status()
 
 
 def handle(chat_id, text):
@@ -232,28 +238,21 @@ def handle(chat_id, text):
         send_msg(chat_id, "Unknown command. Use /help")
 
 
-class handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length)
-        try:
-            update = json.loads(body)
-            msg = update.get("message") or update.get("edited_message", {})
-            chat_id = msg.get("chat", {}).get("id")
-            text = msg.get("text", "")
-            if chat_id and text.startswith("/"):
-                if not AUTHORIZED_CHAT_ID or chat_id == AUTHORIZED_CHAT_ID:
-                    handle(chat_id, text)
-        except Exception:
-            pass
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
+@app.route("/api/webhook", methods=["GET"])
+def health():
+    return "SkillCoach Bot is running.", 200
 
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"SkillCoach Bot is running.")
 
-    def log_message(self, *args):
+@app.route("/api/webhook", methods=["POST"])
+def webhook():
+    try:
+        update = request.get_json(silent=True) or {}
+        msg = update.get("message") or update.get("edited_message", {})
+        chat_id = msg.get("chat", {}).get("id")
+        text = msg.get("text", "")
+        if chat_id and text.startswith("/"):
+            if not AUTHORIZED_CHAT_ID or chat_id == AUTHORIZED_CHAT_ID:
+                handle(chat_id, text)
+    except Exception:
         pass
+    return "OK", 200
