@@ -4,9 +4,7 @@ import base64
 import requests
 from datetime import datetime
 import pytz
-from flask import Flask, request
-
-app = Flask(__name__)
+from http.server import BaseHTTPRequestHandler
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
@@ -57,14 +55,7 @@ def handle(chat_id, text):
             f"👋 *SkillCoach Bot* — your interview prep mentor\\!\n\n"
             f"🔑 Your Chat ID: `{chat_id}`\n"
             f"_(Add this as CHAT\\_ID in Vercel env vars)_\n\n"
-            "Commands:\n"
-            "🗂 /tasks — Open tasks\n"
-            "🎯 /skills — Skill progress\n"
-            "📊 /stats — Your stats\n"
-            "✅ /complete task\\_001 — Mark task done\n"
-            "📄 /resume — Resume feedback\n"
-            f"🔄 /publish — Sync dashboard\n\n"
-            f"📊 Dashboard: {DASHBOARD_URL}")
+            "/tasks /skills /stats /complete /resume /publish /help")
 
     elif cmd == "/help":
         send_msg(chat_id,
@@ -238,21 +229,28 @@ def handle(chat_id, text):
         send_msg(chat_id, "Unknown command. Use /help")
 
 
-@app.route("/api/webhook", methods=["GET"])
-def health():
-    return "SkillCoach Bot is running.", 200
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"SkillCoach Bot is running.")
 
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+        try:
+            update = json.loads(body)
+            msg = update.get("message") or update.get("edited_message", {})
+            chat_id = msg.get("chat", {}).get("id")
+            text = msg.get("text", "")
+            if chat_id and text.startswith("/"):
+                if not AUTHORIZED_CHAT_ID or chat_id == AUTHORIZED_CHAT_ID:
+                    handle(chat_id, text)
+        except Exception:
+            pass
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
 
-@app.route("/api/webhook", methods=["POST"])
-def webhook():
-    try:
-        update = request.get_json(silent=True) or {}
-        msg = update.get("message") or update.get("edited_message", {})
-        chat_id = msg.get("chat", {}).get("id")
-        text = msg.get("text", "")
-        if chat_id and text.startswith("/"):
-            if not AUTHORIZED_CHAT_ID or chat_id == AUTHORIZED_CHAT_ID:
-                handle(chat_id, text)
-    except Exception:
+    def log_message(self, *args):
         pass
-    return "OK", 200
