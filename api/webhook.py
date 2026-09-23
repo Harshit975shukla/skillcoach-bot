@@ -3,7 +3,9 @@ import os
 import base64
 import urllib.request
 from datetime import datetime, timezone, timedelta
-from http.server import BaseHTTPRequestHandler
+from flask import Flask, request as flask_req
+
+app = Flask(__name__)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
@@ -14,12 +16,10 @@ IST = timezone(timedelta(hours=5, minutes=30))
 AUTHORIZED_CHAT_ID = int(os.environ.get("CHAT_ID", "0"))
 
 
-def _json_request(url, method="GET", data=None, headers=None):
+def _json_req(url, method="GET", data=None, headers=None):
     body = json.dumps(data).encode() if data else None
     req = urllib.request.Request(
-        url,
-        data=body,
-        method=method,
+        url, data=body, method=method,
         headers={"Content-Type": "application/json", **(headers or {})},
     )
     with urllib.request.urlopen(req, timeout=20) as resp:
@@ -28,7 +28,7 @@ def _json_request(url, method="GET", data=None, headers=None):
 
 def send_msg(chat_id, text):
     try:
-        _json_request(
+        _json_req(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             method="POST",
             data={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
@@ -38,14 +38,11 @@ def send_msg(chat_id, text):
 
 
 def _gh_headers():
-    return {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json",
-    }
+    return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
 
 
 def get_data():
-    raw = _json_request(
+    raw = _json_req(
         f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}",
         headers=_gh_headers(),
     )
@@ -54,7 +51,7 @@ def get_data():
 
 def push_data(data, sha, message="Bot: progress update"):
     encoded = base64.b64encode(json.dumps(data, indent=2).encode()).decode()
-    _json_request(
+    _json_req(
         f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}",
         method="PUT",
         data={"message": message, "content": encoded, "sha": sha},
@@ -62,44 +59,34 @@ def push_data(data, sha, message="Bot: progress update"):
     )
 
 
-def handle(chat_id, text):
+def process_command(chat_id, text):
     parts = text.strip().split()
     cmd = parts[0].split("@")[0].lower()
     args = parts[1:]
 
     if cmd == "/start":
         send_msg(chat_id,
-            f"👋 *SkillCoach Bot*\n\n"
-            f"🔑 Your Chat ID: `{chat_id}`\n"
-            f"_(Save this for CHAT\\_ID env var)_\n\n"
+            f"👋 *SkillCoach Bot*\n\n🔑 Your Chat ID: `{chat_id}`\n"
+            "_(Save this for CHAT\\_ID env var)_\n\n"
             "/tasks /skills /stats /complete /resume /publish /help")
 
     elif cmd == "/help":
         send_msg(chat_id,
-            "📖 *Commands*\n\n"
-            "/tasks — All open tasks\n"
-            "/today — Tasks due today\n"
-            "/skills — Skill progress\n"
-            "/stats — Completion stats\n"
-            "/streak — Current streak\n"
-            "/complete `<id>` — Mark task done\n"
-            "/resume — Resume feedback\n"
-            "/publish — Sync dashboard")
+            "📖 *Commands*\n\n/tasks /today /skills /stats /streak\n"
+            "/complete `<id>` /resume /publish")
 
     elif cmd == "/tasks":
         try:
             data, _ = get_data()
             tasks = data.get("open_tasks", [])
             if not tasks:
-                send_msg(chat_id, "✅ No open tasks — great job!")
-                return
+                send_msg(chat_id, "✅ No open tasks!"); return
             msg = f"📋 *Open Tasks* — {len(tasks)} remaining\n\n"
             for t in tasks[:15]:
-                emoji = "🔴" if t.get("difficulty") == "hard" else "🟡"
-                msg += f"{emoji} `{t['id']}` *{t.get('title','')[:50]}*\n   _{t.get('skill','')}_ · {t.get('estimated_time','')}\n\n"
+                e = "🔴" if t.get("difficulty") == "hard" else "🟡"
+                msg += f"{e} `{t['id']}` *{t.get('title','')[:50]}*\n   _{t.get('skill','')}_ · {t.get('estimated_time','')}\n\n"
             if len(tasks) > 15:
                 msg += f"_...and {len(tasks)-15} more_\n"
-            msg += "\nUse `/complete task_id` to mark done"
             send_msg(chat_id, msg)
         except Exception as e:
             send_msg(chat_id, f"❌ Error: {e}")
@@ -110,8 +97,7 @@ def handle(chat_id, text):
             today = datetime.now(IST).strftime("%Y-%m-%d")
             tasks = [t for t in data.get("open_tasks", []) if t.get("assigned_date", "") <= today]
             if not tasks:
-                send_msg(chat_id, "🎉 No tasks due today!")
-                return
+                send_msg(chat_id, "🎉 No tasks due today!"); return
             msg = f"📅 *Due Today ({today})*\n\n"
             for t in tasks[:10]:
                 msg += f"• `{t['id']}` {t.get('title','')[:50]}\n"
@@ -139,12 +125,9 @@ def handle(chat_id, text):
             data, _ = get_data()
             s = data.get("statistics", {})
             send_msg(chat_id,
-                f"📊 *Your Progress*\n\n"
-                f"✅ Completed: *{s.get('completed_tasks', 0)}*\n"
-                f"📌 Pending: *{s.get('pending_tasks', s.get('total_tasks', 0))}*\n"
-                f"🔥 Streak: *{s.get('streak', 0)} days*\n"
-                f"📈 Rate: *{s.get('completion_rate', 0)}%*\n"
-                f"⏱ Practice: *{s.get('practice_minutes', 0)} mins*")
+                f"📊 *Your Progress*\n\n✅ Completed: *{s.get('completed_tasks',0)}*\n"
+                f"📌 Pending: *{s.get('pending_tasks', s.get('total_tasks',0))}*\n"
+                f"🔥 Streak: *{s.get('streak',0)} days*\n📈 Rate: *{s.get('completion_rate',0)}%*")
         except Exception as e:
             send_msg(chat_id, f"❌ Error: {e}")
 
@@ -152,15 +135,14 @@ def handle(chat_id, text):
         try:
             data, _ = get_data()
             streak = data.get("statistics", {}).get("streak", 0)
-            emoji = "🔥" if streak >= 3 else ("😐" if streak >= 1 else "💤")
-            send_msg(chat_id, f"{emoji} *Streak: {streak} days*\n\nUse /complete daily to build it!")
+            e = "🔥" if streak >= 3 else ("😐" if streak >= 1 else "💤")
+            send_msg(chat_id, f"{e} *Streak: {streak} days*\n\nUse /complete daily to build it!")
         except Exception as e:
             send_msg(chat_id, f"❌ Error: {e}")
 
     elif cmd == "/complete":
         if not args:
-            send_msg(chat_id, "Usage: `/complete task_001`\n\nUse /tasks to see task IDs.")
-            return
+            send_msg(chat_id, "Usage: `/complete task_001`\nUse /tasks to see IDs."); return
         task_id = args[0].strip()
         try:
             data, sha = get_data()
@@ -169,8 +151,7 @@ def handle(chat_id, text):
             task = next((t for t in open_tasks if t.get("id") == task_id), None)
             if not task:
                 ids = ", ".join(t["id"] for t in open_tasks[:5])
-                send_msg(chat_id, f"❌ Task `{task_id}` not found.\n\nFirst 5 IDs: `{ids}`")
-                return
+                send_msg(chat_id, f"❌ `{task_id}` not found.\n\nFirst 5 IDs: `{ids}`"); return
 
             open_tasks.remove(task)
             task["completed_at"] = datetime.now(IST).isoformat()
@@ -198,22 +179,14 @@ def handle(chat_id, text):
             if timeline[today_str]["completed"] == 1:
                 stats["streak"] = stats.get("streak", 0) + 1
 
-            data.update({
-                "open_tasks": open_tasks,
-                "completed_tasks": completed_tasks,
-                "statistics": stats,
-                "activity_timeline": timeline,
-                "skills_breakdown": skills,
-                "last_updated": datetime.now(IST).isoformat(),
-            })
-
+            data.update({"open_tasks": open_tasks, "completed_tasks": completed_tasks,
+                         "statistics": stats, "activity_timeline": timeline,
+                         "skills_breakdown": skills, "last_updated": datetime.now(IST).isoformat()})
             push_data(data, sha, f"Complete: {task_id}")
             send_msg(chat_id,
-                f"🎉 *Task Complete!*\n\n"
-                f"`{task_id}` — {task.get('title','')}\n\n"
-                f"📊 Progress: *{stats['completed_tasks']}/{total}* ({stats['completion_rate']}%)\n"
-                f"🔥 Streak: *{stats.get('streak', 0)} days*\n\n"
-                f"Dashboard syncs in ~1 min 🚀")
+                f"🎉 *Task Complete!*\n\n`{task_id}` — {task.get('title','')}\n\n"
+                f"📊 *{stats['completed_tasks']}/{total}* ({stats['completion_rate']}%)\n"
+                f"🔥 Streak: *{stats.get('streak',0)} days*\n\nDashboard syncs in ~1 min 🚀")
         except Exception as e:
             send_msg(chat_id, f"❌ Error: {e}")
 
@@ -221,14 +194,11 @@ def handle(chat_id, text):
         try:
             data, _ = get_data()
             resume = data.get("resume_assessment", {})
-            score = resume.get("score", "N/A")
-            issues = resume.get("issues", [])
-            strengths = resume.get("strengths", [])
-            msg = f"📄 *Resume Assessment*\n\nScore: *{score}/100*\n\n"
-            if strengths:
-                msg += "✅ *Strengths:*\n" + "".join(f"  • {s}\n" for s in strengths[:5])
-            if issues:
-                msg += "\n⚠️ *Issues to Fix:*\n" + "".join(f"  • {i}\n" for i in issues[:5])
+            msg = f"📄 *Resume*\n\nScore: *{resume.get('score','N/A')}/100*\n\n"
+            if resume.get("strengths"):
+                msg += "✅ *Strengths:*\n" + "".join(f"  • {s}\n" for s in resume["strengths"][:5])
+            if resume.get("issues"):
+                msg += "\n⚠️ *Fix:*\n" + "".join(f"  • {i}\n" for i in resume["issues"][:5])
             send_msg(chat_id, msg)
         except Exception as e:
             send_msg(chat_id, f"❌ Error: {e}")
@@ -238,7 +208,7 @@ def handle(chat_id, text):
             data, sha = get_data()
             data["last_synced"] = datetime.now(IST).isoformat()
             push_data(data, sha, "Dashboard sync via /publish")
-            send_msg(chat_id, f"✅ *Synced!*\n\n🔗 {DASHBOARD_URL}\n\n_GitHub Pages updates in 1–2 mins._")
+            send_msg(chat_id, f"✅ *Synced!*\n\n🔗 {DASHBOARD_URL}\n\n_Updates in 1–2 mins._")
         except Exception as e:
             send_msg(chat_id, f"❌ Sync failed: {e}")
 
@@ -246,30 +216,21 @@ def handle(chat_id, text):
         send_msg(chat_id, "Unknown command. Use /help")
 
 
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"SkillCoach Bot is running.")
+@app.route("/", methods=["GET"])
+def health():
+    return "SkillCoach Bot is running.", 200
 
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length)
-        try:
-            update = json.loads(body)
-            msg = update.get("message") or update.get("edited_message", {})
-            chat_id = msg.get("chat", {}).get("id")
-            text = msg.get("text", "")
-            if chat_id and text.startswith("/"):
-                if not AUTHORIZED_CHAT_ID or chat_id == AUTHORIZED_CHAT_ID:
-                    handle(chat_id, text)
-        except Exception:
-            pass
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"OK")
 
-    def log_message(self, *args):
+@app.route("/", methods=["POST"])
+def webhook():
+    try:
+        update = flask_req.get_json(silent=True) or {}
+        msg = update.get("message") or update.get("edited_message", {})
+        chat_id = msg.get("chat", {}).get("id")
+        text = msg.get("text", "")
+        if chat_id and text.startswith("/"):
+            if not AUTHORIZED_CHAT_ID or chat_id == AUTHORIZED_CHAT_ID:
+                process_command(chat_id, text)
+    except Exception:
         pass
+    return "OK", 200
