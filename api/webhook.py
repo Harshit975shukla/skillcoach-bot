@@ -74,6 +74,12 @@ def push_data(data, sha, message="Bot: progress update"):
 
 # ── AI coaching engine ────────────────────────────────────────────────────────
 
+GEMINI_MODELS = [
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+]
+
 def ask_gemini(prompt):
     if not GEMINI_API_KEY:
         return "AI coaching not set up yet. Add GEMINI_API_KEY in Vercel env vars."
@@ -81,14 +87,16 @@ def ask_gemini(prompt):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": 700, "temperature": 0.7},
     }
-    try:
-        resp = _json_req(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}",
-            method="POST", data=body,
-        )
-        return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as e:
-        return f"AI error: {e}"
+    last_err = None
+    for model in GEMINI_MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        try:
+            resp = _json_req(url, method="POST", data=body)
+            return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except Exception as e:
+            last_err = e
+            continue
+    return f"AI error: {last_err}"
 
 
 def coach_answer(question):
