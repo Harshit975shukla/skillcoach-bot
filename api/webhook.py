@@ -26,12 +26,15 @@ def _json_req(url, method="GET", data=None, headers=None):
         return json.loads(resp.read().decode())
 
 
-def send_msg(chat_id, text):
+def send_msg(chat_id, text, parse_mode=None):
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     try:
         _json_req(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             method="POST",
-            data={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+            data=payload,
         )
     except Exception:
         pass
@@ -66,9 +69,16 @@ def process_command(chat_id, text):
 
     if cmd == "/start":
         send_msg(chat_id,
-            f"👋 *SkillCoach Bot*\n\n🔑 Your Chat ID: `{chat_id}`\n"
-            "_(Save this for CHAT\\_ID env var)_\n\n"
-            "/tasks /skills /stats /complete /resume /publish /help")
+            f"👋 SkillCoach Bot - your interview prep mentor!\n\n"
+            f"🔑 Your Chat ID: {chat_id}\n"
+            f"(Save this - you need it for CHAT_ID in Vercel env vars)\n\n"
+            "Commands:\n"
+            "/tasks - Open tasks\n"
+            "/skills - Skill progress\n"
+            "/stats - Your stats\n"
+            "/complete task_001 - Mark task done\n"
+            "/resume - Resume feedback\n"
+            "/publish - Sync dashboard")
 
     elif cmd == "/help":
         send_msg(chat_id,
