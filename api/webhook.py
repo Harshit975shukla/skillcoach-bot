@@ -74,12 +74,6 @@ def push_data(data, sha, message="Bot: progress update"):
 
 # ── AI coaching engine ────────────────────────────────────────────────────────
 
-GEMINI_MODELS = [
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
-]
-
 def ask_gemini(prompt):
     if not GEMINI_API_KEY:
         return "AI coaching not set up yet. Add GEMINI_API_KEY in Vercel env vars."
@@ -87,16 +81,25 @@ def ask_gemini(prompt):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": 700, "temperature": 0.7},
     }
+    candidates = [
+        ("v1beta", "gemini-2.5-flash"),
+        ("v1beta", "gemini-2.0-flash"),
+        ("v1beta", "gemini-2.0-flash-exp"),
+        ("v1beta", "gemini-1.5-flash"),
+        ("v1beta", "gemini-1.5-flash-latest"),
+        ("v1", "gemini-2.0-flash"),
+        ("v1", "gemini-1.5-flash"),
+    ]
     last_err = None
-    for model in GEMINI_MODELS:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+    for version, model in candidates:
+        url = f"https://generativelanguage.googleapis.com/{version}/models/{model}:generateContent?key={GEMINI_API_KEY}"
         try:
             resp = _json_req(url, method="POST", data=body)
             return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
         except Exception as e:
             last_err = e
             continue
-    return f"AI error: {last_err}"
+    return f"AI unavailable: {last_err}"
 
 
 def coach_answer(question):
