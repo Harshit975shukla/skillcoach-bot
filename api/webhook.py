@@ -6,8 +6,8 @@ from datetime import datetime
 import pytz
 from http.server import BaseHTTPRequestHandler
 
-TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = "Harshit975shukla/skillcoach-dashboard"
 GITHUB_FILE_PATH = "docs/data.json"
 DASHBOARD_URL = "https://harshit975shukla.github.io/skillcoach-dashboard"
