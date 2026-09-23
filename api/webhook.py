@@ -2,9 +2,7 @@ import json
 import os
 import base64
 import urllib.request
-import urllib.error
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -12,7 +10,7 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = "Harshit975shukla/skillcoach-dashboard"
 GITHUB_FILE_PATH = "docs/data.json"
 DASHBOARD_URL = "https://harshit975shukla.github.io/skillcoach-dashboard"
-IST = ZoneInfo("Asia/Kolkata")
+IST = timezone(timedelta(hours=5, minutes=30))
 AUTHORIZED_CHAT_ID = int(os.environ.get("CHAT_ID", "0"))
 
 
