@@ -1,5 +1,6 @@
 {
   "routes": [
-    { "src": "/(.*)", "dest": "/" }
+    { "src": "/api/webhook", "dest": "/" },
+    { "src": "/", "dest": "/" }
   ]
 }
