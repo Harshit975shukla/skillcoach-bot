@@ -13,7 +13,7 @@ GITHUB_REPO = "Harshit975shukla/skillcoach-dashboard"
 GITHUB_FILE_PATH = "docs/data.json"
 DASHBOARD_URL = "https://harshit975shukla.github.io/skillcoach-dashboard"
 IST = timezone(timedelta(hours=5, minutes=30))
-AUTHORIZED_CHAT_ID = int(os.environ.get("CHAT_ID", "0"))
+AUTHORIZED_CHAT_ID = int(os.environ.get("CHAT_ID") or "0")
 
 
 def _json_req(url, method="GET", data=None, headers=None):
