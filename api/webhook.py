@@ -2,6 +2,7 @@ import json
 import os
 import base64
 import urllib.request
+import urllib.error
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request as flask_req
 
@@ -86,6 +87,9 @@ def ask_gemini(prompt):
     try:
         resp = _json_req(f"{GEMINI_URL}?key={GEMINI_API_KEY}", method="POST", data=body)
         return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode()[:300]
+        return f"AI error {e.code}: {detail}"
     except Exception as e:
         return f"AI error: {e}"
 
