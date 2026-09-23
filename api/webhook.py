@@ -75,7 +75,7 @@ def push_data(data, sha, message="Bot: progress update"):
 
 # ── AI coaching engine ────────────────────────────────────────────────────────
 
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent"
 
 def ask_gemini(prompt):
     if not GEMINI_API_KEY:
