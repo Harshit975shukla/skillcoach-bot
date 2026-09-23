@@ -1,9 +1,10 @@
 import json
 import os
 import base64
-import requests
+import urllib.request
+import urllib.error
 from datetime import datetime
-import pytz
+from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -11,38 +12,56 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = "Harshit975shukla/skillcoach-dashboard"
 GITHUB_FILE_PATH = "docs/data.json"
 DASHBOARD_URL = "https://harshit975shukla.github.io/skillcoach-dashboard"
-IST = pytz.timezone("Asia/Kolkata")
+IST = ZoneInfo("Asia/Kolkata")
 AUTHORIZED_CHAT_ID = int(os.environ.get("CHAT_ID", "0"))
 
 
-def send_msg(chat_id, text):
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
-        timeout=10,
+def _json_request(url, method="GET", data=None, headers=None):
+    body = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers={"Content-Type": "application/json", **(headers or {})},
     )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode())
+
+
+def send_msg(chat_id, text):
+    try:
+        _json_request(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            method="POST",
+            data={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+        )
+    except Exception:
+        pass
 
 
 def _gh_headers():
-    return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    return {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json",
+    }
 
 
 def get_data():
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}"
-    resp = requests.get(url, headers=_gh_headers(), timeout=15)
-    resp.raise_for_status()
-    raw = resp.json()
+    raw = _json_request(
+        f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}",
+        headers=_gh_headers(),
+    )
     return json.loads(base64.b64decode(raw["content"]).decode()), raw["sha"]
 
 
 def push_data(data, sha, message="Bot: progress update"):
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}"
     encoded = base64.b64encode(json.dumps(data, indent=2).encode()).decode()
-    requests.put(
-        url, headers=_gh_headers(),
-        json={"message": message, "content": encoded, "sha": sha},
-        timeout=20,
-    ).raise_for_status()
+    _json_request(
+        f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE_PATH}",
+        method="PUT",
+        data={"message": message, "content": encoded, "sha": sha},
+        headers=_gh_headers(),
+    )
 
 
 def handle(chat_id, text):
@@ -52,9 +71,9 @@ def handle(chat_id, text):
 
     if cmd == "/start":
         send_msg(chat_id,
-            f"👋 *SkillCoach Bot* — your interview prep mentor\\!\n\n"
+            f"👋 *SkillCoach Bot*\n\n"
             f"🔑 Your Chat ID: `{chat_id}`\n"
-            f"_(Add this as CHAT\\_ID in Vercel env vars)_\n\n"
+            f"_(Save this for CHAT\\_ID env var)_\n\n"
             "/tasks /skills /stats /complete /resume /publish /help")
 
     elif cmd == "/help":
@@ -62,10 +81,10 @@ def handle(chat_id, text):
             "📖 *Commands*\n\n"
             "/tasks — All open tasks\n"
             "/today — Tasks due today\n"
-            "/skills — Skill progress bars\n"
+            "/skills — Skill progress\n"
             "/stats — Completion stats\n"
             "/streak — Current streak\n"
-            "/complete `<task_id>` — Mark done\n"
+            "/complete `<id>` — Mark task done\n"
             "/resume — Resume feedback\n"
             "/publish — Sync dashboard")
 

@@ -1,3 +1,4 @@
-flask==3.0.3
+# No external dependencies — stdlib only (urllib, zoneinfo, json, base64)
+# reminder.py still needs these:
 requests==2.31.0
 pytz==2024.1
