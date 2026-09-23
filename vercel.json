@@ -1,8 +1,5 @@
 {
-  "functions": {
-    "api/webhook.py": {
-      "memory": 256,
-      "maxDuration": 15
-    }
-  }
+  "routes": [
+    { "src": "/(.*)", "dest": "/" }
+  ]
 }
