@@ -81,11 +81,7 @@ def ask_gemini(prompt):
         return "AI coaching not set up yet. Add GEMINI_API_KEY in Vercel env vars."
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "maxOutputTokens": 700,
-            "temperature": 1.0,
-        },
-        "thinkingConfig": {"thinkingBudget": 0},
+        "generationConfig": {"maxOutputTokens": 700},
     }
     try:
         resp = _json_req(f"{GEMINI_URL}?key={GEMINI_API_KEY}", method="POST", data=body)
