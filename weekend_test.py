@@ -15,6 +15,7 @@ IST = pytz.timezone("Asia/Kolkata")
 REPO = "Harshit975shukla/skillcoach-dashboard"
 FILE = "docs/data.json"
 GH = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent"
 
 
 def get_data():
@@ -25,29 +26,31 @@ def get_data():
 
 def push_data(data, sha, msg):
     content = base64.b64encode(json.dumps(data, indent=2).encode()).decode()
-    requests.put(f"https://api.github.com/repos/{REPO}/contents/{FILE}",
-                 headers=GH, json={"message": msg, "content": content, "sha": sha}, timeout=20)
+    requests.put(
+        f"https://api.github.com/repos/{REPO}/contents/{FILE}",
+        headers=GH,
+        json={"message": msg, "content": content, "sha": sha},
+        timeout=20,
+    )
 
 
-def gemini(system, prompt, max_tokens=900):
+def gemini(prompt, max_tokens=2500):
     body = {
-        "contents": [{"parts": [{"text": system + "
-
-" + prompt}]}],
+        "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": max_tokens},
     }
-    r = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}",
-        json=body, timeout=90,
-    )
+    r = requests.post(f"{GEMINI_URL}?key={GEMINI_API_KEY}", json=body, timeout=120)
     if r.status_code != 200:
         raise Exception(f"Gemini {r.status_code}: {r.text[:300]}")
     return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 
 def send(text):
-    requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                  json={"chat_id": CHAT_ID, "text": text[:4000]}, timeout=10)
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        json={"chat_id": CHAT_ID, "text": text[:4000]},
+        timeout=10,
+    )
 
 
 def main():
@@ -57,10 +60,13 @@ def main():
 
     test_state = data.get("test_state", {})
     if test_state.get("date") == today_str and test_state.get("completed"):
-        send(f"You already completed this week's test!\nScore: {test_state.get('score', 0)}/{len(test_state.get('questions', []))}\n\nSee you Sunday for next week's plan!")
+        send(
+            "You already completed this week's test!\n"
+            "Score: " + str(test_state.get("score", 0)) + "/" + str(len(test_state.get("questions", []))) + "\n\n"
+            "See you Sunday for next week's plan!"
+        )
         return
 
-    # Get this week's topics (Mon-Fri)
     curriculum = data.get("curriculum", {})
     daily_lessons = curriculum.get("daily_lessons", {})
     this_monday = today - timedelta(days=today.weekday())
@@ -68,79 +74,80 @@ def main():
     for i in range(5):
         d = (this_monday + timedelta(days=i)).isoformat()
         if d in daily_lessons:
-            week_topics.append(f"{d}: {daily_lessons[d]}")
+            week_topics.append(d + ": " + daily_lessons[d])
 
     if not week_topics:
-        send("No lessons completed this week yet.\n\nThe test needs at least 1 completed lesson. Study Mon-Fri first!\n\nTry: /learn aws or /ask <question>")
+        send("No lessons completed this week yet. Study Mon-Fri first!\n\nTry: /learn aws or /ask <question>")
         return
 
     topics_str = "\n".join(week_topics)
     week_num = curriculum.get("week_number", 1)
 
-    result = gemini(
+    prompt = "\n".join([
         "You are a Cloud DevOps technical interviewer conducting a weekly test. Return only valid JSON.",
-        f"""Generate 10 MCQ questions for a weekly test covering these topics:
-{topics_str}
+        "",
+        "Generate 10 MCQ questions covering these topics:",
+        topics_str,
+        "",
+        "Rules:",
+        "- Distribute questions proportionally across all topics",
+        "- Difficulty: 3 easy, 4 medium, 3 hard",
+        "- Include scenario-based questions",
+        "- No repeated concepts",
+        "",
+        "Return ONLY this JSON (no markdown, no extra text):",
+        "{",
+        '  "questions": [',
+        "    {",
+        '      "topic": "short topic label",',
+        '      "question": "Question text?",',
+        '      "options": {"A": "...", "B": "...", "C": "...", "D": "..."},',
+        '      "answer": "B",',
+        '      "explanation": "B is correct because... Others are wrong because..."',
+        "    }",
+        "  ]",
+        "}",
+    ])
 
-Rules:
-- Distribute questions across all topics (proportionally)
-- Difficulty: 3 easy, 4 medium, 3 hard
-- Include scenario-based questions ("You need to...", "Your production system...")
-- No repeated concepts
-
-Return ONLY this JSON (no markdown, no extra text):
-{{
-  "questions": [
-    {{
-      "topic": "short topic label",
-      "question": "Question text?",
-      "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}},
-      "answer": "B",
-      "explanation": "B is correct because... The other options are wrong because..."
-    }}
-  ]
-}}""",
-        max_tokens=3000,
-    )
-
+    result = gemini(prompt, 3000)
     try:
         parsed = json.loads(result[result.find("{"):result.rfind("}") + 1])
         questions = parsed["questions"][:10]
         if len(questions) < 5:
-            raise ValueError("Too few questions generated")
+            raise ValueError("Too few questions")
     except Exception as e:
-        send(f"Could not generate test ({e}).\n\nPractice manually:\n/mock aws\n/ask <any question>")
+        send("Could not generate test (" + str(e) + ").\n\nPractice: /mock aws or /ask <question>")
         return
 
     data["test_state"] = {
         "active": True,
         "date": today_str,
         "week": week_num,
-        "topics": [dl for dl in daily_lessons.values()],
+        "topics": list(daily_lessons.values()),
         "questions": questions,
         "current_q": 0,
         "score": 0,
         "answers": [],
         "completed": False,
     }
-    push_data(data, sha, f"Week {week_num} test started")
+    push_data(data, sha, "Week " + str(week_num) + " test started")
 
     send(
-        f"Weekly Test — Week {week_num}\n\n"
-        f"Covering: {', '.join(set(q['topic'] for q in questions))}\n"
-        f"{len(questions)} questions, one at a time.\n\n"
-        f"Reply /q A, /q B, /q C, or /q D\nLet's go!"
+        "Weekly Test - Week " + str(week_num) + "\n\n"
+        "Covering: " + ", ".join(set(q["topic"] for q in questions)) + "\n"
+        + str(len(questions)) + " questions, one at a time.\n\n"
+        "Reply /q A, /q B, /q C, or /q D\nLet's go!"
     )
 
     q = questions[0]
     send(
-        f"Test Q1/{len(questions)} — {q['topic']}\n\n"
-        f"{q['question']}\n\n"
-        f"A) {q['options']['A']}\n"
-        f"B) {q['options']['B']}\n"
-        f"C) {q['options']['C']}\n"
-        f"D) {q['options']['D']}\n\n"
-        f"Reply: /q A   /q B   /q C   /q D"
+        "Test Q1/" + str(len(questions)) + " - " + q["topic"] + "\n\n"
+        + q["question"] + "\n\n"
+        + "A) " + q["options"]["A"] + "\n"
+        + "B) " + q["options"]["B"] + "\n"
+        + "C) " + q["options"]["C"] + "\n"
+        + "D) " + q["options"]["D"] + "\n\n"
+        + "Reply: /q A   /q B   /q C   /q D"
     )
 
 
