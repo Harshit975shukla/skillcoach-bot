@@ -129,15 +129,18 @@ def gemini(prompt, max_tokens=1800):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": max_tokens},
     }
-    for attempt in range(4):
+    # 6 attempts: sleep 60, 90, 120, 150, 180s between retries on 503
+    for attempt in range(6):
         r = requests.post(f"{GEMINI_URL}?key={GEMINI_API_KEY}", json=body, timeout=90)
         if r.status_code == 200:
             return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        if r.status_code == 503 and attempt < 3:
-            time.sleep(15 * (attempt + 1))
+        if r.status_code == 503 and attempt < 5:
+            wait = 60 + 30 * attempt
+            print(f"Gemini 503, retrying in {wait}s (attempt {attempt+1}/6)")
+            time.sleep(wait)
             continue
         raise Exception(f"Gemini {r.status_code}: {r.text[:300]}")
-    raise Exception("Gemini failed after 4 attempts")
+    raise Exception("Gemini failed after 6 attempts")
 
 
 def send(text):
@@ -348,7 +351,7 @@ def main():
         "[10 specific technical terms/phrases interviewers love, one per line with a 1-line explanation of each]",
     ])
 
-    lesson_text = gemini(lesson_prompt, 3000)
+    lesson_text = gemini(lesson_prompt, 2500)
     send_long(lesson_text)
 
     # Diagram image
