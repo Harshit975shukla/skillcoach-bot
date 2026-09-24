@@ -18,7 +18,6 @@ GH = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.githu
 DASHBOARD = "https://harshit975shukla.github.io/skillcoach-dashboard"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent"
 
-# Curated resources per topic keyword
 RESOURCES = {
     "ec2": {
         "docs": "https://docs.aws.amazon.com/ec2/index.html",
@@ -125,11 +124,11 @@ def push_data(data, sha, msg):
 
 
 def gemini(prompt, max_tokens=1800):
+    import time
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": max_tokens},
     }
-    import time
     for attempt in range(4):
         r = requests.post(f"{GEMINI_URL}?key={GEMINI_API_KEY}", json=body, timeout=90)
         if r.status_code == 200:
@@ -149,32 +148,53 @@ def send(text):
     )
 
 
+def send_long(text):
+    """Send long text splitting only at paragraph boundaries (double newline)."""
+    MAX = 4096
+    if len(text) <= MAX:
+        send(text)
+        return
+    parts = []
+    remaining = text
+    while len(remaining) > MAX:
+        # Find best split point: last double-newline before limit
+        chunk = remaining[:MAX]
+        split_pos = chunk.rfind("\n\n")
+        if split_pos < 500:
+            split_pos = chunk.rfind("\n")
+        if split_pos < 100:
+            split_pos = MAX
+        parts.append(remaining[:split_pos].rstrip())
+        remaining = remaining[split_pos:].lstrip()
+    if remaining:
+        parts.append(remaining)
+    for part in parts:
+        if part:
+            send(part)
+
+
 def send_diagram(topic):
     """Generate Mermaid diagram via Gemini and send as image via mermaid.ink."""
     try:
         mermaid_prompt = "\n".join([
-            "Generate a simple Mermaid architecture diagram for: " + topic,
+            "Generate a Mermaid architecture diagram for: " + topic,
             "Rules:",
-            "- Use 'flowchart TD' or 'graph LR' format",
-            "- Max 8 nodes, keep it simple and clear",
-            "- Show how the components connect/interact",
+            "- Use 'flowchart TD' or 'graph LR' format only",
+            "- Max 10 nodes showing all major components and their connections",
+            "- Show data flow with arrows and labels",
             "- Return ONLY the Mermaid code, no explanation, no markdown fences",
-            "Example format:",
+            "Example:",
             "flowchart TD",
             "    A[Client] --> B[Load Balancer]",
             "    B --> C[EC2 Instance 1]",
             "    B --> D[EC2 Instance 2]",
+            "    C --> E[(RDS Database)]",
+            "    D --> E",
         ])
-        mermaid_code = gemini(mermaid_prompt, 300)
-
-        # Clean up - remove markdown fences if present
+        mermaid_code = gemini(mermaid_prompt, 400)
         mermaid_code = mermaid_code.replace("```mermaid", "").replace("```", "").strip()
-
-        # Encode for mermaid.ink
         encoded = b64lib.urlsafe_b64encode(mermaid_code.encode()).decode()
         diagram_url = f"https://mermaid.ink/img/{encoded}"
-
-        # Send as photo
         resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
             json={
@@ -185,8 +205,7 @@ def send_diagram(topic):
             timeout=20,
         )
         if resp.status_code != 200:
-            # Fallback: send diagram as text
-            send("Architecture Overview:\n\n" + mermaid_code)
+            send("Architecture Diagram (text):\n\n" + mermaid_code)
     except Exception as e:
         print("Diagram skipped:", e)
 
@@ -267,104 +286,87 @@ def main():
 
     res = get_resources(topic)
 
-    # --- Message 1: Core Concepts ---
-    msg1_prompt = "\n".join([
-        "You are SkillCoach, an expert Cloud DevOps & AI Engineer interview coach for Harshit Shukla (targeting Senior level).",
-        "Be thorough, specific, and interview-focused. Plain text only, no markdown symbols.",
+    # ONE comprehensive lesson message
+    lesson_prompt = "\n".join([
+        "You are SkillCoach, an expert Cloud DevOps & AI Engineer coach for Harshit Shukla (targeting Senior level at top tech companies).",
+        "This is his primary study material for the entire day. Be THOROUGH, specific, and interview-focused.",
+        "Plain text only. No markdown symbols, no asterisks, no hashtags.",
         "",
-        "Write Part 1 of today's lesson for " + day_name + " on: " + topic,
+        "Write a COMPLETE, COMPREHENSIVE lesson on: " + topic,
         "",
-        "Format exactly:",
+        "Use EXACTLY this format with these section headers:",
         "",
-        "GOOD MORNING, HARSHIT! " + day_name + ", " + today_str,
-        "Topic: " + topic,
+        "GOOD MORNING, HARSHIT! " + day_name + " | " + today_str,
+        "Today: " + topic,
         "",
         "WHY THIS MATTERS FOR YOUR INTERVIEW",
-        "[2 sentences on why interviewers ask about this topic and what they look for]",
+        "[2-3 sentences: why Senior DevOps interviewers ask about this, what they are really testing for, which companies care most]",
         "",
-        "CONCEPT 1: [Name]",
-        "[4-5 sentences: what it is, how it works internally, when to use it, common pitfalls]",
+        "WHAT IS " + topic.split(":")[0].upper().strip() + "?",
+        "[3-4 sentences: precise definition, the problem it solves, when AWS created it and why, how it fits in the AWS ecosystem]",
         "",
-        "CONCEPT 2: [Name]",
-        "[4-5 sentences: what it is, how it works, real-world use case, interview angle]",
+        "CONCEPT 1: [Full concept name]",
+        "[5-6 sentences: exactly what it is, how it works internally step by step, a real-world example with specific numbers or sizes, common interview trap question about this concept]",
         "",
-        "CONCEPT 3: [Name]",
-        "[4-5 sentences: what it is, how it differs from alternatives, when NOT to use it]",
+        "CONCEPT 2: [Full concept name]",
+        "[5-6 sentences: definition, how it works, when to use vs when not to use, what breaks when misconfigured, cost or performance implication]",
         "",
-        "KEY TERMS TO USE IN YOUR ANSWER",
-        "[List 6-8 specific technical terms interviewers love to hear, one per line]",
-    ])
-
-    # --- Message 2: Tasks + Interview Q&A ---
-    msg2_prompt = "\n".join([
-        "You are SkillCoach, an expert Cloud DevOps & AI Engineer interview coach for Harshit Shukla.",
-        "Plain text only.",
+        "CONCEPT 3: [Full concept name]",
+        "[5-6 sentences: definition, how it differs from similar features, security angle, best practices, exam/interview gotcha]",
         "",
-        "Write Part 2 of today's lesson on: " + topic,
+        "CONCEPT 4: [Full concept name - choose an advanced or integration topic]",
+        "[5-6 sentences: advanced use case, integration with other AWS services, production war story style example, one thing most engineers miss]",
         "",
-        "Format exactly:",
+        "HOW IT WORKS END-TO-END",
+        "[6-8 sentences: walk through a complete real operation step by step - e.g. what happens when you upload a file to S3 from creation to availability. Number the steps. This describes the architecture diagram that follows.]",
         "",
         "HANDS-ON TASKS FOR TODAY",
         "",
-        "Task 1 (20 min): [Specific actionable task name]",
-        "Goal: [What you will learn from doing this]",
-        "Steps:",
-        "  1. [Specific step]",
-        "  2. [Specific step]",
-        "  3. [Specific step]",
+        "Task 1 (20 min): [Specific hands-on task]",
+        "Goal: [what you will learn]",
+        "Steps: 1.[step] 2.[step] 3.[step] 4.[step]",
         "",
-        "Task 2 (15 min): [Reading/watching task]",
-        "Goal: [What you will learn]",
-        "Steps:",
-        "  1. [Specific step]",
-        "  2. [Specific step]",
+        "Task 2 (15 min): [Documentation reading or video watching with specific resource name]",
+        "Goal: [what you will learn]",
+        "Steps: 1.[step] 2.[step]",
         "",
-        "Task 3 (20 min): [Interview prep task - write out your answer]",
-        "Goal: [What you will practice]",
-        "Steps:",
-        "  1. [Specific step]",
-        "  2. [Specific step]",
-        "  3. [Specific step]",
+        "Task 3 (20 min): [Write out your answer to an interview question practice]",
+        "Goal: [what you will practice]",
+        "Steps: 1.[step] 2.[step] 3.[step]",
         "",
-        "COMMON INTERVIEW QUESTION",
-        "Q: [A real, commonly-asked interview question on " + topic + "]",
+        "INTERVIEW QUESTION & STRONG ANSWER",
+        "Q: [A real, commonly-asked Senior DevOps interview question on " + topic + " - scenario-based if possible]",
         "",
-        "STRONG ANSWER:",
-        "[A model 150-word answer that would impress a senior interviewer. Include specific details, numbers, and real-world context]",
+        "A: [A 200-word model answer that would impress a principal engineer. Include: specific AWS limits/numbers, a decision you made in production, trade-offs you considered, what you would do differently. Sound like a senior who has actually done this.]",
         "",
         "WHAT MAKES THIS ANSWER STRONG:",
-        "[2-3 bullets explaining why this answer works]",
+        "1. [specific reason]",
+        "2. [specific reason]",
+        "3. [specific reason]",
+        "",
+        "KEY TERMS TO DROP IN YOUR INTERVIEW ANSWER",
+        "[10 specific technical terms/phrases interviewers love, one per line with a 1-line explanation of each]",
     ])
 
-    msg1 = gemini(msg1_prompt, 1200)
-    send(msg1)
+    lesson_text = gemini(lesson_prompt, 3000)
+    send_long(lesson_text)
 
-    # Send diagram
+    # Diagram image
     send_diagram(topic)
 
-    msg2 = gemini(msg2_prompt, 1200)
-    send(msg2)
-
-    # --- Message 3: Resources ---
+    # Resources
     resources_msg = "\n".join([
         "RESOURCES: " + topic.split(":")[0].strip(),
         "",
-        "Official Docs:",
-        res["docs"],
+        "Official Docs: " + res["docs"],
+        "Video Tutorial: " + res["video"],
+        "Hands-on Lab: " + res["practice"],
+        "Cheat Sheet: " + res["cheatsheet"],
         "",
-        "Video Tutorial:",
-        res["video"],
+        "Evening quiz at 6 PM IST - 5 questions on today's topic!",
+        "Use /ask <question> anytime for doubts.",
         "",
-        "Hands-on Practice:",
-        res["practice"],
-        "",
-        "Cheat Sheet:",
-        res["cheatsheet"],
-        "",
-        "Evening quiz at 6 PM IST on this topic!",
-        "Use /ask <question> if you have doubts now.",
-        "",
-        DASHBOARD,
+        "Dashboard: " + DASHBOARD,
     ])
     send(resources_msg)
 
