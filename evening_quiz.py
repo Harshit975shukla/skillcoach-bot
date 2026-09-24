@@ -78,10 +78,19 @@ def main():
     curriculum = data.get("curriculum", {})
     topic = curriculum.get("daily_lessons", {}).get(today_str) or curriculum.get("last_topic", "AWS Core")
 
+    profile = data.get("profile", {})
+    profile_context = ""
+    if profile.get("setup_complete") and profile.get("target_role"):
+        profile_context = (
+            "Target role: " + profile.get("target_role", "") + ". "
+            + "Gap skills to focus on: " + ", ".join(profile.get("gap_skills", [])[:5]) + "."
+        )
+
     prompt = "\n".join([
         "You are a Cloud DevOps technical interviewer. Return only valid JSON, no markdown.",
         "",
         "Generate 5 MCQ questions on: " + topic,
+        *(["Context: " + profile_context] if profile_context else []),
         "Target: Senior Cloud DevOps / AI Engineer interview preparation.",
         "",
         "Difficulty: 2 straightforward, 2 scenario-based, 1 tricky.",

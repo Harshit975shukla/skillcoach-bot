@@ -244,6 +244,222 @@ def _handle_answer(chat_id, data, sha, state, answer, kind):
                 f"Reply: /q A   /q B   /q C   /q D")
 
 
+# ── Profile management ────────────────────────────────────────────────────────
+
+def _parse_resume_with_gemini(resume_text):
+    prompt = "\n".join([
+        "Extract key information from this resume. Return ONLY valid JSON, no markdown, no explanation.",
+        "",
+        "Resume text:",
+        resume_text[:3000],
+        "",
+        "Return exactly this JSON structure:",
+        '{"name":"","current_role":"","years_experience":0,"tech_skills":[],"cloud_skills":[],"target_role_guess":""}',
+    ])
+    result = ask_gemini(prompt)
+    try:
+        start = result.find("{")
+        end = result.rfind("}") + 1
+        return json.loads(result[start:end])
+    except Exception:
+        return {}
+
+
+def _parse_jd_with_gemini(jd_text):
+    prompt = "\n".join([
+        "Extract key requirements from this job description. Return ONLY valid JSON, no markdown.",
+        "",
+        "JD:",
+        jd_text[:3000],
+        "",
+        "Return exactly this JSON:",
+        '{"job_title":"","company_type":"","required_skills":[],"nice_to_have":[],"seniority":"","key_focus_areas":[]}',
+    ])
+    result = ask_gemini(prompt)
+    try:
+        start = result.find("{")
+        end = result.rfind("}") + 1
+        return json.loads(result[start:end])
+    except Exception:
+        return {}
+
+
+def _gap_analysis_with_gemini(resume_info, jd_info):
+    resume_skills = resume_info.get("tech_skills", []) + resume_info.get("cloud_skills", [])
+    jd_required = jd_info.get("required_skills", [])
+    prompt = "\n".join([
+        "Analyze skill gap. Return ONLY valid JSON, no markdown.",
+        "",
+        "Resume skills: " + ", ".join(resume_skills),
+        "JD required: " + ", ".join(jd_required),
+        "Years exp: " + str(resume_info.get("years_experience", "?")),
+        "Target role: " + jd_info.get("job_title", "Senior DevOps Engineer"),
+        "Seniority needed: " + jd_info.get("seniority", "senior"),
+        "",
+        "Return:",
+        '{"strong_skills":[],"gap_skills":[],"readiness_score":65,"target_role":"","summary":""}',
+    ])
+    result = ask_gemini(prompt)
+    try:
+        start = result.find("{")
+        end = result.rfind("}") + 1
+        return json.loads(result[start:end])
+    except Exception:
+        return {"strong_skills": resume_skills[:3], "gap_skills": jd_required[:3],
+                "readiness_score": 50, "target_role": jd_info.get("job_title", ""), "summary": ""}
+
+
+def _generate_diag_questions(resume_info):
+    skills = resume_info.get("tech_skills", []) + resume_info.get("cloud_skills", [])
+    prompt = "\n".join([
+        "Generate 5 diagnostic questions to assess skill depth. Return ONLY valid JSON.",
+        "",
+        "Candidate skills: " + ", ".join(skills),
+        "Target: " + resume_info.get("target_role_guess", "Senior DevOps Engineer"),
+        "",
+        "Each question tests real depth — answerable in 1-3 sentences.",
+        'Return: {"questions":[{"skill":"AWS","question":"How do you handle cross-region S3 failover?"}]}',
+    ])
+    result = ask_gemini(prompt)
+    try:
+        start = result.find("{")
+        end = result.rfind("}") + 1
+        return json.loads(result[start:end]).get("questions", [])[:5]
+    except Exception:
+        return [{"skill": "General", "question": "Describe your most complex cloud project in 2-3 sentences."}]
+
+
+def _rate_diag_answers(questions, answers):
+    qa = "\n".join(
+        f"Q ({q.get('skill','?')}): {q.get('question','')}\nA: {a}"
+        for q, a in zip(questions, answers)
+    )
+    prompt = "\n".join([
+        "Rate candidate skills from their Q&A answers. Return ONLY valid JSON.",
+        "",
+        qa,
+        "",
+        'Return: {"skill_ratings":{"AWS":3},"readiness_score":65,"strong_skills":[],"gap_skills":[],"summary":""}',
+    ])
+    result = ask_gemini(prompt)
+    try:
+        start = result.find("{")
+        end = result.rfind("}") + 1
+        return json.loads(result[start:end])
+    except Exception:
+        return {"skill_ratings": {}, "readiness_score": 50, "strong_skills": [], "gap_skills": [], "summary": ""}
+
+
+def handle_text_input(chat_id, text):
+    """Handle non-command messages when a setup flow is active. Silently ignores otherwise."""
+    try:
+        data, sha = get_data()
+        profile = data.get("profile", {})
+        state = profile.get("setup_state", "idle")
+
+        if state == "awaiting_resume":
+            if len(text.strip()) < 80:
+                send_msg(chat_id, "That looks too short. Paste your full resume text (experience, skills, education).")
+                return
+            send_msg(chat_id, "Got your resume! Analyzing skills...")
+            resume_info = _parse_resume_with_gemini(text)
+            profile["resume_text"] = text[:5000]
+            profile["resume_info"] = resume_info
+            profile["setup_state"] = "awaiting_jd"
+            data["profile"] = profile
+            push_data(data, sha, "Profile: resume stored")
+            skills = resume_info.get("tech_skills", []) + resume_info.get("cloud_skills", [])
+            send_msg(chat_id,
+                "Resume analyzed!\n\n"
+                "Skills found: " + (", ".join(skills[:8]) if skills else "None detected") + "\n"
+                "Experience: " + str(resume_info.get("years_experience", "?")) + " years\n\n"
+                "Do you have a Job Description to target?\n"
+                "Paste it now, or send /skip to do a diagnostic assessment instead."
+            )
+
+        elif state == "awaiting_jd":
+            if len(text.strip()) < 50:
+                send_msg(chat_id, "Too short for a JD. Paste the full description, or send /skip.")
+                return
+            send_msg(chat_id, "Analyzing job requirements and identifying skill gaps...")
+            resume_info = profile.get("resume_info", {})
+            jd_info = _parse_jd_with_gemini(text)
+            gap = _gap_analysis_with_gemini(resume_info, jd_info)
+            profile["jd_text"] = text[:5000]
+            profile["jd_info"] = jd_info
+            profile["target_role"] = gap.get("target_role", jd_info.get("job_title", ""))
+            profile["strong_skills"] = gap.get("strong_skills", [])
+            profile["gap_skills"] = gap.get("gap_skills", [])
+            profile["readiness_score"] = gap.get("readiness_score", 0)
+            profile["setup_state"] = "idle"
+            profile["setup_complete"] = True
+            data["profile"] = profile
+            push_data(data, sha, "Profile: gap analysis complete")
+            score = gap.get("readiness_score", 0)
+            emoji = "Great progress!" if score >= 80 else ("Keep going!" if score >= 60 else "Room to grow!")
+            send_msg(chat_id,
+                "Setup Complete!\n\n"
+                "Target: " + gap.get("target_role", "") + "\n"
+                "Readiness: " + str(score) + "%\n\n"
+                "Strong skills: " + ", ".join(gap.get("strong_skills", [])[:5]) + "\n"
+                "Gaps to fill: " + ", ".join(gap.get("gap_skills", [])[:5]) + "\n\n"
+                + gap.get("summary", "") + "\n\n"
+                + emoji + " Daily lessons will now focus on your gaps.\n"
+                "Use /score to track progress. Use /gaps for the full list."
+            )
+
+        elif state.startswith("awaiting_diag_"):
+            idx = int(state.split("_")[-1])
+            questions = profile.get("diag_questions", [])
+            answers = profile.get("diag_answers", [])
+            answers.append(text.strip())
+            profile["diag_answers"] = answers
+            next_idx = idx + 1
+
+            if next_idx >= len(questions):
+                send_msg(chat_id, "All questions done! Rating your skills...")
+                ratings = _rate_diag_answers(questions, answers)
+                profile["skill_ratings"] = ratings.get("skill_ratings", {})
+                profile["readiness_score"] = ratings.get("readiness_score", 50)
+                profile["strong_skills"] = ratings.get("strong_skills", [])
+                profile["gap_skills"] = ratings.get("gap_skills", [])
+                profile["target_role"] = profile.get("resume_info", {}).get("target_role_guess", "Senior DevOps Engineer")
+                profile["setup_state"] = "idle"
+                profile["setup_complete"] = True
+                data["profile"] = profile
+                push_data(data, sha, "Profile: diagnostic complete")
+                score = ratings.get("readiness_score", 50)
+                skill_ratings = ratings.get("skill_ratings", {})
+                bars = "\n".join(
+                    "  " + k + ": " + ("█" * v + "░" * (5 - v)) + " " + str(v) + "/5"
+                    for k, v in skill_ratings.items()
+                ) if skill_ratings else "  (not enough data)"
+                send_msg(chat_id,
+                    "Assessment Complete!\n\n"
+                    "Readiness: " + str(score) + "%\n\n"
+                    "Skill Ratings:\n" + bars + "\n\n"
+                    "Strong: " + ", ".join(ratings.get("strong_skills", [])) + "\n"
+                    "Focus on: " + ", ".join(ratings.get("gap_skills", [])) + "\n\n"
+                    + ratings.get("summary", "") + "\n\n"
+                    "Daily lessons will now target your gaps.\n"
+                    "Use /score to track progress."
+                )
+            else:
+                profile["setup_state"] = "awaiting_diag_" + str(next_idx)
+                data["profile"] = profile
+                push_data(data, sha, "Profile: diag q" + str(next_idx))
+                nq = questions[next_idx]
+                send_msg(chat_id,
+                    "Question " + str(next_idx + 1) + "/" + str(len(questions)) + " — " + nq.get("skill", "") + "\n\n"
+                    + nq.get("question", "") + "\n\n"
+                    "Answer briefly (1-3 sentences):"
+                )
+        # If state is idle, ignore non-command messages silently
+
+    except Exception as e:
+        print("Text input error:", e)
+
+
 # ── Command handlers ──────────────────────────────────────────────────────────
 
 def process_command(chat_id, text):
@@ -255,6 +471,11 @@ def process_command(chat_id, text):
         send_msg(chat_id,
             "SkillCoach Bot — AI interview mentor!\n\n"
             f"Chat ID: {chat_id}\n\n"
+            "PROFILE SETUP (start here):\n"
+            "/setup — Add your resume + JD for a personalized plan\n"
+            "/score — Your readiness score & skill ratings\n"
+            "/gaps  — Skills you need to fill for your target role\n"
+            "/assess — Redo diagnostic Q&A to update ratings\n\n"
             "DAILY LEARNING:\n"
             "9 AM — Morning lesson (Mon-Fri)\n"
             "6 PM — Evening quiz (Mon-Fri)\n"
@@ -272,7 +493,7 @@ def process_command(chat_id, text):
             "/nextweek <preference> — Customize next week\n\n"
             "TRACKING:\n"
             "/tasks  /skills  /stats  /dashboard\n"
-            "/complete <task_id>  /resume")
+            "/complete <task_id>")
 
     elif cmd == "/help":
         send_msg(chat_id,
@@ -533,6 +754,134 @@ Make it something most candidates don't do. Under 150 words. Plain text."""
         except Exception as e:
             send_msg(chat_id, f"❌ Error: {e}")
 
+    elif cmd == "/setup":
+        try:
+            data, sha = get_data()
+            profile = data.get("profile", {})
+            if profile.get("setup_complete") and arg.lower() != "reset":
+                score = profile.get("readiness_score", 0)
+                send_msg(chat_id,
+                    "Profile already set up!\n\n"
+                    "Target: " + profile.get("target_role", "Not set") + "\n"
+                    "Readiness: " + str(score) + "%\n\n"
+                    "Commands:\n"
+                    "/score — Full skill breakdown\n"
+                    "/gaps  — Skills to fill\n"
+                    "/assess — Redo diagnostic\n"
+                    "/setup reset — Start fresh"
+                )
+            else:
+                data["profile"] = {"setup_state": "awaiting_resume"}
+                push_data(data, sha, "Profile: setup started")
+                send_msg(chat_id,
+                    "Let's build your personalized coaching plan!\n\n"
+                    "Step 1 of 2: Paste your resume text below.\n\n"
+                    "Copy your full resume (experience, skills, education) and paste it as a message. The more detail, the better."
+                )
+        except Exception as e:
+            send_msg(chat_id, "Error: " + str(e))
+
+    elif cmd == "/skip":
+        try:
+            data, sha = get_data()
+            profile = data.get("profile", {})
+            if profile.get("setup_state") != "awaiting_jd":
+                send_msg(chat_id, "Nothing to skip. Use /setup to start your profile setup.")
+                return
+            send_msg(chat_id, "No JD — running a quick diagnostic instead. Generating questions based on your resume...")
+            questions = _generate_diag_questions(profile.get("resume_info", {}))
+            profile["diag_questions"] = questions
+            profile["diag_answers"] = []
+            profile["setup_state"] = "awaiting_diag_0"
+            data["profile"] = profile
+            push_data(data, sha, "Profile: diagnostic started")
+            q = questions[0]
+            send_msg(chat_id,
+                "Question 1/" + str(len(questions)) + " — " + q.get("skill", "") + "\n\n"
+                + q.get("question", "") + "\n\n"
+                "Answer briefly (1-3 sentences):"
+            )
+        except Exception as e:
+            send_msg(chat_id, "Error: " + str(e))
+
+    elif cmd == "/assess":
+        try:
+            data, sha = get_data()
+            profile = data.get("profile", {})
+            if not profile.get("resume_info"):
+                send_msg(chat_id, "No resume on file. Run /setup first to add your resume.")
+                return
+            send_msg(chat_id, "Starting diagnostic — 5 questions on your claimed skills...")
+            questions = _generate_diag_questions(profile.get("resume_info", {}))
+            profile["diag_questions"] = questions
+            profile["diag_answers"] = []
+            profile["setup_state"] = "awaiting_diag_0"
+            data["profile"] = profile
+            push_data(data, sha, "Profile: reassessment started")
+            q = questions[0]
+            send_msg(chat_id,
+                "Question 1/" + str(len(questions)) + " — " + q.get("skill", "") + "\n\n"
+                + q.get("question", "") + "\n\n"
+                "Answer briefly (1-3 sentences):"
+            )
+        except Exception as e:
+            send_msg(chat_id, "Error: " + str(e))
+
+    elif cmd == "/score":
+        try:
+            data, _ = get_data()
+            profile = data.get("profile", {})
+            if not profile.get("setup_complete"):
+                send_msg(chat_id, "No profile yet. Run /setup to get started!")
+                return
+            score = profile.get("readiness_score", 0)
+            icon = "Strong" if score >= 80 else ("Good" if score >= 60 else "Building")
+            skill_ratings = profile.get("skill_ratings", {})
+            bars = "\n".join(
+                "  " + k + ": " + ("█" * v + "░" * (5 - v)) + " " + str(v) + "/5"
+                for k, v in skill_ratings.items()
+            ) if skill_ratings else "  (run /assess to get skill ratings)"
+            send_msg(chat_id,
+                "Job Readiness — " + icon + "\n\n"
+                "Target: " + profile.get("target_role", "Not set") + "\n"
+                "Score: " + str(score) + "%\n\n"
+                "Skill Ratings:\n" + bars + "\n\n"
+                "Strong: " + (", ".join(profile.get("strong_skills", [])) or "None yet") + "\n"
+                "Focus on: " + (", ".join(profile.get("gap_skills", [])) or "None identified") + "\n\n"
+                "Daily lessons target your gaps automatically.\n"
+                "Use /assess to update ratings anytime."
+            )
+        except Exception as e:
+            send_msg(chat_id, "Error: " + str(e))
+
+    elif cmd == "/gaps":
+        try:
+            data, _ = get_data()
+            profile = data.get("profile", {})
+            if not profile.get("setup_complete"):
+                send_msg(chat_id, "No profile yet. Run /setup first!")
+                return
+            gap_skills = profile.get("gap_skills", [])
+            strong_skills = profile.get("strong_skills", [])
+            jd_info = profile.get("jd_info", {})
+            msg = "Gap Analysis — " + profile.get("target_role", "Target Role") + "\n\n"
+            if gap_skills:
+                msg += "SKILLS TO BUILD:\n"
+                for i, s in enumerate(gap_skills, 1):
+                    msg += "  " + str(i) + ". " + s + "\n"
+            else:
+                msg += "No gaps identified yet.\n"
+            if strong_skills:
+                msg += "\nYOUR STRENGTHS:\n"
+                for s in strong_skills:
+                    msg += "  + " + s + "\n"
+            if jd_info.get("key_focus_areas"):
+                msg += "\nJD KEY AREAS: " + ", ".join(jd_info["key_focus_areas"]) + "\n"
+            msg += "\nStudy a gap: /learn <skill>\nPractice a gap: /mock <skill>"
+            send_msg(chat_id, msg)
+        except Exception as e:
+            send_msg(chat_id, "Error: " + str(e))
+
     elif cmd == "/curriculum":
         try:
             data, _ = get_data()
@@ -582,9 +931,12 @@ def webhook():
         msg = update.get("message") or update.get("edited_message", {})
         chat_id = msg.get("chat", {}).get("id")
         text = msg.get("text", "")
-        if chat_id and text.startswith("/"):
+        if chat_id and text:
             if not AUTHORIZED_CHAT_ID or chat_id == AUTHORIZED_CHAT_ID:
-                process_command(chat_id, text)
+                if text.startswith("/"):
+                    process_command(chat_id, text)
+                else:
+                    handle_text_input(chat_id, text)
     except Exception:
         pass
     return "OK", 200

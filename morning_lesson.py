@@ -289,11 +289,22 @@ def main():
 
     res = get_resources(topic)
 
+    # Build profile context if user has set up their profile
+    profile = data.get("profile", {})
+    profile_context = ""
+    if profile.get("setup_complete") and profile.get("target_role"):
+        profile_context = (
+            "User's target role: " + profile.get("target_role", "") + ". "
+            + "Strong skills (can go lighter on these): " + ", ".join(profile.get("strong_skills", [])[:5]) + ". "
+            + "Gap skills (prioritize these): " + ", ".join(profile.get("gap_skills", [])[:5]) + "."
+        )
+
     # ONE comprehensive lesson message
     lesson_prompt = "\n".join([
         "You are SkillCoach, an expert Cloud DevOps & AI Engineer coach for Harshit Shukla (targeting Senior level at top tech companies).",
         "This is his primary study material for the entire day. Be THOROUGH, specific, and interview-focused.",
         "Plain text only. No markdown symbols, no asterisks, no hashtags.",
+        *(["", profile_context] if profile_context else []),
         "",
         "Write a COMPLETE, COMPREHENSIVE lesson on: " + topic,
         "",
