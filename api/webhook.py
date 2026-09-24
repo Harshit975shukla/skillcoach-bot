@@ -163,6 +163,87 @@ Under 300 words. Plain text."""
     return ask_gemini(prompt)
 
 
+# ── Quiz/test answer handler ──────────────────────────────────────────────────
+
+def _fmt_q(q, idx, total, label="Q"):
+    return (
+        f"{label}{idx}/{total}\n\n"
+        f"{q['question']}\n\n"
+        f"A) {q['options']['A']}\n"
+        f"B) {q['options']['B']}\n"
+        f"C) {q['options']['C']}\n"
+        f"D) {q['options']['D']}\n\n"
+        f"Reply: /q A   /q B   /q C   /q D"
+    )
+
+
+def _handle_answer(chat_id, data, sha, state, answer, kind):
+    questions = state["questions"]
+    idx = state["current_q"]
+    q = questions[idx]
+    correct = q["answer"].upper()
+    is_correct = answer == correct
+
+    if is_correct:
+        state["score"] = state.get("score", 0) + 1
+        fb = f"Correct! ({answer})\n\n{q['explanation']}"
+    else:
+        fb = f"Wrong. You said {answer}, correct is {correct}\n\n{q['explanation']}"
+
+    send_msg(chat_id, ("✅ " if is_correct else "❌ ") + fb)
+
+    state["current_q"] = idx + 1
+    state.setdefault("answers", []).append({"q": idx, "given": answer, "correct": correct, "ok": is_correct})
+
+    total = len(questions)
+    next_idx = idx + 1
+
+    if next_idx >= total:
+        score = state["score"]
+        pct = round((score / total) * 100)
+        if kind == "quiz":
+            state["active"] = False
+            data["quiz_state"] = state
+            push_data(data, sha, "Quiz complete")
+            emoji = "🔥" if pct >= 80 else ("👍" if pct >= 60 else "📖")
+            send_msg(chat_id,
+                f"{emoji} Quiz done! {score}/{total} ({pct}%)\n\n"
+                f"{'Solid!' if pct >= 80 else 'Keep going!'}\n\n"
+                f"Any doubts on today's topic?\nUse /ask <your question>")
+        else:
+            state["active"] = False
+            state["completed"] = True
+            data["test_state"] = state
+            wk = state.get("week", 1)
+            scores = data.get("weekly_scores", {})
+            scores[f"week_{wk}"] = pct
+            data["weekly_scores"] = scores
+            push_data(data, sha, f"Week {wk} test complete: {pct}%")
+            emoji = "🏆" if pct >= 80 else ("👍" if pct >= 60 else "📚")
+            send_msg(chat_id,
+                f"{emoji} Test done! {score}/{total} ({pct}%)\n\n"
+                f"{'Excellent work!' if pct >= 80 else 'Good effort!' if pct >= 60 else 'More practice needed!'}\n\n"
+                f"Sunday: I'll send next week's plan at 10 AM.\n"
+                f"Want to customize it? /nextweek <your preference>")
+    else:
+        nq = questions[next_idx]
+        if kind == "quiz":
+            data["quiz_state"] = state
+            push_data(data, sha, f"Quiz q{next_idx}")
+            send_msg(chat_id, _fmt_q(nq, next_idx + 1, total))
+        else:
+            data["test_state"] = state
+            push_data(data, sha, f"Test q{next_idx}")
+            send_msg(chat_id,
+                f"Test Q{next_idx + 1}/{total} — {nq.get('topic', '')}\n\n"
+                f"{nq['question']}\n\n"
+                f"A) {nq['options']['A']}\n"
+                f"B) {nq['options']['B']}\n"
+                f"C) {nq['options']['C']}\n"
+                f"D) {nq['options']['D']}\n\n"
+                f"Reply: /q A   /q B   /q C   /q D")
+
+
 # ── Command handlers ──────────────────────────────────────────────────────────
 
 def process_command(chat_id, text):
@@ -172,22 +253,26 @@ def process_command(chat_id, text):
 
     if cmd == "/start":
         send_msg(chat_id,
-            "👋 SkillCoach Bot — your AI interview mentor!\n\n"
-            f"🔑 Chat ID: {chat_id}\n\n"
-            "COMMANDS:\n"
-            "/tasks — Open tasks\n"
-            "/skills — Skill progress\n"
-            "/stats — Your stats\n"
-            "/dashboard — Your tracker link\n\n"
+            "SkillCoach Bot — AI interview mentor!\n\n"
+            f"Chat ID: {chat_id}\n\n"
+            "DAILY LEARNING:\n"
+            "9 AM — Morning lesson (Mon-Fri)\n"
+            "6 PM — Evening quiz (Mon-Fri)\n"
+            "Sat  — Weekly test\n"
+            "Sun  — Next week's plan\n\n"
             "AI COACHING:\n"
             "/ask <question> — Ask anything\n"
-            "/mock <topic> — Mock interview question\n"
-            "/learn <topic> — Study guide for a topic\n"
-            "/tip — Get a coaching tip\n\n"
+            "/mock <topic> — Mock interview Q\n"
+            "/learn <topic> — Study guide\n"
+            "/tip — Today's tip\n\n"
+            "QUIZ:\n"
+            "/q A (or B/C/D) — Answer quiz/test question\n\n"
+            "PLANNING:\n"
+            "/curriculum — This week's schedule\n"
+            "/nextweek <preference> — Customize next week\n\n"
             "TRACKING:\n"
-            "/complete task_001 — Mark task done\n"
-            "/resume — Resume feedback\n"
-            "/publish — Sync dashboard")
+            "/tasks  /skills  /stats  /dashboard\n"
+            "/complete <task_id>  /resume")
 
     elif cmd == "/help":
         send_msg(chat_id,
@@ -414,6 +499,63 @@ Make it something most candidates don't do. Under 150 words. Plain text."""
             send_msg(chat_id, f"✅ Dashboard synced!\n\n{DASHBOARD_URL}\n\nUpdates in 1-2 mins.")
         except Exception as e:
             send_msg(chat_id, f"❌ Sync failed: {e}")
+
+    elif cmd == "/q":
+        if not arg:
+            send_msg(chat_id, "Usage: /q A  (or B, C, D)\n\nWait for the quiz at 6 PM IST or test on Saturday 9 AM IST.")
+            return
+        answer = arg.strip().upper()[:1]
+        if answer not in ["A", "B", "C", "D"]:
+            send_msg(chat_id, "Please reply /q A, /q B, /q C, or /q D")
+            return
+        try:
+            data, sha = get_data()
+            quiz = data.get("quiz_state", {})
+            test = data.get("test_state", {})
+            if quiz.get("active") and quiz.get("current_q", 0) < len(quiz.get("questions", [])):
+                _handle_answer(chat_id, data, sha, quiz, answer, "quiz")
+            elif test.get("active") and not test.get("completed") and test.get("current_q", 0) < len(test.get("questions", [])):
+                _handle_answer(chat_id, data, sha, test, answer, "test")
+            else:
+                send_msg(chat_id, "No active quiz right now.\n\nQuiz: daily at 6 PM IST\nTest: Saturday 9 AM IST\n\nOr practice with /ask or /mock")
+        except Exception as e:
+            send_msg(chat_id, f"❌ Error: {e}")
+
+    elif cmd == "/nextweek":
+        if not arg:
+            send_msg(chat_id, "Usage: /nextweek <your preference>\n\nExample:\n/nextweek focus more on Kubernetes\n/nextweek I want to start Terraform\n/nextweek review AWS again, my score was low")
+            return
+        try:
+            data, sha = get_data()
+            data["next_week_preference"] = arg
+            push_data(data, sha, "Next week preference saved")
+            send_msg(chat_id, f"Saved! Sunday's plan will incorporate: {arg}\n\nSee you Sunday morning for your personalized week plan!")
+        except Exception as e:
+            send_msg(chat_id, f"❌ Error: {e}")
+
+    elif cmd == "/curriculum":
+        try:
+            data, _ = get_data()
+            curriculum = data.get("curriculum", {})
+            week_plan = curriculum.get("week_plan", {})
+            week_num = curriculum.get("week_number", 1)
+            weekly_scores = data.get("weekly_scores", {})
+            today_str = datetime.now(IST).strftime("%Y-%m-%d")
+            msg = f"📅 Week {week_num} Curriculum\n\n"
+            if week_plan:
+                for d in sorted(week_plan):
+                    marker = "→" if d == today_str else ("✓" if d < today_str else " ")
+                    msg += f"{marker} {d}: {week_plan[d]}\n"
+            else:
+                msg += "No plan yet — lesson tomorrow will generate it!\n"
+            if weekly_scores:
+                msg += "\nWeekly Test Scores:\n"
+                for k, v in weekly_scores.items():
+                    msg += f"  Week {k.split('_')[1]}: {v}%\n"
+            msg += f"\nDashboard: {DASHBOARD_URL}"
+            send_msg(chat_id, msg)
+        except Exception as e:
+            send_msg(chat_id, f"❌ Error: {e}")
 
     else:
         send_msg(chat_id,

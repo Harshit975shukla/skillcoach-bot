@@ -1,0 +1,27 @@
+name: Evening Quiz (6 PM IST Mon-Fri)
+
+on:
+  schedule:
+    - cron: "30 12 * * 1-5"  # 6:00 PM IST = 12:30 UTC, Mon-Fri
+  workflow_dispatch:
+
+jobs:
+  quiz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests pytz
+
+      - name: Send evening quiz
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: python evening_quiz.py
