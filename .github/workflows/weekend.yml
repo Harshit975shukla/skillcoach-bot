@@ -33,7 +33,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           DAY=$(date -u +%A)
           INPUT="${{ github.event.inputs.day }}"

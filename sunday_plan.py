@@ -9,7 +9,7 @@ import pytz
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 CHAT_ID = int(os.environ["CHAT_ID"])
-NVIDIA_API_KEY = os.environ["NVIDIA_API_KEY"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 IST = pytz.timezone("Asia/Kolkata")
 REPO = "Harshit975shukla/skillcoach-dashboard"
@@ -30,37 +30,20 @@ def push_data(data, sha, msg):
                  headers=GH, json={"message": msg, "content": content, "sha": sha}, timeout=20)
 
 
-def nvidia(system, prompt, max_tokens=800):
+def gemini(system, prompt, max_tokens=900):
+    body = {
+        "contents": [{"parts": [{"text": system + "
+
+" + prompt}]}],
+        "generationConfig": {"maxOutputTokens": max_tokens},
+    }
     r = requests.post(
-        "https://integrate.api.nvidia.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"},
-        json={
-            "model": "meta/llama-3.1-405b-instruct",
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": 0.7,
-            "stream": False,
-        },
-        timeout=90,
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={GEMINI_API_KEY}",
+        json=body, timeout=90,
     )
     if r.status_code != 200:
-        raise Exception(f"NVIDIA {r.status_code}: {r.text[:300]}")
-    try:
-        return r.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        content_parts = []
-        for line in r.text.splitlines():
-            if line.startswith("data: ") and "[DONE]" not in line:
-                try:
-                    chunk = json.loads(line[6:])
-                    delta = chunk["choices"][0].get("delta", {}).get("content", "")
-                    if delta:
-                        content_parts.append(delta)
-                except Exception:
-                    pass
-        if content_parts:
-            return "".join(content_parts).strip()
-        raise Exception(f"Parse failed ({e}). Response: {r.text[:400]}")
+        raise Exception(f"Gemini {r.status_code}: {r.text[:300]}")
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 
 def send(text):
@@ -98,7 +81,7 @@ def main():
     scores_str = ", ".join(f"W{k.split('_')[1]}: {v}%" for k, v in weekly_scores.items())
 
     # Generate review + next week plan (one NVIDIA call)
-    result = nvidia(
+    result = gemini(
         "You are SkillCoach, a Cloud DevOps interview mentor for Harshit Shukla. "
         "Be encouraging but honest. Plain text only.",
         f"""It's Sunday! Generate a week review and next week plan.
@@ -148,7 +131,7 @@ MOTIVATION
 
     # Fallback if parsing failed
     if len(new_plan) < 4:
-        plan_json = nvidia(
+        plan_json = gemini(
             "Return only valid JSON, no markdown, no explanation.",
             f"""Generate a 6-day learning plan starting {next_monday.isoformat()}.
 Previous: {topics_str}. Score: {test_pct}%. Preference: {preference if preference else 'continue progression'}.
