@@ -35,14 +35,20 @@ def push_data(data, sha, msg):
 
 
 def gemini(prompt, max_tokens=2500):
+    import time
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": max_tokens},
     }
-    r = requests.post(f"{GEMINI_URL}?key={GEMINI_API_KEY}", json=body, timeout=120)
-    if r.status_code != 200:
+    for attempt in range(4):
+        r = requests.post(f"{GEMINI_URL}?key={GEMINI_API_KEY}", json=body, timeout=120)
+        if r.status_code == 200:
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        if r.status_code == 503 and attempt < 3:
+            time.sleep(15 * (attempt + 1))
+            continue
         raise Exception(f"Gemini {r.status_code}: {r.text[:300]}")
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    raise Exception("Gemini failed after 4 attempts")
 
 
 def send(text):
