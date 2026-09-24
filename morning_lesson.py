@@ -129,14 +129,14 @@ def gemini(prompt, max_tokens=1800):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": max_tokens},
     }
-    # 6 attempts: sleep 60, 90, 120, 150, 180s between retries on 503
+    # 6 attempts: sleep 60, 90, 120, 150, 180s between retries on 503/429
     for attempt in range(6):
         r = requests.post(f"{GEMINI_URL}?key={GEMINI_API_KEY}", json=body, timeout=90)
         if r.status_code == 200:
             return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        if r.status_code == 503 and attempt < 5:
+        if r.status_code in (429, 503) and attempt < 5:
             wait = 60 + 30 * attempt
-            print(f"Gemini 503, retrying in {wait}s (attempt {attempt+1}/6)")
+            print(f"Gemini {r.status_code}, retrying in {wait}s (attempt {attempt+1}/6)")
             time.sleep(wait)
             continue
         raise Exception(f"Gemini {r.status_code}: {r.text[:300]}")
