@@ -42,7 +42,24 @@ def nvidia(system, prompt, max_tokens=2500):
         },
         timeout=120,
     )
-    return r.json()["choices"][0]["message"]["content"].strip()
+    if r.status_code != 200:
+        raise Exception(f"NVIDIA {r.status_code}: {r.text[:300]}")
+    try:
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        content_parts = []
+        for line in r.text.splitlines():
+            if line.startswith("data: ") and "[DONE]" not in line:
+                try:
+                    chunk = json.loads(line[6:])
+                    delta = chunk["choices"][0].get("delta", {}).get("content", "")
+                    if delta:
+                        content_parts.append(delta)
+                except Exception:
+                    pass
+        if content_parts:
+            return "".join(content_parts).strip()
+        raise Exception(f"Parse failed ({e}). Response: {r.text[:400]}")
 
 
 def send(text):
