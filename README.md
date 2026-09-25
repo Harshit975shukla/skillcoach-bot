@@ -1,215 +1,168 @@
 # SkillCoach Bot
 
-A personal Cloud DevOps interview coaching system delivered entirely through Telegram. It sends a structured daily lesson at 9 AM, an evening quiz at 6 PM, a weekend mock test, and a Sunday weekly review — all automated via GitHub Actions.
+A single-owner Telegram interview coach: **full lessons and animated videos by default**, personalized plans, tracked practice tasks, five-question daily quizzes, ten-question weekly assessments, and question-first interviews. Vercel handles authenticated webhooks; GitHub Actions owns scheduled coaching and recovery. Private PostgreSQL is the only authoritative state store.
 
----
+This repository contains implementation and offline checks, **not an activated deployment**. No command below should be run against production until its cutover step is explicitly approved. Automatic Git-triggered Vercel deployments are disabled in `vercel.json` so pushing a test branch cannot deploy unverified code. Keep that gate until backups, tests and account cost restrictions are confirmed; explicit deployment remains an operator-controlled step.
 
-## Project Structure
+## Schedule (Asia/Kolkata)
 
-```
-skillcoach-bot/
-├── morning_lesson.py      # 9 AM Mon-Fri: lesson + concept videos + architecture video
-├── evening_quiz.py        # 6 PM Mon-Fri: 5-question MCQ quiz on today's topic
-├── weekend_test.py        # 10 AM Saturday: 10-question full mock test
-├── sunday_plan.py         # 10 AM Sunday: week review + next week plan
-├── lesson_content.py      # Pre-written lessons for EC2, S3, RDS, VPC, IAM, Lambda
-├── reminder.py            # Sends /publish reminder if bot hasn't run
-├── bot.py                 # Standalone Telegram polling bot (local use)
-├── api/
-│   └── webhook.py         # Vercel serverless handler for /ask, /mock, /interview etc.
-├── .github/
-│   └── workflows/
-│       ├── morning_lesson.yml
-│       ├── evening_quiz.yml
-│       └── weekend.yml
-├── requirements.txt
-├── vercel.json
-└── .env.example
-```
+| Operation | Intended local time | UTC cron | Entry point |
+|---|---|---|---|
+| Full lesson | Monday-Friday 09:00 | `30 3 * * 1-5` | `morning_lesson.py` |
+| Five-question quiz | Monday-Friday 18:00 | `30 12 * * 1-5` | `evening_quiz.py` |
+| Ten-question assessment | Saturday 09:00 | `30 3 * * 6` | `weekend_test.py` |
+| Weekly review and next plan | Sunday 10:00 | `30 4 * * 0` | `sunday_plan.py` |
+| Pending work recovery | Every five minutes | `*/5 * * * *` | `python -m skillcoach.cli recover` |
 
-> **Dashboard repo** (separate): `Harshit975shukla/skillcoach-dashboard` — GitHub Pages static site at `https://harshit975shukla.github.io/skillcoach-dashboard`
+These are intended times, not delivery guarantees. GitHub can delay/drop scheduled runs; schedules run only from the default branch and public-repository schedules can be disabled after 60 days without repository activity. Dashboard-repository commits do **not** keep this bot's workflows enabled. Monitor/re-enable workflows and use manual recovery when needed. Five-minute recovery consumes Actions minutes; browser installation/video encoding can be significant. Empty/no-media work avoids the browser installation.
 
----
+Each schedule has a unique local-date receipt. Workflow reruns use the original run creation timestamp; weekend operations are selected explicitly, never from the runner's current weekday. An operation-specific concurrency group keeps recovery from evicting a queued lesson. Messages from an earlier local date are suppressed rather than replayed as today's learning. If a schedule was dropped before GitHub created a run, select the intended date manually; a past-date run does not replay old notifications.
 
-## How It Works
+## Architecture and delivery semantics
 
-### Daily Schedule (IST)
+`skillcoach/config.py`, `clients.py`, `models.py`, `storage.py`, `service.py`, `runtime.py`, `export.py`, and `media.py` are shared by the thin existing entry points.
 
-| Time | Script | What it does |
-|------|--------|--------------|
-| 9 AM Mon–Fri | `morning_lesson.py` | Full lesson: header, 4 concepts each with an animated diagram video, end-to-end flow, architecture video, tasks, key terms, interview Q&A |
-| 6 PM Mon–Fri | `evening_quiz.py` | 5 MCQ questions on today's morning topic; answers graded inline via `/q` |
-| 10 AM Saturday | `weekend_test.py` | 10-question mock test covering the full week's topics |
-| 10 AM Sunday | `sunday_plan.py` | Week score review + generates next week's 6-day learning plan |
+PostgreSQL stores the validated profile and separate setup draft, curriculum, task history, assessments/answers, interviews, preferences and dated activity in the dedicated `skillcoach_private` schema, **not `public`**. Migrations revoke PUBLIC access to that schema. Every real connection explicitly sets a transaction-local schema and statement/lock timeouts, including through poolers; URL search-path hints are not relied on. Do not add this schema to a provider's exposed Data API schemas or grant anonymous/API roles access. Grant only the bot's runtime role the required schema/table/sequence access. Versioned SQL migrations create a single-owner JSONB state row plus relational unique task/answer keys, update/schedule receipts, AI-result checkpoints, worker leases and an ordered transactional outbox. This is not an in-memory dedup cache and there is no GitHub-state fallback.
 
-### Morning Lesson Flow
+Workers acquire short-lived **fenced leases**, not transaction locks held across network calls. Domain computation occurs outside transactions. State revision checks, answer uniqueness and outbox writes commit together. Validated AI results are checkpointed privately so delivery retries do not regrade answers. A crash before an AI result is checkpointed can repeat the provider call, but only a committed result affects progress.
 
-```
-data.json (GitHub) → look up today's topic from week_plan
-    ↓
-Pre-written lesson? (EC2/S3/RDS/VPC/IAM/Lambda)
-    YES → lesson_content.py (zero API calls for core content)
-    NO  → Groq API → Gemini fallback
-    ↓
-Send to Telegram:
-  1. Greeting + Why + What
-  2. Concept 1 text → animated MP4 (Ken Burns zoom via ffmpeg)
-  3. Concept 2 text → animated MP4
-  4. Concept 3 text → animated MP4
-  5. Concept 4 text → animated MP4
-  6. End-to-end flow
-  7. Full architecture animated MP4
-  8. Tasks + Key Terms
-  9. Interview Q&A (1 small Groq call ~500 tokens)
- 10. Resources footer
-    ↓
-Push updated data.json (marks topic as covered today)
-```
+Webhook behavior:
 
-### Diagram Animation
+- Requires a constant-time-verified `X-Telegram-Bot-Api-Secret-Token`, configured owner **user and private chat**, and private PostgreSQL. Missing configuration fails closed.
+- Ignores edited/unsupported updates. Deduplicates exact `update_id` receipts, not a monotonic high-water mark.
+- Button payloads contain stable session/question IDs. `/q A` and free-text answers bind to the last successfully delivered prompt; concurrent answers to one question cannot become answers to the next unseen question.
+- Uses a conservative 20-second external-call budget and bounded connection/statement timeouts. No fire-and-forget threads. Vercel has a separate 60-second function ceiling.
+- Returns `202 persisted` only after durable insertion. This means **accepted for processing**, not delivered or graded. Failures before persistence return retryable errors. Telegram's retries are finite and updates are retained for at most 24 hours.
+- The recovery workflow is required for deferred text/media, contention and transient failures; it is not an exact five-minute SLA. Configure and verify it before registering the webhook. `/retry` or the recovery CLI can drain work manually.
 
-Each Mermaid diagram is converted to a 25-second animated MP4:
-- Image downloaded from `mermaid.ink`
-- `ffmpeg` applies **Ken Burns zoom** (1.0x → 1.25x, center-anchored)
-- 1s fade in, 2s fade out
-- Concept name caption overlay (white text, black box, bottom-centered)
-- Output: H.264 1280×720 @ 24fps, ~4–8 MB
-- Fallback: sends static image if ffmpeg fails
+Outbox items preserve order within an operation. Error notices can bypass a failed item, but a “published” success message cannot pass a failed export. Unrelated commands continue. Automatic retries have five attempts and a five-minute backoff; `/retry` resets failed work after the underlying issue is fixed. `/status` shows queue counts. Secret-safe error codes are retained privately in `jobs.error_code` and `outbox.error_code`; logs omit request URLs, provider bodies, prompts and credentials.
 
-### AI Stack
+**Telegram is not exactly-once transport.** If a send succeeds but recording its receipt fails, recovery may send it again. Pause/cancel cannot retract a message already sent or in flight. Domain answers/task progress remain idempotent. `/pause` atomically suppresses queued scheduled deliveries and cancels queued scheduled jobs; `/unpause` enables future runs without resurrecting old messages. Manual coaching remains usable.
 
-```
-Groq API (primary)   → openai/gpt-oss-120b — 14,400 RPD free
-Gemini API (fallback) → gemini-3.6-flash    — 1,500 RPD free
+## Learning and commands
 
-Combined: ~15,900 requests/day
-```
+Help is generated from `skillcoach/commands.py`. `/profile` displays the private profile or enters setup; `/profile setup` replaces it only after successful validation.
 
-The `ai(prompt, max_tokens)` function tries Groq first, falls back to Gemini automatically.
+| Commands | Behavior |
+|---|---|
+| `/start`, `/help` | Consistent supported command list |
+| `/setup`, `/profile`, `/skip`, `/assess` | Resume + JD setup or exactly five open diagnostic questions; old profile survives cancel/failure |
+| `/score`, `/gaps` | Actual evidence and skill ratings; unavailable is not fabricated as 50 |
+| `/curriculum`, `/nextweek <preference>` | Dated six-day plan, including Saturday review; preferences apply to the next unplanned week |
+| `/learn <topic>`, `/ask <question>`, `/tip` | Full lesson with tracked tasks, personalized coaching or practice tip |
+| `/q A` (or B/C/D), question buttons | Answer only the active question; stale daily quizzes expire when weekly assessment starts |
+| `/interview [topic]`, `/interview next` | Question first, learner answer, rubric feedback and hypothetical model answer afterward |
+| `/mock [topic]` | Clearly labeled sample Q&A, **not** a graded interview |
+| `/tasks`, `/today`, `/complete <id> [actual_minutes]` | Stable tasks and one-time completion; omitted actual minutes are zero, not estimated practice |
+| `/skills`, `/stats`, `/streak` | Honest task counts, interview metrics and consecutive IST practice dates |
+| `/resume` | Feedback on the actual stored resume/JD; never resumes notifications |
+| `/pause`, `/unpause`, `/cancel`, `/retry`, `/status` | Notification, flow and recovery controls |
+| `/media video`, `/media static` | Animated video default; static is opt-in |
+| `/publish`, `/dashboard` | Anonymous summary export and configured dashboard link |
 
----
+Plans use the actual target role, level, gaps, prior topics, task evidence and recent incorrect answers. Delivered/prepared lessons are not treated as mastery. Only completed, correctly dated weekly assessments enter a weekly score report. Missing or unfinished attempts remain unavailable. Practice on one date contributes only one streak day; a missed day resets the streak.
 
-## Telegram Bot Commands
+Resume/JD alignment scores are explicitly provisional document-based estimates. Diagnostic scores are limited evidence, not a guarantee of job readiness. Private resume/JD/answer text is sent to your configured AI provider when you invoke those features; configure an acceptable provider/data-retention policy before use.
 
-Handled by `api/webhook.py` (Vercel serverless):
+## Full lessons and media
 
-| Command | What it does |
-|---------|-------------|
-| `/ask <question>` | Answers any Cloud DevOps question |
-| `/mock <topic>` | Sends a random interview question + model answer |
-| `/interview` | Full mock interview: question → you answer → AI grades it |
-| `/learn <topic>` | On-demand lesson for any topic |
-| `/resume` | Pastes your resume for scoring + improvement tips |
-| `/profile` | Set up your target role, current level, and skills |
-| `/q A/B/C/D` | Answer the current quiz question |
-| `/publish` | Force-publishes dashboard data |
-| `/nextweek <preference>` | Customise next week's learning plan |
-| `/pause` / `/resume` | Pause or resume daily reminders |
+Authored EC2, S3, RDS, VPC, IAM and Lambda lessons contain four concepts, end-to-end flows, three stable tasks, key terms, official references, review metadata, cost cautions and cleanup instructions. Other topics use validated full AI-generated lessons, explicitly not independently reviewed. Generic exercise-flow diagrams for generated topics are illustrative, not invented service architectures.
 
----
+The original video enhancement was preserved before refactoring. `skillcoach/media.py` retains the 25-second center-anchored Ken Burns zoom (1.0x to 1.25x), one-second fade-in, two-second fade-out, caption overlay, H.264 1280x720 at 24fps, and static fallback on encoding failure. Captions use a text file to avoid filter injection. Static preference keeps the full lesson.
 
-## Dashboard
+Mermaid rendering is **local**, using the pinned npm CLI/Chromium, never `mermaid.ink` or another third-party renderer. Only Actions/local workers render media; Vercel defers it. Missing Mermaid/failed rendering remains a visible recoverable delivery failure. An unavailable ffmpeg encoder produces a labeled static fallback. Telegram upload failures stay retryable rather than silently claiming delivery. Generated media uses temporary directories.
 
-Static GitHub Pages site reading `data.json`:
+Content reviewed on 2026-09-25 distinguishes Standard/Unlimited EC2 credits, Object Ownership/BPA, non-MD5 ETags, RDS instance/cluster/Aurora distinctions, engine-specific storage limits, PITR windows, Lambda retry modes, ZIP sizes and SnapStart compatibility, and IAM evaluation/SCP exceptions. Prices and limits are conditional; follow the references for your actual region/account/runtime. Interview stories are hypothetical unless they are your own experience.
 
-**URL:** `https://harshit975shukla.github.io/skillcoach-dashboard`
+## Development and verification
 
-**Sections:**
-- Profile strip (name, role, level, reminder time, status)
-- Metric cards: completed tasks, streak, open tasks, practice time, mock answers, resume score
-- 30-day activity heatmap
-- Skill breakdown bars (animated fill)
-- Open tasks + recently completed
-- Mock interview history with scores
-- Resume review panel
+Python **3.12** is pinned consistently. Install only in your isolated checkout, not another working copy:
 
-**Lottie animations:**
-- Fire glow on streak card (when streak > 0)
-- Green pulse on completed card
-- Blue bouncing dots on loading state
-
----
-
-## Environment Variables
-
-Set as GitHub Actions secrets and Vercel environment variables:
-
-| Variable | Used in | Description |
-|----------|---------|-------------|
-| `TELEGRAM_BOT_TOKEN` | All scripts | Bot token from @BotFather |
-| `CHAT_ID` | All scripts | Your personal Telegram chat ID |
-| `GITHUB_TOKEN` | All scripts | PAT with `repo` scope for reading/writing `data.json` |
-| `GROQ_API_KEY` | All scripts | Groq free tier API key |
-| `GEMINI_API_KEY` | All scripts | Google Gemini API key |
-
----
-
-## GitHub Actions Workflows
-
-All three workflows pass both API keys:
-
-```yaml
-env:
-  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-  CHAT_ID: ${{ secrets.CHAT_ID }}
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[test]"
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m compileall -q skillcoach api
+npm ci
+npm run test:diagrams
 ```
 
-`ubuntu-latest` runners include `ffmpeg` pre-installed — no extra install step needed.
+`requirements.txt` and `pyproject.toml` share exact runtime dependency versions. `package-lock.json` pins local rendering dependencies. Tests block real HTTP APIs. PostgreSQL tests require `TEST_DATABASE_URL` pointing to a **disposable test database** (its name must include `test`); each test creates/removes only a uniquely named test schema. Without it, those integration cases skip explicitly. CI provides PostgreSQL 16 and uses only fake external APIs.
 
----
+For the full real local media check, install ffmpeg/ffprobe and Mermaid's Chromium dependencies, put `node_modules\.bin` on `PATH`, then run:
 
-## Pre-written Lesson Topics
-
-`lesson_content.py` contains fully authored lessons (zero API cost) for:
-
-| Topic | Concepts covered |
-|-------|-----------------|
-| EC2 | Instance types, AMIs & launch, Auto Scaling, EBS & storage |
-| S3 | Buckets & objects, storage classes, security & access, advanced features |
-| RDS | Managed databases, Multi-AZ, Read Replicas, performance & cost |
-| VPC | Subnets & CIDR, Internet & NAT gateways, security groups & NACLs, VPC peering |
-| IAM | Users groups roles, policies, security best practices, cross-account |
-| Lambda | Functions & triggers, execution model, integrations, cold starts |
-
-For all other topics (Kubernetes, Terraform, Docker, CI/CD, Prometheus, GenAI), lessons are generated by the AI stack.
-
----
-
-## Local Setup
-
-```bash
-# Clone
-git clone https://github.com/Harshit975shukla/skillcoach-bot
-cd skillcoach-bot
-
-# Install deps
-pip install -r requirements.txt
-
-# Copy env
-cp .env.example .env
-# Fill in TELEGRAM_BOT_TOKEN, CHAT_ID, GITHUB_TOKEN, GROQ_API_KEY, GEMINI_API_KEY
-
-# Run bot locally (polling mode)
-python bot.py
-
-# Test morning lesson manually
-python morning_lesson.py
+```powershell
+.\.venv\Scripts\python.exe tests\verify_media.py
 ```
 
----
+It locally renders all 30 authored diagrams and verifies actual MP4 duration, dimensions and frame rate. It sends nothing. CI runs this too. The lighter npm check parses all diagrams without a renderer/browser download.
 
-## Tech Stack
+On machines where repeated browser startups time out, `npm run test:render` renders and screenshot-verifies all 30 diagrams in one reused browser, with external HTTP requests blocked. Set `PUPPETEER_EXECUTABLE_PATH` to an already installed compatible local browser if no bundled Chromium is available. This supplements, not substitutes for, the actual MP4 encoding check.
 
-- **Python 3.11** — all scripts
-- **GitHub Actions** — scheduling (cron) and workflow_dispatch triggers
-- **Vercel** — serverless webhook handler (`api/webhook.py`)
-- **Telegram Bot API** — messaging, photo, and video delivery
-- **mermaid.ink** — Mermaid diagram rendering to JPEG
-- **ffmpeg** — Ken Burns zoom animation, MP4 encoding
-- **Groq API** — primary LLM (openai/gpt-oss-120b)
-- **Gemini API** — fallback LLM (gemini-3.6-flash)
-- **GitHub Pages** — static dashboard hosting
-- **Lottie Web** — dashboard animations
+The opt-in polling adapter is `python bot.py`. It shares authentication/storage/domain services, refuses to start if a webhook is registered, never removes/replaces a webhook, and never schedules duplicate reminders. Retired `reminder.py` prints a deprecation message and sends nothing. Old Render/Procfile deployment definitions were removed to avoid a second active worker architecture.
+
+## Configuration
+
+See `.env.example`; environment variables are loaded at operation startup, not networked at import time. `.env` is **not automatically loaded**.
+
+| Setting | Purpose |
+|---|---|
+| `DATABASE_URL` | Provider-neutral private PostgreSQL URL; verified TLS for remote DBs; use a least-privilege runtime role |
+| `TELEGRAM_BOT_TOKEN`, `OWNER_ID` | Required messaging configuration; positive private-chat owner ID (`CHAT_ID` is a legacy alias) |
+| `TELEGRAM_WEBHOOK_SECRET` | Vercel-only requirement: 32-256 random URL-safe characters matching webhook registration |
+| `GROQ_API_KEY`, `GROQ_MODEL` | Optional primary provider; model default `openai/gpt-oss-120b` |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | Optional fallback; model default `gemini-2.5-flash`; verify current account/model availability |
+| `GITHUB_TOKEN` | Optional dashboard publishing PAT; Actions maps **`secrets.GH_PAT`** to this variable |
+| `DASHBOARD_REPO`, `DASHBOARD_PATH`, `DASHBOARD_URL` | Configured destination; no hard-coded personal repository or identity |
+
+At least one AI provider is needed for generated coaching. Model quotas/free tiers are not promised. GitHub `DASHBOARD_*` and model settings are repository variables; database/Telegram/AI/PAT values are secrets. No secrets are needed for offline tests.
+
+## Private import and privacy-safe dashboard
+
+The separate dashboard frontend is out of mutation scope. Its `docs/app.js` blob `cb5427483bf2c43a136cb51c9c5792afb9271d61` expects `profile`, `stats`, `activity`, `skills`, `open_tasks`, `recent_done`, `recent_answers`, `resume`, and `generated_at`. The exporter builds these fields from scratch with `schema_version: 1`.
+
+Names/roles are generic placeholders, skills use an exact controlled taxonomy, tasks/questions use generic labels, numeric IDs are public-only ordinals, and `resume` is null. No chat IDs, personal names, custom task text, answers, feedback, resume/JD contents, active questions, keys, arbitrary nested data or provider errors are copied. Counts are recalculated, actual practice minutes are not inferred from estimates, and missing average scores are null.
+
+Publishing uses the configured single file and GitHub SHA preconditions. The original file SHA is persisted before writing; a timeout can be retried safely if the same content is already present. A concurrent edit remains a visible conflict; the retry does not refresh the SHA and overwrite it. Review the conflict outside the bot and explicitly issue a new `/publish`.
+
+Import accepts only a **user-supplied local legacy snapshot**, never automatically downloads production/public data:
+
+```powershell
+python -m skillcoach.cli import-legacy C:\private\legacy-snapshot.json
+# Review counts, preserved/quarantined history and the digest before an authorized import:
+python -m skillcoach.cli import-legacy C:\private\legacy-snapshot.json --apply --confirm-digest <reviewed-digest>
+```
+
+Dry run requires no database or messaging credentials and makes no writes. Apply requires an explicitly migrated empty database and the exact reviewed digest. Repeating the same import is idempotent; another snapshot cannot overwrite existing learning. Both original `completed_tasks` and compatible `recent_done` are supported; identical duplicates collapse, conflicting duplicates fail. IDs, assigned dates and timezone-aware completion timestamps are required. Public dashboard exports cannot reconstruct private history and are rejected.
+
+Validated task records, complete six-day legacy plans and dated lesson topics are imported. The full supplied snapshot remains private archival data. Historical scores, active questions and incomplete setup are quarantined, not activated or counted as current assessment evidence. Incomplete plans remain in the archive. Legacy lesson delivery is marked unverified. Reassess the profile after import; old aggregate counters are not trusted.
+
+## Secure cutover checklist (operator-controlled; not executed here)
+
+1. Review this worktree and run CI, including real PostgreSQL and media checks. The separate frontend stays unchanged.
+2. Arrange private PostgreSQL, backups, TLS verification, retention and restricted access outside chat. Use an administrator only for the explicit additive `python -m skillcoach.cli migrate`; grant the runtime role only required table/sequence permissions afterward. Never point tests at production.
+3. Securely configure Vercel and Actions secrets/variables. Verify outbound connectivity, supported AI models, runtime limits and optional GitHub PAT scope only to the dashboard repository.
+4. Review and authorize a local legacy snapshot dry run/import. Check private task counts/profile and reassess untrusted readiness. Import does not send Telegram messages or publish data.
+5. Disable the old reminder/polling deployments and old workflow versions before enabling the new default-branch schedule/recovery workflows. Verify manual recovery first against an explicitly approved environment.
+6. Only with separate live approval, deploy Vercel and register its webhook with the shared secret and `allowed_updates` limited to `message` and `callback_query`. This implementation never calls `setWebhook` or `deleteWebhook`.
+7. Explicitly verify owner authorization, database persistence, one lesson/quiz and recovery. Then approve `/publish` and inspect the anonymous JSON. No live activation is implied by a successful code build.
+8. Inventory and remove previously public private data (including any per-chat JSON files) from the dashboard working tree, caches and hosting. **Old private data can remain in Git history**; history rewriting requires its own reviewed authorization. Rotate exposed credentials if applicable. This upgrade does not erase old disclosures.
+
+Operational references: [Vercel Python](https://vercel.com/docs/functions/runtimes/python), [Vercel limits](https://vercel.com/docs/functions/limitations), [Telegram webhooks](https://core.telegram.org/bots/api#setwebhook), [Actions schedule limitations](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+
+## Zero-cost deployment gate and rollback
+
+No software license purchase is required by this implementation, but open-source license terms still apply. Free hosting is conditional, not an unlimited availability promise. Do not enable paid plans, overages, add-ons, larger runners, payment-card setup or automatic credit reload for a zero-cost deployment.
+
+- GitHub documents free standard GitHub-hosted runners for **public** repositories. These workflows use standard Ubuntu runners and do not upload artifacts or enable Actions caches. Reassess cost controls before making the repository private.
+- Vercel Hobby is free for personal/non-commercial use and can pause features at usage limits. Verify the actual linked account is Hobby; a successful existing deployment does not prove its billing plan. Do not enable Pro or paid integrations.
+- A user-owned free PostgreSQL plan must be verified before provisioning or import. For example, Supabase Free documents a 500 MB database, two active projects and inactivity pausing. Neon Free documents 0.5 GB/project and compute/transfer limits. Free quotas and pauses can interrupt coaching. Database tables must not be anonymously exposed through provider data APIs.
+- Five-minute recovery can keep an autosuspending database awake. Check its compute quota against that polling frequency; do not assume “scale to zero” makes this usage free indefinitely. Any slower recovery frequency is a user-visible behavior change requiring an explicit decision.
+- Use AI keys only from verified free-tier accounts/models with no paid billing enabled. Gemini free-tier data handling differs from paid service; review privacy terms before sending resumes/JDs. Limits cause recoverable failures, not permission to upgrade.
+
+Before changing live state, create private, hash-verified backups outside the repository: the deployed-source Git bundle/ref, current original and upgraded source snapshots, deployed version/settings metadata, and the legacy dashboard JSON/private database snapshot. Never upload private snapshots as Actions artifacts or commit them. A source tag alone is not a data backup.
+
+Rollback procedure: pause new scheduled writers and webhook mutations first; restore the prior deployed source/version and matching environment configuration, then restore the corresponding private-state snapshot using the database provider's approved restore process. Re-enable only the previously recorded workflow/webhook settings and verify one owner-only interaction. If returning to the old GitHub-state implementation, explicitly approve that older privacy model before any public write; do not blindly republish a private backup. Keep new private state intact for diagnosis. Do not force-push, rewrite history, or delete the new database to simulate rollback.
+
+Free-plan references (reviewed 2026-09-25): [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions), [Vercel Hobby](https://vercel.com/docs/plans/hobby), [Neon plans](https://neon.com/docs/introduction/plans), [Supabase pricing](https://supabase.com/pricing), [Gemini billing](https://ai.google.dev/gemini-api/docs/billing).

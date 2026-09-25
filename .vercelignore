@@ -1,0 +1,11 @@
+.venv
+node_modules
+tests
+.github
+package.json
+package-lock.json
+.env
+.env.*
+*.mp4
+*.png
+*.jpg

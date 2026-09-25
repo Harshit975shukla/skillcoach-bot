@@ -1,0 +1,11 @@
+name: Recover durable coaching work
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+jobs:
+  recovery:
+    uses: ./.github/workflows/coach-job.yml
+    with:
+      kind: recover
+    secrets: inherit

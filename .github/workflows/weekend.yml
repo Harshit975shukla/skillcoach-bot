@@ -1,45 +1,30 @@
-name: Weekend (Sat Test + Sun Plan)
-
+name: Weekend assessment and review
 on:
   schedule:
-    - cron: "30 3 * * 6"   # Saturday 9:00 AM IST = 03:30 UTC
-    - cron: "30 4 * * 0"   # Sunday  10:00 AM IST = 04:30 UTC
+    - cron: "30 3 * * 6"  # Saturday 09:00 IST
+    - cron: "30 4 * * 0"  # Sunday 10:00 IST
   workflow_dispatch:
     inputs:
-      day:
-        description: "Which script to run"
+      kind:
+        description: "Explicit operation (never inferred from runner weekday)"
         required: true
-        default: "saturday"
         type: choice
-        options:
-          - saturday
-          - sunday
-
+        options: [weekly, review]
+      date:
+        description: "Intended IST date YYYY-MM-DD (blank uses run creation date)"
+        required: false
 jobs:
-  weekend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install requests pytz
-
-      - name: Run weekend script
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          DAY=$(date -u +%A)
-          INPUT="${{ github.event.inputs.day }}"
-          if [ "$INPUT" = "sunday" ] || [ "$DAY" = "Sunday" ]; then
-            python sunday_plan.py
-          else
-            python weekend_test.py
-          fi
+  assessment:
+    if: github.event.schedule == '30 3 * * 6' || (github.event_name == 'workflow_dispatch' && inputs.kind == 'weekly')
+    uses: ./.github/workflows/coach-job.yml
+    with:
+      kind: weekly
+      intended_date: ${{ inputs.date || '' }}
+    secrets: inherit
+  review:
+    if: github.event.schedule == '30 4 * * 0' || (github.event_name == 'workflow_dispatch' && inputs.kind == 'review')
+    uses: ./.github/workflows/coach-job.yml
+    with:
+      kind: review
+      intended_date: ${{ inputs.date || '' }}
+    secrets: inherit

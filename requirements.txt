@@ -1,3 +1,5 @@
-flask>=3.0.0
-requests==2.31.0
-pytz==2024.1
+Flask==3.1.2
+requests==2.32.5
+psycopg[binary]==3.2.10
+pydantic==2.12.3
+tzdata==2025.2
