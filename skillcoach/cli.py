@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from datetime import date, datetime
@@ -61,9 +62,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Private SkillCoach operations; never deploys automatically")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate", help="Explicitly apply additive PostgreSQL schema migrations")
+    sub.add_parser("bootstrap-fresh", help="Explicit empty-project migration and least-privilege role setup")
     recover = sub.add_parser("recover", help="Retry persisted processing/delivery; no new scheduled lessons")
     recover.add_argument("--no-media", action="store_true")
     sub.add_parser("status", help="Show non-sensitive durable queue counts")
+    announce = sub.add_parser("announce-ready", help="Send one idempotent owner help message for a release")
+    announce.add_argument("--release", required=True)
     sub.add_parser("needs-media", help="Exit 0 for queued media/lesson work, 3 if absent")
     sub.add_parser("poll", help="Explicit local polling adapter; refuses an active webhook")
     run = sub.add_parser("schedule")
@@ -82,6 +86,12 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     try:
+        if args.command == "bootstrap-fresh":
+            from skillcoach.bootstrap import bootstrap_fresh
+
+            report = bootstrap_fresh(database_url(), os.getenv("SKILLCOACH_RUNTIME_PASSWORD", ""))
+            print(json.dumps(report))
+            return 0
         if args.command == "import-legacy":
             snapshot, digest = load_snapshot(args.snapshot)
             report = dry_run(snapshot, digest)
@@ -116,7 +126,12 @@ def main(argv=None):
         if args.command == "needs-media":
             return 0 if Repository(database_url()).needs_media() else 3
         runtime = Runtime.from_env()
-        if args.command == "recover":
+        if args.command == "announce-ready":
+            if not re.fullmatch(r"[0-9a-f]{7,40}", args.release):
+                raise ValueError("--release must be a Git commit identifier.")
+            runtime.repo.enqueue(f"maintenance:ready:{args.release}", {"type": "telegram", "text": "/start"})
+            runtime.recover(media=False)
+        elif args.command == "recover":
             runtime.recover(media=not args.no_media)
         elif args.command == "poll":
             polling(runtime)
@@ -136,6 +151,14 @@ def main(argv=None):
         return 0
     except (ConfigurationError, ExternalError, ValueError, *STORAGE_ERRORS) as exc:
         code = exc.code if isinstance(exc, ExternalError) else type(exc).__name__
+        if isinstance(exc, STORAGE_ERRORS):
+            sqlstate = getattr(exc, "sqlstate", None)
+            if sqlstate:
+                code = f"postgres_{sqlstate}"
+            elif "certificate" in str(exc).lower():
+                code = "postgres_certificate_validation_failed"
+            elif "timeout" in str(exc).lower():
+                code = "postgres_connection_timeout"
         logging.error("operation_failed code=%s", code)
         # Database exceptions can contain secrets; print only our validation/configuration messages.
         if isinstance(exc, (ConfigurationError, ValueError)) and not isinstance(exc, ValidationError):

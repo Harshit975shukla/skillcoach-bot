@@ -117,3 +117,7 @@ def test_dependency_python_workflow_and_help_consistency():
     assert "upload-artifact" not in ci and "cache:" not in ci
     assert "cache:" not in worker
     assert json.loads(Path("vercel.json").read_text())["git"]["deploymentEnabled"] is False
+    assert "needs: test" in ci and "vars.SKILLCOACH_BOOTSTRAP_SHA == github.sha" in ci
+    for caller in ("morning_lesson.yml", "evening_quiz.yml", "weekend.yml", "recovery.yml"):
+        workflow = Path(".github", "workflows", caller).read_text()
+        assert "contents: read" in workflow and "actions: read" in workflow

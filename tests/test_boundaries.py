@@ -271,3 +271,22 @@ def test_production_schema_is_private_and_identifiers_are_validated():
     assert Repository("postgresql://fake").schema == "skillcoach_private"
     with pytest.raises(ValueError, match="schema"):
         Repository("postgresql://fake", schema="public; DROP SCHEMA public")
+
+
+def test_readiness_authenticates_before_reading_private_storage(harness, monkeypatch):
+    client = create_app(harness.runtime).test_client()
+    reads = []
+    original = harness.repo.read
+
+    def read():
+        reads.append(True)
+        return original()
+
+    monkeypatch.setattr(harness.repo, "read", read)
+    assert client.get("/health/ready").status_code == 403
+    assert reads == []
+    response = client.get(
+        "/health/ready", headers={"X-Telegram-Bot-Api-Secret-Token": harness.runtime.config.webhook_secret}
+    )
+    assert response.status_code == 200 and response.json["private_storage"] is True
+    assert len(reads) == 1 and "profile" not in response.json

@@ -1,4 +1,7 @@
 name: Morning lesson (09:00 IST weekdays)
+permissions:
+  contents: read
+  actions: read
 on:
   schedule:
     - cron: "30 3 * * 1-5"

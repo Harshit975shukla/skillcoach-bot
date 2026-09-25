@@ -1,4 +1,7 @@
 name: Weekend assessment and review
+permissions:
+  contents: read
+  actions: read
 on:
   schedule:
     - cron: "30 3 * * 6"  # Saturday 09:00 IST

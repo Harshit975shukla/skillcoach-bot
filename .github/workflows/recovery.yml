@@ -1,11 +1,20 @@
 name: Recover durable coaching work
+permissions:
+  contents: read
+  actions: read
 on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      notify_owner:
+        description: "Send one release-keyed help message after a verified cutover"
+        type: boolean
+        default: false
 jobs:
   recovery:
     uses: ./.github/workflows/coach-job.yml
     with:
       kind: recover
+      notify_owner: ${{ inputs.notify_owner || false }}
     secrets: inherit

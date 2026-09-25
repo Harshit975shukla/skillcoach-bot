@@ -2,6 +2,7 @@ import hmac
 import logging
 
 from flask import Flask, jsonify, request
+from pydantic import ValidationError
 
 from skillcoach.clients import Budget, ExternalError
 from skillcoach.config import ConfigurationError
@@ -59,6 +60,29 @@ def create_app(runtime=None):
     @app.get("/")
     def health():
         return jsonify(service="skillcoach", live=True)
+
+    @app.get("/health/ready")
+    def readiness():
+        try:
+            current = runtime or Runtime.from_env(webhook=True)
+            supplied = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+            if not current.config.webhook_secret or not hmac.compare_digest(
+                current.config.webhook_secret.encode(), supplied.encode()
+            ):
+                return jsonify(error="unauthorized"), 403
+            if current.config.owner_id <= 0:
+                return jsonify(error="not_configured"), 503
+            current.repo.read()
+            return jsonify(service="skillcoach", ready=True, private_storage=True)
+        except ConfigurationError:
+            log.error("configuration_unavailable")
+            return jsonify(error="not_configured"), 503
+        except STORAGE_ERRORS:
+            log.error("private_storage_unavailable")
+            return jsonify(error="storage_unavailable"), 503
+        except ValidationError:
+            log.error("private_state_invalid")
+            return jsonify(error="state_unavailable"), 503
 
     @app.post("/")
     @app.post("/api/webhook")

@@ -297,3 +297,15 @@ def test_cancel_failed_export_cancels_its_success_message_too(harness):
     assert all(
         row["status"] in ("sent", "suppressed") for row in h.repo.outbox.values() if row["job_id"] == publish
     )
+
+
+def test_cutover_owner_notification_is_release_idempotent(harness, monkeypatch):
+    from skillcoach.cli import main
+
+    h = harness
+    monkeypatch.setattr("skillcoach.cli.Runtime.from_env", lambda: h.runtime)
+    assert main(["announce-ready", "--release", "a" * 40]) == 0
+    assert main(["announce-ready", "--release", "a" * 40]) == 0
+    assert len(h.repo.jobs) == 1
+    assert len(h.telegram.messages) == 1
+    assert h.repo.state.profile is None and not h.repo.state.assessments

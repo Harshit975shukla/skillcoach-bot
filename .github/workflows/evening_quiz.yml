@@ -1,4 +1,7 @@
 name: Evening quiz (18:00 IST weekdays)
+permissions:
+  contents: read
+  actions: read
 on:
   schedule:
     - cron: "30 12 * * 1-5"

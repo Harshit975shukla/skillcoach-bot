@@ -9,6 +9,10 @@ on:
         required: false
         type: string
         default: ""
+      notify_owner:
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -72,11 +76,15 @@ jobs:
           OPERATION: ${{ inputs.kind }}
           INTENDED_DATE: ${{ inputs.intended_date }}
           MEDIA_READY: ${{ steps.media.outputs.needed }}
+          NOTIFY_OWNER: ${{ inputs.notify_owner }}
         run: |
           export PATH="$PWD/node_modules/.bin:$PATH"
           MEDIA_ARGS=()
           if [ "$MEDIA_READY" != "true" ]; then MEDIA_ARGS+=(--no-media); fi
           if [ "$OPERATION" = "recover" ]; then
+            if [ "$NOTIFY_OWNER" = "true" ]; then
+              python -m skillcoach.cli announce-ready --release "$GITHUB_SHA"
+            fi
             python -m skillcoach.cli recover "${MEDIA_ARGS[@]}"
           elif [ -n "$INTENDED_DATE" ]; then
             python -m skillcoach.cli schedule "$OPERATION" --date "$INTENDED_DATE" "${MEDIA_ARGS[@]}"

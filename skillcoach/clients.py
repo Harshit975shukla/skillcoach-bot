@@ -121,9 +121,10 @@ class AI:
                 if validate:
                     validate(result)
                 return result
-            except (ExternalError, ValidationError, KeyError, IndexError, TypeError, ValueError):
+            except (ExternalError, ValidationError, KeyError, IndexError, TypeError, ValueError) as exc:
                 # Never log prompts, provider bodies, request URLs or credentials.
-                log.warning("ai_provider_unavailable provider=%s", provider)
+                code = exc.code if isinstance(exc, ExternalError) else "invalid_ai_response"
+                log.warning("ai_provider_unavailable provider=%s code=%s", provider, code)
         raise ExternalError("ai_unavailable_or_invalid")
 
 

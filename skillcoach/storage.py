@@ -30,6 +30,7 @@ class Repository:
             self.url,
             connect_timeout=5,
             row_factory=dict_row,
+            prepare_threshold=None,
         ) as conn:
             # Transaction-local settings also work with session/transaction poolers.
             conn.execute("SET LOCAL statement_timeout = '5s'")

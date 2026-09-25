@@ -39,6 +39,14 @@ Outbox items preserve order within an operation. Error notices can bypass a fail
 
 **Telegram is not exactly-once transport.** If a send succeeds but recording its receipt fails, recovery may send it again. Pause/cancel cannot retract a message already sent or in flight. Domain answers/task progress remain idempotent. `/pause` atomically suppresses queued scheduled deliveries and cancels queued scheduled jobs; `/unpause` enables future runs without resurrecting old messages. Manual coaching remains usable.
 
+Supabase transaction poolers are supported: automatic prepared statements are disabled, and schema/timeouts are transaction-local. Use the exact provider-issued pooler endpoint; do not buy an IPv4 add-on or guess the region/cluster hostname.
+
+For an explicitly approved **empty** project, `python -m skillcoach.cli bootstrap-fresh` uses an admin `DATABASE_URL` and a separately generated `SKILLCOACH_RUNTIME_PASSWORD` to apply migrations and create the restricted `skillcoach_runtime` role. It refuses existing learning/processing history and unrelated pre-existing roles. The app uses the runtime role afterward, not the administrator password. Its write-permission probe is rolled back and seeds no learner profile or grades.
+
+The optional database-preparation CI job runs only after all tests pass, only for a push, and only when `SKILLCOACH_BOOTSTRAP_SHA` exactly matches that reviewed commit. Administrator credentials are confined to that job. Remove the temporary commit gate and `SKILLCOACH_BOOTSTRAP_DATABASE_URL`/`SKILLCOACH_RUNTIME_PASSWORD` secrets after successful preparation. Never enable this gate for unreviewed code or pull requests.
+
+The authenticated `GET /health/ready` endpoint checks private storage without exposing state; it requires the webhook-secret header. After cutover, manually dispatch the default-branch recovery workflow to verify real configuration and role permissions. Its optional `notify_owner` input sends one idempotent, release-keyed help message and creates no fake learner profile or grades. Scheduled recovery never sends that announcement by default.
+
 ## Learning and commands
 
 Help is generated from `skillcoach/commands.py`. `/profile` displays the private profile or enters setup; `/profile setup` replaces it only after successful validation.
