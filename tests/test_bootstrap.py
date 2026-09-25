@@ -1,4 +1,6 @@
+import ssl
 from contextlib import contextmanager
+from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 import pytest
@@ -43,3 +45,14 @@ def test_real_connection_disables_automatic_prepared_statements(monkeypatch):
     with Repository("postgresql://not-contacted").connection():
         pass
     assert captured["prepare_threshold"] is None
+
+
+def test_supabase_ca_is_packaged_and_requires_hostname_verification(monkeypatch):
+    monkeypatch.setenv("DATABASE_CA_CERT_FILE", "certs/supabase-ca-2021.crt")
+    with pytest.raises(ValueError, match="verify-full"):
+        Repository("postgresql://example/postgres?sslmode=require")
+    repo = Repository("postgresql://example/postgres?sslmode=verify-full")
+    assert Path(repo.ca_cert_file).is_absolute()
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.load_verify_locations(repo.ca_cert_file)
+    assert context.cert_store_stats()["x509_ca"] == 1

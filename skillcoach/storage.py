@@ -1,5 +1,6 @@
 """PostgreSQL is authoritative; short transactions never contain external calls."""
 
+import os
 import re
 from contextlib import contextmanager
 from pathlib import Path
@@ -7,6 +8,7 @@ from uuid import uuid4
 
 import psycopg
 from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -23,6 +25,17 @@ class Repository:
             raise ValueError("Invalid private schema identifier")
         self.url = url
         self.schema = schema
+        configured_ca = os.getenv("DATABASE_CA_CERT_FILE", "")
+        self.ca_cert_file = None
+        if configured_ca:
+            path = Path(configured_ca)
+            if not path.is_absolute():
+                path = Path(__file__).parent / path
+            if not path.is_file():
+                raise ValueError("Configured database CA certificate file does not exist.")
+            if conninfo_to_dict(url).get("sslmode") != "verify-full":
+                raise ValueError("A configured CA certificate requires sslmode=verify-full.")
+            self.ca_cert_file = str(path.resolve())
 
     @contextmanager
     def connection(self):
@@ -31,6 +44,7 @@ class Repository:
             connect_timeout=5,
             row_factory=dict_row,
             prepare_threshold=None,
+            **({"sslrootcert": self.ca_cert_file} if self.ca_cert_file else {}),
         ) as conn:
             # Transaction-local settings also work with session/transaction poolers.
             conn.execute("SET LOCAL statement_timeout = '5s'")

@@ -22,7 +22,7 @@ packages = ["skillcoach"]
 py-modules = ["lesson_content"]
 
 [tool.setuptools.package-data]
-skillcoach = ["migrations/*.sql"]
+skillcoach = ["migrations/*.sql", "certs/*.crt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -58,5 +58,6 @@ jobs:
       - name: Prepare explicitly authorized empty private database
         env:
           DATABASE_URL: ${{ secrets.SKILLCOACH_BOOTSTRAP_DATABASE_URL }}
+          DATABASE_CA_CERT_FILE: ${{ vars.DATABASE_CA_CERT_FILE }}
           SKILLCOACH_RUNTIME_PASSWORD: ${{ secrets.SKILLCOACH_RUNTIME_PASSWORD }}
         run: python -m skillcoach.cli bootstrap-fresh
