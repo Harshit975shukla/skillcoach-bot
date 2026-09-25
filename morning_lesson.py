@@ -8,7 +8,7 @@ from datetime import datetime, date, timedelta
 import pytz
 
 sys.path.insert(0, os.path.dirname(__file__))
-from lesson_content import LESSONS, get_lesson
+from lesson_content import LESSONS, get_lesson, get_concept_diagrams
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
@@ -351,46 +351,23 @@ def get_diagram_code(topic):
 
 
 def send_diagram(topic):
+    """Send overall architecture diagram for the topic."""
     mermaid_code = get_diagram_code(topic)
     if not mermaid_code:
         try:
             prompt = "\n".join([
                 "Write a simple Mermaid flowchart for: " + topic.split(":")[0].strip(),
-                "STRICT RULES:",
-                "- Start with exactly: flowchart TD",
-                "- Max 8 nodes",
-                "- Node names: letters and numbers ONLY, no spaces, no special chars",
-                "- Use quotes for labels: A[\"Label Text\"]",
-                "- Output ONLY the Mermaid code, nothing else",
+                "STRICT RULES: start with 'flowchart TD', max 8 nodes, alphanumeric node names only, output Mermaid code only",
             ])
             mermaid_code = ai(prompt, 300)
             mermaid_code = mermaid_code.replace("```mermaid", "").replace("```", "").strip()
         except Exception:
             return
-
-    try:
-        encoded = b64lib.urlsafe_b64encode(mermaid_code.encode()).decode()
-        diagram_url = f"https://mermaid.ink/img/{encoded}"
-        # Download image first — Telegram servers can't always reach mermaid.ink directly
-        img = requests.get(diagram_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        if img.status_code != 200:
-            print("mermaid.ink fetch failed:", img.status_code)
-            return
-        # Upload as file (multipart) instead of URL — always works
-        resp = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
-            data={"chat_id": CHAT_ID, "caption": "Architecture: " + topic.split(":")[0].strip()},
-            files={"photo": ("diagram.jpg", img.content, img.headers.get("Content-Type", "image/jpeg"))},
-            timeout=30,
-        )
-        if resp.status_code != 200:
-            print("Diagram send failed:", resp.text[:100])
-    except Exception as e:
-        print("Diagram skipped:", e)
+    send_mermaid_diagram(mermaid_code, "Full Architecture: " + topic.split(":")[0].strip())
 
 
-def format_prewritten_lesson(lesson, topic, day_name, today_str):
-    """Build Part 1 message (concepts + e2e) from pre-written content."""
+def format_lesson_header(lesson, topic, day_name, today_str):
+    """Header message: greeting + why + what."""
     lines = [
         "GOOD MORNING, HARSHIT! " + day_name + " | " + today_str,
         "Today: " + topic,
@@ -401,15 +378,41 @@ def format_prewritten_lesson(lesson, topic, day_name, today_str):
         "WHAT IS " + lesson["title"].split(":")[0].upper().strip() + "?",
         lesson["what"],
     ]
-
-    for c in lesson["concepts"]:
-        lines += ["", "CONCEPT: " + c["name"], c["body"]]
-
-    lines += ["", "HOW IT WORKS END-TO-END"]
-    lines += lesson["e2e"]
-    lines += ["", "See the architecture diagram below for the visual view."]
-
     return "\n".join(lines)
+
+
+def format_concept(concept, num):
+    """Single concept block."""
+    return "CONCEPT " + str(num) + ": " + concept["name"] + "\n\n" + concept["body"]
+
+
+def format_e2e(lesson):
+    """End-to-end flow section."""
+    lines = ["HOW IT WORKS END-TO-END", ""]
+    lines += lesson["e2e"]
+    lines += ["", "See the full architecture diagram above for the visual view."]
+    return "\n".join(lines)
+
+
+def send_mermaid_diagram(mermaid_code, caption):
+    """Download from mermaid.ink and upload as file to Telegram."""
+    try:
+        encoded = b64lib.urlsafe_b64encode(mermaid_code.encode()).decode()
+        diagram_url = f"https://mermaid.ink/img/{encoded}"
+        img = requests.get(diagram_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if img.status_code != 200:
+            print("mermaid.ink fetch failed:", img.status_code)
+            return
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+            data={"chat_id": CHAT_ID, "caption": caption},
+            files={"photo": ("diagram.jpg", img.content, img.headers.get("Content-Type", "image/jpeg"))},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            print("Diagram send failed:", resp.text[:100])
+    except Exception as e:
+        print("Diagram skipped:", e)
 
 
 def format_tasks_and_terms(lesson):
@@ -543,17 +546,27 @@ def main():
     lesson = get_lesson(topic)
 
     if lesson:
-        # --- PRE-WRITTEN PATH: zero Gemini calls for core content ---
+        # --- PRE-WRITTEN PATH: zero API calls for core content ---
         print("Using pre-written lesson for:", topic)
+        concept_diagrams = get_concept_diagrams(topic)
 
-        # Part 1: Why + What + 4 Concepts + End-to-End
-        part1 = format_prewritten_lesson(lesson, topic, day_name, today_str)
-        send_long(part1)
+        # Header: greeting + why + what
+        send_long(format_lesson_header(lesson, topic, day_name, today_str))
 
-        # Architecture diagram (pre-written Mermaid, always renders)
+        # Each concept + its own diagram
+        for i, concept in enumerate(lesson["concepts"]):
+            send_long(format_concept(concept, i + 1))
+            if i < len(concept_diagrams):
+                send_mermaid_diagram(
+                    concept_diagrams[i],
+                    "Concept " + str(i + 1) + ": " + concept["name"]
+                )
+
+        # End-to-end flow + full architecture diagram
+        send_long(format_e2e(lesson))
         send_diagram(topic)
 
-        # Part 2: Tasks + Key Terms (pre-written)
+        # Tasks + Key Terms (pre-written)
         part2 = format_tasks_and_terms(lesson)
         send_long(part2)
 

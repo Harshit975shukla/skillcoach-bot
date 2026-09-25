@@ -738,6 +738,236 @@ LESSONS = {
 }  # end LESSONS
 
 
+# Concept-level diagrams — 4 per topic, one per concept, building progressively
+CONCEPT_DIAGRAMS = {
+
+"ec2": [
+    # Concept 1: Instance Families
+    """flowchart LR
+    T[t3 family\nBurstable CPU] -->|Dev / Test| UC1[Low sustained\nworkloads]
+    M[m6i family\nGeneral Purpose] -->|App servers| UC2[Balanced\nCPU + RAM]
+    C[c6i family\nCompute Optimized] -->|CI runners\nML inference| UC3[High CPU\nworkloads]
+    R[r6i family\nMemory Optimized] -->|Databases\nRedis| UC4[High RAM\nworkloads]""",
+
+    # Concept 2: Purchasing Options
+    """flowchart TD
+    OD[On-Demand\nFull price\nNo commitment] -->|Unpredictable\ntraffic| USE1[Dev / spiky\nworkloads]
+    RI[Reserved 1-3yr\n72 percent savings] -->|Stable baseline| USE2[Always-on\nproduction]
+    SP[Savings Plans\nFlexible commit] -->|Mixed instance\ntypes| USE3[Flexible\nbaseline]
+    SPOT[Spot\n90 percent savings\n2min warning] -->|Fault tolerant| USE4[Batch / CI\nstateless workers]""",
+
+    # Concept 3: Auto Scaling Groups
+    """flowchart TD
+    CW[CloudWatch\nCPU greater than 70 percent] -->|scale-out alarm| ASG[Auto Scaling Group]
+    ASG -->|launch| EC2a[EC2 AZ-1]
+    ASG -->|launch| EC2b[EC2 AZ-2]
+    ASG -->|launch| EC2c[EC2 AZ-3]
+    LT[Launch Template\nAMI + type + SG] --> ASG
+    ALB[Load Balancer] -->|ELB health check| ASG
+    ASG -->|cooldown 300s| ASG""",
+
+    # Concept 4: Placement Groups
+    """flowchart TD
+    CL[Cluster\nSame rack same AZ] -->|Lowest latency\nhighest throughput| HPC[HPC / tightly\ncoupled apps]
+    SP2[Spread\nDifferent racks\nmax 7 per AZ] -->|Critical instances\nmust not fail together| HA[HA critical\nservices]
+    PA[Partition\nGroups of racks] -->|Large distributed\nsystems| DIST[Hadoop\nCassandra Kafka]""",
+],
+
+"s3": [
+    # Concept 1: Storage Classes
+    """flowchart LR
+    HOT[S3 Standard\n0.023 per GB\nms retrieval] -->|30 days no access| IA[Standard-IA\n0.0125 per GB\nretrieval fee]
+    IA -->|90 days| GI[Glacier Instant\n0.004 per GB\nms retrieval]
+    GI -->|180 days| GF[Glacier Flexible\n1-12hr retrieval]
+    GF -->|365 days| DA[Deep Archive\n0.001 per GB\n12hr retrieval]""",
+
+    # Concept 2: Lifecycle Policies
+    """flowchart TD
+    UPLOAD[Object Uploaded\nto S3 Standard] -->|Day 0| STD[Standard Storage]
+    STD -->|Day 30 rule| IA2[Transition to\nStandard-IA]
+    IA2 -->|Day 90 rule| GLAC[Transition to\nGlacier]
+    GLAC -->|Day 365 rule| DEL[Delete Object]
+    TAG[Prefix or Tag\nFilter] -->|applies to| STD
+    VER[Noncurrent\nVersions] -->|separate rule| IA2""",
+
+    # Concept 3: Security
+    """flowchart TD
+    REQ[Incoming Request] --> IAM[IAM Policy Check\nwho is calling]
+    IAM -->|allow| BP[Bucket Policy Check\nwhat is allowed]
+    BP -->|allow| BPA[Block Public Access\naccount level]
+    BPA -->|pass| ENC[SSE Encryption\nSSE-S3 or SSE-KMS]
+    ENC --> OBJ[Object Stored]
+    IAM -->|deny| BLOCK[403 Denied]
+    BP -->|deny| BLOCK""",
+
+    # Concept 4: Performance & Multipart
+    """flowchart LR
+    FILE[Large File\ngreater than 100MB] --> P1[Part 1]
+    FILE --> P2[Part 2]
+    FILE --> P3[Part 3]
+    FILE --> P4[Part N]
+    P1 -->|parallel upload| S3[S3 Bucket]
+    P2 -->|parallel upload| S3
+    P3 -->|parallel upload| S3
+    P4 -->|parallel upload| S3
+    S3 -->|CompleteMultipartUpload| DONE[Single Object\nAssembled]""",
+],
+
+"rds": [
+    # Concept 1: Multi-AZ
+    """flowchart TD
+    APP[Application] --> EP[RDS Endpoint\nDNS based]
+    EP --> PRI[Primary\nAZ-1]
+    PRI -->|synchronous\nreplication\nRPO zero| STB[Standby\nAZ-2]
+    PRI -->|write ack only\nafter standby confirms| APP
+    FAIL[Primary fails] -->|Route53 DNS\nupdates in 60s| STB
+    STB -->|becomes new\nprimary| EP""",
+
+    # Concept 2: Read Replicas
+    """flowchart TD
+    PRI2[Primary\nRDS Instance] -->|asynchronous\nreplication| RR1[Read Replica 1\nown endpoint]
+    PRI2 -->|asynchronous\nreplication| RR2[Read Replica 2\ncross region]
+    APP2[App Writes] --> PRI2
+    APP3[App Reads] --> RR1
+    APP3 --> RR2
+    LAG[Replication Lag\nms to seconds] -.->|monitor| RR1
+    RR1 -->|promote to standalone\nbreaks replication| NEW[New Primary\nafter DR]""",
+
+    # Concept 3: Storage Types
+    """flowchart LR
+    GP2[gp2 SSD\n3 IOPS per GB\nburst to 3000] -->|Good for\nsmall DBs| USE1[Variable workloads]
+    GP3[gp3 SSD\n3000 IOPS baseline\nscale to 16000] -->|Best value\nmost workloads| USE2[Production DBs]
+    IO1[io1 Provisioned\nup to 256000 IOPS] -->|High throughput| USE3[OLTP\nhigh traffic]
+    AUTO[Storage Autoscaling\ngrows when less than 10 pct free] --> GP3""",
+
+    # Concept 4: Backups & PITR
+    """flowchart TD
+    PRI3[RDS Primary] -->|continuous\ntransaction logs| S3B[S3 Backup Storage]
+    PRI3 -->|daily snapshot\nbackup window| SNAP[Automated Snapshot\n1-35 day retention]
+    SNAP -->|manual copy| XSNAP[Cross-Region\nSnapshot for DR]
+    S3B -->|point in time\nrestore to any second| NEW2[New RDS Instance\ndifferent endpoint]
+    SNAP -->|restore| NEW2
+    NOTE[Cannot restore\nin-place] -.-> NEW2""",
+],
+
+"vpc": [
+    # Concept 1: Subnets & CIDRs
+    """flowchart TD
+    VPC[VPC\n10.0.0.0 per 16\n65536 IPs] --> PUB1[Public Subnet\n10.0.1.0 per 24\nAZ-1]
+    VPC --> PUB2[Public Subnet\n10.0.2.0 per 24\nAZ-2]
+    VPC --> PRIV1[Private Subnet\n10.0.3.0 per 24\nAZ-1]
+    VPC --> PRIV2[Private Subnet\n10.0.4.0 per 24\nAZ-2]
+    PUB1 -->|internet route| IGW2[Internet\nGateway]
+    PRIV1 -->|no internet route| LOCAL[Local VPC\ntraffic only]""",
+
+    # Concept 2: IGW, NAT & Routing
+    """flowchart TD
+    INET[Internet] --> IGW3[Internet Gateway\n1 per VPC HA]
+    IGW3 --> ALB2[ALB in\nPublic Subnet]
+    ALB2 --> EC2P[EC2 in\nPrivate Subnet]
+    EC2P -->|outbound only\n0.0.0.0 per 0| NAT2[NAT Gateway\nin Public Subnet]
+    NAT2 --> IGW3
+    IGW3 --> INET
+    COST[NAT cost\n0.045 per hr\n0.045 per GB] -.-> NAT2""",
+
+    # Concept 3: Security Groups vs NACLs
+    """flowchart TD
+    REQ2[Inbound Request] --> NACL2[NACL\nStateless\nSubnet level\nRules in order]
+    NACL2 -->|rule allows| SG2[Security Group\nStateful\nInstance level\nAllow only]
+    SG2 -->|allow| EC2SG[EC2 Instance]
+    EC2SG -->|return traffic\nauto allowed by SG| CLIENT[Client]
+    NACL2 -->|must allow\nephemeral ports\n1024-65535| CLIENT
+    NACL2 -->|explicit deny| DROP[Dropped]""",
+
+    # Concept 4: VPC Peering & Transit Gateway
+    """flowchart TD
+    TGW[Transit Gateway\nRegional Hub Router] --> VPC1[VPC A\nProd]
+    TGW --> VPC2[VPC B\nDev]
+    TGW --> VPC3[VPC C\nShared Services]
+    TGW --> ONPREM[On-Premises\nvia VPN or DX]
+    NOTE2[VPC Peering\nnon-transitive\nA-B and B-C\ndoes not mean A-C] -.-> TGW
+    DX[Direct Connect\ndedicated line\nconsistent latency] --> TGW""",
+],
+
+"iam": [
+    # Concept 1: Policy Types
+    """flowchart TD
+    ID[IAM Identity\nUser or Role] -->|Identity-based policy\nwhat can this do| ACT[Actions Allowed\nor Denied]
+    RES[AWS Resource\nS3 or KMS] -->|Resource-based policy\nwho can access this| ACT
+    DENY[Explicit DENY\nin any policy] -->|overrides all allows| BLOCK2[Access Denied]
+    COND[Condition\nIP or MFA or VPC] -->|restricts| ACT
+    SCP[SCP\nOrg-level guardrail] -->|outermost limit| ACT""",
+
+    # Concept 2: IAM Roles & AssumeRole
+    """flowchart TD
+    EC2R[EC2 Instance] -->|AssumeRole via\ninstance metadata| STS2[STS\nSecurity Token Service]
+    CICD[GitHub Actions] -->|OIDC token| STS2
+    LAMBDA[Lambda Function] -->|AssumeRole auto| STS2
+    STS2 -->|temp credentials\nkey + secret + token\n15min to 12hr| ROLE[IAM Role]
+    ROLE -->|scoped permissions| S3R[S3 Access]
+    ROLE -->|scoped permissions| DDBR[DynamoDB Access]
+    TRUST[Trust Policy\nwho can assume] --> ROLE""",
+
+    # Concept 3: Least Privilege & Permission Boundaries
+    """flowchart TD
+    MAXP[Maximum Permissions\nPermission Boundary] -->|hard ceiling| ROLE2[IAM Role]
+    ROLE2 -->|attached policy\nmust be within boundary| EFF[Effective Permissions\nintersection of both]
+    SEC[Security Team\nsets boundary] --> MAXP
+    DEV[Developer\nsets role policy] --> ROLE2
+    EFF -->|least privilege| ACCESS[Actual Access Granted]
+    ANAL[IAM Access Analyzer\nfinds external access] -.->|scan| ROLE2""",
+
+    # Concept 4: OIDC & CI/CD
+    """flowchart TD
+    GHA[GitHub Actions\nWorkflow] -->|OIDC JWT token| IDP[OIDC Identity Provider\nin AWS IAM]
+    IDP -->|validate token\ncheck repo and branch| STS3[STS AssumeRoleWithWebIdentity]
+    STS3 -->|temp credentials\nno stored secrets| ROLE3[IAM Role]
+    ROLE3 --> ECR[Push to ECR]
+    ROLE3 --> ECS2[Deploy to ECS]
+    NOKV[No Access Keys\nstored in GitHub] -.->|security benefit| GHA""",
+],
+
+"lambda": [
+    # Concept 1: Cold Starts
+    """flowchart TD
+    REQ3[First Invocation\ncold start] --> INIT[Init Phase\ndownload code\nstart runtime\nrun init code]
+    INIT -->|100ms to 1s\nadded latency| HANDLER[Handler runs]
+    REQ4[Next Invocation\nwithin 15min] -->|warm reuse| HANDLER
+    HANDLER --> RESP[Response]
+    PC[Provisioned Concurrency\npre-warmed] -->|zero cold start\ncosts when idle| HANDLER
+    SNAP2[SnapStart\nJava only\n90 pct faster] --> INIT""",
+
+    # Concept 2: Concurrency & Throttling
+    """flowchart TD
+    REQS[1000+ requests\nsimultaneous] --> LIMIT[Account Limit\n1000 concurrent\nper region]
+    LIMIT -->|within limit| EXEC[Concurrent Executions]
+    LIMIT -->|over limit| THROTTLE[429 TooManyRequests]
+    RC[Reserved Concurrency\nfunction cap] -->|protect downstream| EXEC
+    PROVCON[Provisioned Concurrency\npre-initialized| EXEC
+    THROTTLE -->|async invocations| RETRY[Retry with backoff\nthen DLQ]""",
+
+    # Concept 3: Event Source Mappings
+    """flowchart LR
+    SYNC[Synchronous\nAPI GW or ALB] -->|caller waits\nfor response| LAMBDA2[Lambda]
+    ASYNC[Asynchronous\nS3 or SNS or EventBridge] -->|queued internally\ncaller gets 202| LAMBDA2
+    STREAM[Stream Polling\nSQS or Kinesis\nor DDB Streams] -->|event source mapping\nbatch processing| LAMBDA2
+    LAMBDA2 --> SUCCESS[Success\ndelete from queue]
+    LAMBDA2 -->|failure after retries| DLQ2[Dead Letter Queue]""",
+
+    # Concept 4: VPC & Layers
+    """flowchart TD
+    LAMBDA3[Lambda Function] -->|VPC mode| ENI[Hyperplane ENI\nprivate subnet]
+    ENI --> RDS2[RDS in\nprivate subnet]
+    ENI --> REDIS[ElastiCache\nRedis]
+    LAYER1[Layer 1\nnumpy or pandas] --> LAMBDA3
+    LAYER2[Layer 2\ncustom runtime] --> LAMBDA3
+    LAMBDA3 -->|max 5 layers\n250MB total| LIMIT2[250MB limit]
+    TMP[tmp storage\n512MB to 10GB] --> LAMBDA3""",
+],
+
+}  # end CONCEPT_DIAGRAMS
+
+
 def get_lesson(topic):
     """Return pre-written lesson for the topic, or None if not found."""
     topic_lower = topic.lower()
@@ -745,3 +975,12 @@ def get_lesson(topic):
         if key in topic_lower:
             return lesson
     return None
+
+
+def get_concept_diagrams(topic):
+    """Return list of 4 concept diagrams for the topic, or empty list."""
+    topic_lower = topic.lower()
+    for key, diagrams in CONCEPT_DIAGRAMS.items():
+        if key in topic_lower:
+            return diagrams
+    return []
