@@ -10,6 +10,7 @@ app = Flask(__name__)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GITHUB_REPO = "Harshit975shukla/skillcoach-dashboard"
 GITHUB_FILE_PATH = "docs/data.json"
@@ -75,23 +76,52 @@ def push_data(data, sha, message="Bot: progress update"):
 
 # ── AI coaching engine ────────────────────────────────────────────────────────
 
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent"
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent"
+
+
+def ask_groq(prompt):
+    """Call Groq (Llama 3.3 70B). Raises on failure."""
+    body = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 700,
+    }
+    resp = _json_req(
+        GROQ_API_URL,
+        method="POST",
+        data=body,
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+    )
+    return resp["choices"][0]["message"]["content"].strip()
+
 
 def ask_gemini(prompt):
-    if not GEMINI_API_KEY:
-        return "AI coaching not set up yet. Add GEMINI_API_KEY in Vercel env vars."
+    """Call Gemini flash as fallback. Raises on failure."""
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": 700},
     }
-    try:
-        resp = _json_req(f"{GEMINI_URL}?key={GEMINI_API_KEY}", method="POST", data=body)
-        return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode()[:300]
-        return f"AI error {e.code}: {detail}"
-    except Exception as e:
-        return f"AI error: {e}"
+    resp = _json_req(f"{GEMINI_API_URL}?key={GEMINI_API_KEY}", method="POST", data=body)
+    return resp["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+
+def ask_ai(prompt):
+    """Try Groq first (14,400 RPD), fall back to Gemini on any error."""
+    if GROQ_API_KEY:
+        try:
+            return ask_ai(prompt)
+        except Exception as e:
+            print(f"Groq failed ({e}), trying Gemini")
+    if GEMINI_API_KEY:
+        try:
+            return ask_gemini(prompt)
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode()[:300]
+            return f"AI error {e.code}: {detail}"
+        except Exception as e:
+            return f"AI error: {e}"
+    return "AI coaching not set up yet. Add GROQ_API_KEY or GEMINI_API_KEY in Vercel env vars."
 
 
 def coach_answer(question):
@@ -109,7 +139,7 @@ Give a sharp, interview-ready answer. Include:
 - One follow-up tip
 
 Keep total response under 400 words. Use plain text, no markdown symbols."""
-    return ask_gemini(prompt)
+    return ask_ai(prompt)
 
 
 def mock_question(topic):
@@ -130,7 +160,7 @@ SAMPLE STRONG ANSWER: [a concise model answer, 150-200 words]
 PRO TIP: [one tactical tip to stand out]
 
 Use plain text, no markdown symbols."""
-    return ask_gemini(prompt)
+    return ask_ai(prompt)
 
 
 def learn_topic(topic):
@@ -145,7 +175,7 @@ Include:
 4. KEY TERMS to use in answers
 
 Keep it practical and interview-focused. Under 350 words. Plain text only."""
-    return ask_gemini(prompt)
+    return ask_ai(prompt)
 
 
 def resume_coach(aspect):
@@ -160,7 +190,7 @@ Known issues: Too long (1034 words), missing portfolio link, one oversized bulle
 
 Give specific, actionable advice for improving this aspect of the resume.
 Under 300 words. Plain text."""
-    return ask_gemini(prompt)
+    return ask_ai(prompt)
 
 
 # ── Quiz/test answer handler ──────────────────────────────────────────────────
@@ -256,7 +286,7 @@ def _parse_resume_with_gemini(resume_text):
         "Return exactly this JSON structure:",
         '{"name":"","current_role":"","years_experience":0,"tech_skills":[],"cloud_skills":[],"target_role_guess":""}',
     ])
-    result = ask_gemini(prompt)
+    result = ask_ai(prompt)
     try:
         start = result.find("{")
         end = result.rfind("}") + 1
@@ -275,7 +305,7 @@ def _parse_jd_with_gemini(jd_text):
         "Return exactly this JSON:",
         '{"job_title":"","company_type":"","required_skills":[],"nice_to_have":[],"seniority":"","key_focus_areas":[]}',
     ])
-    result = ask_gemini(prompt)
+    result = ask_ai(prompt)
     try:
         start = result.find("{")
         end = result.rfind("}") + 1
@@ -299,7 +329,7 @@ def _gap_analysis_with_gemini(resume_info, jd_info):
         "Return:",
         '{"strong_skills":[],"gap_skills":[],"readiness_score":65,"target_role":"","summary":""}',
     ])
-    result = ask_gemini(prompt)
+    result = ask_ai(prompt)
     try:
         start = result.find("{")
         end = result.rfind("}") + 1
@@ -320,7 +350,7 @@ def _generate_diag_questions(resume_info):
         "Each question tests real depth — answerable in 1-3 sentences.",
         'Return: {"questions":[{"skill":"AWS","question":"How do you handle cross-region S3 failover?"}]}',
     ])
-    result = ask_gemini(prompt)
+    result = ask_ai(prompt)
     try:
         start = result.find("{")
         end = result.rfind("}") + 1
@@ -341,7 +371,7 @@ def _rate_diag_answers(questions, answers):
         "",
         'Return: {"skill_ratings":{"AWS":3},"readiness_score":65,"strong_skills":[],"gap_skills":[],"summary":""}',
     ])
-    result = ask_gemini(prompt)
+    result = ask_ai(prompt)
     try:
         start = result.find("{")
         end = result.rfind("}") + 1
@@ -559,7 +589,7 @@ def process_command(chat_id, text):
     elif cmd == "/tip":
         prompt = f"""Give Harshit one sharp, specific interview tip for a Cloud DevOps / AI Engineer role.
 Make it something most candidates don't do. Under 150 words. Plain text."""
-        tip = ask_gemini(prompt)
+        tip = ask_ai(prompt)
         send_msg(chat_id, f"💡 Today's Tip\n\n{tip}")
 
     elif cmd == "/tasks":

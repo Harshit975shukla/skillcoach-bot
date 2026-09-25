@@ -9,12 +9,14 @@ import pytz
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 CHAT_ID = int(os.environ["CHAT_ID"])
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 IST = pytz.timezone("Asia/Kolkata")
 REPO = "Harshit975shukla/skillcoach-dashboard"
 FILE = "docs/data.json"
 GH = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent"
 
 
@@ -34,23 +36,45 @@ def push_data(data, sha, msg):
     )
 
 
-def gemini(prompt, max_tokens=1800):
+def _groq_call(prompt, max_tokens):
     import time
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": max_tokens},
-    }
-    for attempt in range(6):
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    body = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens}
+    for attempt in range(3):
+        r = requests.post(GROQ_URL, json=body, headers=headers, timeout=60)
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"].strip()
+        if r.status_code in (429, 503) and attempt < 2:
+            time.sleep(30 + 15 * attempt)
+            continue
+        raise Exception(f"Groq {r.status_code}: {r.text[:200]}")
+    raise Exception("Groq failed")
+
+
+def _gemini_call(prompt, max_tokens):
+    import time
+    body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": max_tokens}}
+    for attempt in range(4):
         r = requests.post(f"{GEMINI_URL}?key={GEMINI_API_KEY}", json=body, timeout=90)
         if r.status_code == 200:
             return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        if r.status_code in (429, 503) and attempt < 5:
-            wait = 60 + 30 * attempt
-            print(f"Gemini {r.status_code}, retrying in {wait}s (attempt {attempt+1}/6)")
-            time.sleep(wait)
+        if r.status_code in (429, 503) and attempt < 3:
+            time.sleep(60 + 30 * attempt)
             continue
-        raise Exception(f"Gemini {r.status_code}: {r.text[:300]}")
-    raise Exception("Gemini failed after 6 attempts")
+        raise Exception(f"Gemini {r.status_code}: {r.text[:200]}")
+    raise Exception("Gemini failed")
+
+
+def ai(prompt, max_tokens=1800):
+    """Try Groq first (14,400 RPD free). Fall back to Gemini on failure."""
+    if GROQ_API_KEY:
+        try:
+            return _groq_call(prompt, max_tokens)
+        except Exception as e:
+            print(f"Groq unavailable ({e}), falling back to Gemini")
+    if GEMINI_API_KEY:
+        return _gemini_call(prompt, max_tokens)
+    raise Exception("No AI API key configured")
 
 
 def send(text):
@@ -111,7 +135,7 @@ def main():
         "}",
     ])
 
-    result = gemini(prompt, 1800)
+    result = ai(prompt, 1800)
     try:
         parsed = json.loads(result[result.find("{"):result.rfind("}") + 1])
         questions = parsed["questions"][:5]

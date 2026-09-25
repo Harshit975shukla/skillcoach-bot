@@ -1,21 +1,27 @@
-"""Runs at 9 AM IST Mon-Fri. Generates and sends daily lesson."""
+"""Runs at 9 AM IST Mon-Fri. Sends daily lesson using pre-written content."""
 import json
 import base64 as b64lib
 import os
+import sys
 import requests
 from datetime import datetime, date, timedelta
 import pytz
 
+sys.path.insert(0, os.path.dirname(__file__))
+from lesson_content import LESSONS, get_lesson
+
 TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 CHAT_ID = int(os.environ["CHAT_ID"])
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 IST = pytz.timezone("Asia/Kolkata")
 REPO = "Harshit975shukla/skillcoach-dashboard"
 FILE = "docs/data.json"
 GH = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
 DASHBOARD = "https://harshit975shukla.github.io/skillcoach-dashboard"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent"
 
 RESOURCES = {
@@ -123,24 +129,45 @@ def push_data(data, sha, msg):
     )
 
 
-def gemini(prompt, max_tokens=1800):
+def _groq_call(prompt, max_tokens):
     import time
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": max_tokens},
-    }
-    # 6 attempts: sleep 60, 90, 120, 150, 180s between retries on 503/429
-    for attempt in range(6):
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    body = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens}
+    for attempt in range(3):
+        r = requests.post(GROQ_URL, json=body, headers=headers, timeout=60)
+        if r.status_code == 200:
+            return r.json()["choices"][0]["message"]["content"].strip()
+        if r.status_code in (429, 503) and attempt < 2:
+            time.sleep(30 + 15 * attempt)
+            continue
+        raise Exception(f"Groq {r.status_code}: {r.text[:200]}")
+    raise Exception("Groq failed")
+
+
+def _gemini_call(prompt, max_tokens):
+    import time
+    body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": max_tokens}}
+    for attempt in range(4):
         r = requests.post(f"{GEMINI_URL}?key={GEMINI_API_KEY}", json=body, timeout=90)
         if r.status_code == 200:
             return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        if r.status_code in (429, 503) and attempt < 5:
-            wait = 60 + 30 * attempt
-            print(f"Gemini {r.status_code}, retrying in {wait}s (attempt {attempt+1}/6)")
-            time.sleep(wait)
+        if r.status_code in (429, 503) and attempt < 3:
+            time.sleep(60 + 30 * attempt)
             continue
-        raise Exception(f"Gemini {r.status_code}: {r.text[:300]}")
-    raise Exception("Gemini failed after 6 attempts")
+        raise Exception(f"Gemini {r.status_code}: {r.text[:200]}")
+    raise Exception("Gemini failed")
+
+
+def ai(prompt, max_tokens=600):
+    """Try Groq first (14,400 RPD free). Fall back to Gemini on failure."""
+    if GROQ_API_KEY:
+        try:
+            return _groq_call(prompt, max_tokens)
+        except Exception as e:
+            print(f"Groq unavailable ({e}), falling back to Gemini")
+    if GEMINI_API_KEY:
+        return _gemini_call(prompt, max_tokens)
+    raise Exception("No AI API key configured")
 
 
 def send(text):
@@ -152,31 +179,25 @@ def send(text):
 
 
 def send_long(text):
-    """Send long text splitting only at paragraph boundaries (double newline)."""
     MAX = 4096
     if len(text) <= MAX:
         send(text)
         return
-    parts = []
     remaining = text
     while len(remaining) > MAX:
-        # Find best split point: last double-newline before limit
         chunk = remaining[:MAX]
         split_pos = chunk.rfind("\n\n")
         if split_pos < 500:
             split_pos = chunk.rfind("\n")
         if split_pos < 100:
             split_pos = MAX
-        parts.append(remaining[:split_pos].rstrip())
+        send(remaining[:split_pos].rstrip())
         remaining = remaining[split_pos:].lstrip()
     if remaining:
-        parts.append(remaining)
-    for part in parts:
-        if part:
-            send(part)
+        send(remaining)
 
 
-# Pre-written, validated Mermaid diagrams per topic — always render correctly
+# Pre-written Mermaid diagrams (always render correctly)
 DIAGRAMS = {
     "rds": """flowchart TD
     App[Application] --> ALB[Load Balancer]
@@ -330,10 +351,8 @@ def get_diagram_code(topic):
 
 
 def send_diagram(topic):
-    """Send architecture diagram using pre-written Mermaid code (always renders correctly)."""
     mermaid_code = get_diagram_code(topic)
     if not mermaid_code:
-        # Fallback: ask Gemini but with very strict simple format
         try:
             prompt = "\n".join([
                 "Write a simple Mermaid flowchart for: " + topic.split(":")[0].strip(),
@@ -344,7 +363,7 @@ def send_diagram(topic):
                 "- Use quotes for labels: A[\"Label Text\"]",
                 "- Output ONLY the Mermaid code, nothing else",
             ])
-            mermaid_code = gemini(prompt, 300)
+            mermaid_code = ai(prompt, 300)
             mermaid_code = mermaid_code.replace("```mermaid", "").replace("```", "").strip()
         except Exception:
             return
@@ -365,6 +384,70 @@ def send_diagram(topic):
             print("Diagram send failed:", resp.text[:100])
     except Exception as e:
         print("Diagram skipped:", e)
+
+
+def format_prewritten_lesson(lesson, topic, day_name, today_str):
+    """Build Part 1 message (concepts + e2e) from pre-written content."""
+    lines = [
+        "GOOD MORNING, HARSHIT! " + day_name + " | " + today_str,
+        "Today: " + topic,
+        "",
+        "WHY THIS MATTERS FOR YOUR INTERVIEW",
+        lesson["why"],
+        "",
+        "WHAT IS " + lesson["title"].split(":")[0].upper().strip() + "?",
+        lesson["what"],
+    ]
+
+    for c in lesson["concepts"]:
+        lines += ["", "CONCEPT: " + c["name"], c["body"]]
+
+    lines += ["", "HOW IT WORKS END-TO-END"]
+    lines += lesson["e2e"]
+    lines += ["", "See the architecture diagram below for the visual view."]
+
+    return "\n".join(lines)
+
+
+def format_tasks_and_terms(lesson):
+    """Build Part 2 message (tasks + key terms) from pre-written content."""
+    lines = ["HANDS-ON TASKS FOR TODAY", ""]
+    for task in lesson["tasks"]:
+        lines.append(task["name"])
+        lines.append("Goal: " + task["goal"])
+        for i, step in enumerate(task["steps"], 1):
+            lines.append(str(i) + ". " + step)
+        lines.append("")
+
+    lines += ["KEY TERMS TO KNOW", ""]
+    for term in lesson["key_terms"]:
+        lines.append(term)
+
+    return "\n".join(lines)
+
+
+def generate_interview_qa(topic, profile_context=""):
+    """One small Gemini call for a personalized interview Q&A."""
+    prompt_parts = [
+        "You are SkillCoach, a Cloud DevOps interview coach. Plain text only, no asterisks, no markdown.",
+        "",
+        "Write one Senior DevOps interview Q&A for the topic: " + topic,
+    ]
+    if profile_context:
+        prompt_parts.append(profile_context)
+    prompt_parts += [
+        "",
+        "INTERVIEW QUESTION & STRONG ANSWER",
+        "Q: [A real scenario-based Senior DevOps interview question on " + topic.split(":")[0].strip() + "]",
+        "",
+        "A: [150-word model answer: include specific AWS limits/numbers, a real trade-off, what you did in production. Sound like a senior engineer who has operated this at scale.]",
+        "",
+        "WHAT MAKES THIS ANSWER STRONG:",
+        "1. [specific reason]",
+        "2. [specific reason]",
+        "3. [specific reason]",
+    ]
+    return "\n".join(prompt_parts)
 
 
 def generate_week_plan(data, sha, start_date):
@@ -397,7 +480,7 @@ def generate_week_plan(data, sha, start_date):
         "}",
     ])
 
-    result = gemini(prompt, 400)
+    result = ai(prompt, 400)
     try:
         plan = json.loads(result[result.find("{"):result.rfind("}") + 1])
     except Exception:
@@ -443,98 +526,110 @@ def main():
 
     res = get_resources(topic)
 
-    # Build profile context if user has set up their profile
+    # Profile context for personalization
     profile = data.get("profile", {})
     profile_context = ""
     if profile.get("setup_complete") and profile.get("target_role"):
         profile_context = (
             "User's target role: " + profile.get("target_role", "") + ". "
-            + "Strong skills (can go lighter on these): " + ", ".join(profile.get("strong_skills", [])[:5]) + ". "
-            + "Gap skills (prioritize these): " + ", ".join(profile.get("gap_skills", [])[:5]) + "."
+            + "Strong skills: " + ", ".join(profile.get("strong_skills", [])[:5]) + ". "
+            + "Gap skills to prioritize: " + ", ".join(profile.get("gap_skills", [])[:5]) + "."
         )
 
-    base_ctx = "\n".join([
-        "You are SkillCoach, expert Cloud DevOps & AI Engineer coach for Harshit Shukla (Senior level target).",
-        "Be THOROUGH and specific. Plain text only — no asterisks, no hashtags, no markdown.",
-        *(([profile_context]) if profile_context else []),
-    ])
+    # Look up pre-written lesson
+    lesson = get_lesson(topic)
 
-    # --- PART 1: Concepts + Architecture (sent before diagram) ---
-    part1_prompt = "\n".join([
-        base_ctx,
-        "",
-        "Write PART 1 of today's lesson on: " + topic,
-        "",
-        "GOOD MORNING, HARSHIT! " + day_name + " | " + today_str,
-        "Today: " + topic,
-        "",
-        "WHY THIS MATTERS FOR YOUR INTERVIEW",
-        "[2-3 sentences: what Senior DevOps interviewers test, which companies ask this most]",
-        "",
-        "WHAT IS " + topic.split(":")[0].upper().strip() + "?",
-        "[3-4 sentences: precise definition, the problem it solves, how it fits in the ecosystem]",
-        "",
-        "CONCEPT 1: [name]",
-        "[5-6 sentences: what it is, how it works step-by-step internally, real example with numbers, interview trap]",
-        "",
-        "CONCEPT 2: [name]",
-        "[5-6 sentences: definition, when to use vs avoid, what breaks when misconfigured, cost/perf impact]",
-        "",
-        "CONCEPT 3: [name]",
-        "[5-6 sentences: how it differs from alternatives, security angle, best practices, exam gotcha]",
-        "",
-        "CONCEPT 4: [name - advanced or cross-service integration]",
-        "[5-6 sentences: advanced use case, integration with other AWS services, thing most engineers miss]",
-        "",
-        "HOW IT WORKS END-TO-END",
-        "[6-8 numbered steps walking through a complete real operation from start to finish]",
-        "[End with: See the architecture diagram below for the visual view.]",
-    ])
+    if lesson:
+        # --- PRE-WRITTEN PATH: zero Gemini calls for core content ---
+        print("Using pre-written lesson for:", topic)
 
-    # --- PART 2: Tasks + Interview Q&A (sent after diagram) ---
-    part2_prompt = "\n".join([
-        base_ctx,
-        "",
-        "Write PART 2 of today's lesson on: " + topic,
-        "",
-        "HANDS-ON TASKS FOR TODAY",
-        "",
-        "Task 1 (20 min): [specific actionable task with AWS Console or CLI]",
-        "Goal: [what you will learn]",
-        "Steps: 1.[step] 2.[step] 3.[step] 4.[step]",
-        "",
-        "Task 2 (15 min): [read specific doc section or watch specific video segment]",
-        "Goal: [what you will learn]",
-        "Steps: 1.[step] 2.[step]",
-        "",
-        "Task 3 (20 min): [write out your interview answer practice]",
-        "Goal: [what you will practice]",
-        "Steps: 1.[step] 2.[step] 3.[step]",
-        "",
-        "INTERVIEW QUESTION & STRONG ANSWER",
-        "Q: [A real Senior DevOps scenario-based interview question on " + topic + "]",
-        "",
-        "A: [200-word model answer: include specific AWS limits/numbers, a real trade-off decision, what you did in production. Sound like a senior engineer who has actually operated this at scale.]",
-        "",
-        "WHAT MAKES THIS ANSWER STRONG:",
-        "1. [specific reason]",
-        "2. [specific reason]",
-        "3. [specific reason]",
-        "",
-        "KEY TERMS TO USE IN YOUR ANSWER",
-        "[10 technical terms, one per line, each with a 1-sentence explanation of what it means]",
-    ])
+        # Part 1: Why + What + 4 Concepts + End-to-End
+        part1 = format_prewritten_lesson(lesson, topic, day_name, today_str)
+        send_long(part1)
 
-    part1 = gemini(part1_prompt, 1800)
-    send_long(part1)
+        # Architecture diagram (pre-written Mermaid, always renders)
+        send_diagram(topic)
 
-    # Diagram (pre-written, always renders)
-    send_diagram(topic)
+        # Part 2: Tasks + Key Terms (pre-written)
+        part2 = format_tasks_and_terms(lesson)
+        send_long(part2)
 
-    part2 = gemini(part2_prompt, 1600)
-    send_long(part2)
+        # Interview Q&A: ONE small Gemini call (~500 tokens)
+        try:
+            qa_prompt = generate_interview_qa(topic, profile_context)
+            qa_result = ai(qa_prompt, 500)
+            send_long(qa_result)
+        except Exception as e:
+            print("Interview Q&A skipped (Gemini unavailable):", e)
+            # Fallback: generic Q&A tip
+            send(
+                "INTERVIEW TIP\n\n"
+                "Practice answering this aloud: 'Walk me through how " + topic.split(":")[0].strip()
+                + " works in a production environment you have managed. "
+                "What would you do differently now?'\n\n"
+                "Aim for a 3-minute structured answer: context, decision, outcome."
+            )
 
-    # Resources
+    else:
+        # --- FALLBACK: Gemini-generated lesson for unknown topics ---
+        print("No pre-written lesson for:", topic, "- using Gemini fallback")
+
+        base_ctx = "\n".join([
+            "You are SkillCoach, expert Cloud DevOps & AI Engineer coach for Harshit Shukla (Senior level target).",
+            "Be THOROUGH and specific. Plain text only - no asterisks, no hashtags, no markdown.",
+            *(([profile_context]) if profile_context else []),
+        ])
+
+        part1_prompt = "\n".join([
+            base_ctx, "",
+            "Write PART 1 of today's lesson on: " + topic, "",
+            "GOOD MORNING, HARSHIT! " + day_name + " | " + today_str,
+            "Today: " + topic, "",
+            "WHY THIS MATTERS FOR YOUR INTERVIEW",
+            "[2-3 sentences]", "",
+            "WHAT IS " + topic.split(":")[0].upper().strip() + "?",
+            "[3-4 sentences]", "",
+            "CONCEPT 1: [name]",
+            "[5-6 sentences with real numbers and interview traps]", "",
+            "CONCEPT 2: [name]", "[5-6 sentences]", "",
+            "CONCEPT 3: [name]", "[5-6 sentences]", "",
+            "CONCEPT 4: [advanced/cross-service]", "[5-6 sentences]", "",
+            "HOW IT WORKS END-TO-END",
+            "[6-8 numbered steps]",
+            "[End with: See the architecture diagram below for the visual view.]",
+        ])
+
+        part2_prompt = "\n".join([
+            base_ctx, "",
+            "Write PART 2 of today's lesson on: " + topic, "",
+            "HANDS-ON TASKS FOR TODAY", "",
+            "Task 1 (20 min): [specific AWS Console or CLI task]",
+            "Goal: [what you will learn]",
+            "Steps: 1.[step] 2.[step] 3.[step] 4.[step]", "",
+            "Task 2 (15 min): [doc or video task]",
+            "Goal: [what you will learn]",
+            "Steps: 1.[step] 2.[step]", "",
+            "Task 3 (20 min): [interview answer practice]",
+            "Goal: [what you will practice]",
+            "Steps: 1.[step] 2.[step] 3.[step]", "",
+            "INTERVIEW QUESTION & STRONG ANSWER",
+            "Q: [A real Senior DevOps scenario-based question on " + topic + "]", "",
+            "A: [200-word model answer with specific AWS limits/numbers, production experience]", "",
+            "WHAT MAKES THIS ANSWER STRONG:",
+            "1. [specific reason]",
+            "2. [specific reason]",
+            "3. [specific reason]", "",
+            "KEY TERMS TO USE IN YOUR ANSWER",
+            "[10 terms, one per line, each with a 1-sentence explanation]",
+        ])
+
+        part1 = ai(part1_prompt, 1800)
+        send_long(part1)
+        send_diagram(topic)
+        part2 = ai(part2_prompt, 1600)
+        send_long(part2)
+
+    # Resources footer (always sent)
     resources_msg = "\n".join([
         "RESOURCES: " + topic.split(":")[0].strip(),
         "",
