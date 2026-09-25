@@ -83,7 +83,7 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini
 def ask_groq(prompt):
     """Call Groq (Llama 3.3 70B). Raises on failure."""
     body = {
-        "model": "llama-3.3-70b-versatile",
+        "model": "openai/gpt-oss-120b",
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 700,
     }

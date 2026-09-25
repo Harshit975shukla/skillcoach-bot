@@ -39,7 +39,7 @@ def push_data(data, sha, msg):
 def _groq_call(prompt, max_tokens):
     import time
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    body = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens}
+    body = {"model": "openai/gpt-oss-120b", "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens}
     for attempt in range(3):
         r = requests.post(GROQ_URL, json=body, headers=headers, timeout=60)
         if r.status_code == 200:
