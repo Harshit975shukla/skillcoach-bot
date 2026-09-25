@@ -371,14 +371,17 @@ def send_diagram(topic):
     try:
         encoded = b64lib.urlsafe_b64encode(mermaid_code.encode()).decode()
         diagram_url = f"https://mermaid.ink/img/{encoded}"
+        # Download image first — Telegram servers can't always reach mermaid.ink directly
+        img = requests.get(diagram_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if img.status_code != 200:
+            print("mermaid.ink fetch failed:", img.status_code)
+            return
+        # Upload as file (multipart) instead of URL — always works
         resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
-            json={
-                "chat_id": CHAT_ID,
-                "photo": diagram_url,
-                "caption": "Architecture Diagram: " + topic.split(":")[0].strip(),
-            },
-            timeout=20,
+            data={"chat_id": CHAT_ID, "caption": "Architecture: " + topic.split(":")[0].strip()},
+            files={"photo": ("diagram.jpg", img.content, img.headers.get("Content-Type", "image/jpeg"))},
+            timeout=30,
         )
         if resp.status_code != 200:
             print("Diagram send failed:", resp.text[:100])
