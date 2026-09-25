@@ -51,6 +51,16 @@ def test_config_fail_closed(monkeypatch):
         Config.from_env(webhook=True)
 
 
+def test_empty_owner_setting_keeps_legacy_chat_id_alias(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://private")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake")
+    monkeypatch.setenv("OWNER_ID", "")
+    monkeypatch.setenv("CHAT_ID", "42")
+    assert Config.from_env().owner_id == 42
+    monkeypatch.setenv("OWNER_ID", "84")
+    assert Config.from_env().owner_id == 84
+
+
 def test_webhook_auth_dedup_edits_callbacks_and_no_threads(harness):
     h = harness
     client = create_app(h.runtime).test_client()

@@ -103,6 +103,7 @@ def test_dependency_python_workflow_and_help_consistency():
     assert 'python-version: "3.12"' in worker
     assert "skillcoach-private-worker-${{ inputs.kind }}" in worker
     assert "GITHUB_TOKEN: ${{ secrets.GH_PAT }}" in worker
+    assert "OWNER_ID: ${{ secrets.OWNER_ID || secrets.CHAT_ID }}" in worker
     assert "if: steps.media.outputs.needed == 'true'" in worker
     assert "*/5 * * * *" in Path(".github/workflows/recovery.yml").read_text()
     assert not Path(".github/workflows/daily_reminder.yml").exists()

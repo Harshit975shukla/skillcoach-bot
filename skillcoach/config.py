@@ -26,7 +26,7 @@ class Config:
     def from_env(cls, *, webhook: bool = False) -> "Config":
         database = os.getenv("DATABASE_URL", "")
         token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        owner = os.getenv("OWNER_ID", os.getenv("CHAT_ID", ""))
+        owner = os.getenv("OWNER_ID") or os.getenv("CHAT_ID", "")
         secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
         if not database.startswith(("postgresql://", "postgres://")):
             raise ConfigurationError("DATABASE_URL must be a private PostgreSQL connection URL.")
