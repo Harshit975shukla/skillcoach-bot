@@ -1,8 +1,9 @@
 """Explicit fresh-project preparation; never called by webhooks or scheduled coaching."""
 
+import logging
 from urllib.parse import quote, urlsplit, urlunsplit
 
-from psycopg import sql
+from psycopg import Error, sql
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.types.json import Jsonb
 
@@ -12,6 +13,53 @@ from skillcoach.storage import Repository
 ROLE = "skillcoach_runtime"
 ROLE_MARKER = "SkillCoach bot runtime; managed by explicit bootstrap-fresh"
 TABLES = ("coach_state", "worker_leases", "jobs", "ai_results", "task_keys", "answer_keys", "outbox")
+log = logging.getLogger(__name__)
+
+
+def _execute(conn, stage, query, params=None):
+    try:
+        return conn.execute(query, params)
+    except Error as exc:
+        log.error("bootstrap_stage_failed stage=%s code=%s", stage, exc.sqlstate or type(exc).__name__)
+        raise
+
+
+def ensure_runtime_role(conn, password):
+    existing = _execute(
+        conn,
+        "inspect_role",
+        "SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolbypassrls, "
+        "shobj_description(oid, 'pg_authid') AS marker FROM pg_roles WHERE rolname=%s",
+        (ROLE,),
+    ).fetchone()
+    if existing and existing["marker"] != ROLE_MARKER:
+        raise ValueError("Runtime role already exists without the SkillCoach ownership marker.")
+    if existing and any(
+        existing[key] for key in ("rolsuper", "rolcreatedb", "rolcreaterole", "rolbypassrls")
+    ):
+        raise ValueError("Existing runtime role has unexpected elevated capabilities.")
+    action = "ALTER" if existing else "CREATE"
+    # PostgreSQL defaults privileged attributes off; managed admins cannot explicitly alter all of them.
+    _execute(
+        conn,
+        "configure_role",
+        sql.SQL("{} ROLE {} LOGIN NOINHERIT CONNECTION LIMIT 10 PASSWORD {}").format(
+            sql.SQL(action), sql.Identifier(ROLE), sql.Literal(password)
+        ),
+    )
+    capabilities = _execute(
+        conn,
+        "verify_role_capabilities",
+        "SELECT rolsuper, rolcreatedb, rolcreaterole, rolbypassrls, rolinherit FROM pg_roles WHERE rolname=%s",
+        (ROLE,),
+    ).fetchone()
+    if any(capabilities.values()):
+        raise ValueError("Runtime role must have no elevated or inherited capabilities.")
+    _execute(
+        conn,
+        "mark_role",
+        sql.SQL("COMMENT ON ROLE {} IS {}").format(sql.Identifier(ROLE), sql.Literal(ROLE_MARKER)),
+    )
 
 
 def runtime_url(admin_url: str, password: str) -> str:
@@ -46,47 +94,42 @@ def bootstrap_fresh(admin_url: str, password: str) -> dict:
                 "n"
             ]:
                 raise ValueError("Existing processing history must be preserved; fresh bootstrap refused.")
-        existing = conn.execute(
-            "SELECT rolname, shobj_description(oid, 'pg_authid') AS marker FROM pg_roles WHERE rolname=%s",
-            (ROLE,),
-        ).fetchone()
-        if existing and existing["marker"] != ROLE_MARKER:
-            raise ValueError("Runtime role already exists without the SkillCoach ownership marker.")
-        action = "ALTER" if existing else "CREATE"
-        conn.execute(
-            sql.SQL(
-                "{} ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS "
-                "CONNECTION LIMIT 10 PASSWORD {}"
-            ).format(sql.SQL(action), sql.Identifier(ROLE), sql.Literal(password))
-        )
-        conn.execute(
-            sql.SQL("COMMENT ON ROLE {} IS {}").format(sql.Identifier(ROLE), sql.Literal(ROLE_MARKER))
-        )
-        conn.execute(
+        ensure_runtime_role(conn, password)
+        _execute(
+            conn,
+            "grant_database",
             sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
                 sql.Identifier(conn.info.dbname), sql.Identifier(ROLE)
-            )
+            ),
         )
-        conn.execute(
+        _execute(
+            conn,
+            "grant_schema",
             sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(
                 sql.Identifier(admin.schema), sql.Identifier(ROLE)
-            )
+            ),
         )
         for table in TABLES:
-            conn.execute(
+            _execute(
+                conn,
+                "grant_table",
                 sql.SQL("GRANT SELECT, INSERT, UPDATE, DELETE ON {} TO {}").format(
                     sql.Identifier(admin.schema, table), sql.Identifier(ROLE)
-                )
+                ),
             )
-        conn.execute(
+        _execute(
+            conn,
+            "grant_migration_read",
             sql.SQL("GRANT SELECT ON {} TO {}").format(
                 sql.Identifier(admin.schema, "schema_migrations"), sql.Identifier(ROLE)
-            )
+            ),
         )
-        conn.execute(
+        _execute(
+            conn,
+            "grant_sequences",
             sql.SQL("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {} TO {}").format(
                 sql.Identifier(admin.schema), sql.Identifier(ROLE)
-            )
+            ),
         )
     runtime = Repository(target_url)
     with runtime.connection() as conn:
@@ -102,7 +145,9 @@ def bootstrap_fresh(admin_url: str, password: str) -> dict:
         if privileges["public_create"] or privileges["migration_write"]:
             raise ValueError("Runtime role has unexpected public-schema or migration-write privileges.")
         conn.execute("SAVEPOINT permission_probe")
-        conn.execute(
+        _execute(
+            conn,
+            "runtime_write_probe",
             "INSERT INTO jobs(id,payload) VALUES (%s,%s)",
             ("bootstrap-permission-probe", Jsonb({"type": "permission-probe"})),
         )

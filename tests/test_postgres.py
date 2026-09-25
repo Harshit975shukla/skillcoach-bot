@@ -306,3 +306,30 @@ def test_cancel_failed_export_suppresses_group_without_false_success(pg_repo, co
     runtime.recover(media=False)
     assert not runtime.publisher.documents
     assert not any("summary published" in text for text, _ in runtime.telegram.messages)
+
+
+def test_runtime_role_creation_works_for_managed_non_superuser_admin(pg_repo, monkeypatch):
+    from uuid import uuid4
+
+    from psycopg import sql
+
+    from skillcoach import bootstrap
+
+    admin_role = "test_admin_" + uuid4().hex
+    runtime_role = "test_runtime_" + uuid4().hex
+    monkeypatch.setattr(bootstrap, "ROLE", runtime_role)
+    with pg_repo.connection() as conn:
+        with conn.transaction(force_rollback=True):
+            conn.execute(sql.SQL("CREATE ROLE {} CREATEROLE NOLOGIN").format(sql.Identifier(admin_role)))
+            conn.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(admin_role)))
+            bootstrap.ensure_runtime_role(conn, "test-only-runtime-password-not-production")
+            role = conn.execute(
+                "SELECT rolsuper, rolcreatedb, rolcreaterole, rolbypassrls, rolinherit, rolcanlogin "
+                "FROM pg_roles WHERE rolname=%s",
+                (runtime_role,),
+            ).fetchone()
+            assert role["rolcanlogin"] is True
+            assert not any(
+                role[key]
+                for key in ("rolsuper", "rolcreatedb", "rolcreaterole", "rolbypassrls", "rolinherit")
+            )
