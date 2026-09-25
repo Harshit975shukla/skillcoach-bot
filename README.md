@@ -2,7 +2,9 @@
 
 A single-owner Telegram interview coach: **full lessons and animated videos by default**, personalized plans, tracked practice tasks, five-question daily quizzes, ten-question weekly assessments, and question-first interviews. Vercel handles authenticated webhooks; GitHub Actions owns scheduled coaching and recovery. Private PostgreSQL is the only authoritative state store.
 
-This repository contains implementation and offline checks, **not an activated deployment**. No command below should be run against production until its cutover step is explicitly approved. Automatic Git-triggered Vercel deployments are disabled in `vercel.json` so pushing a test branch cannot deploy unverified code. Keep that gate until backups, tests and account cost restrictions are confirmed; explicit deployment remains an operator-controlled step.
+The upgraded application is deployed at **https://skillcoach-bot-seven.vercel.app** on Vercel Hobby with private Supabase Free PostgreSQL. The approved fresh start contains no imported learner profile or invented progress; send `/setup` in the existing Telegram bot to begin personalized coaching. Automatic Git-triggered Vercel deployments remain disabled in `vercel.json`: future production changes still require explicit testing, backup and deployment.
+
+Cutover verification on 2026-09-25 passed 73 tests including real PostgreSQL integration, rendered all 30 authored diagrams, verified the 25-second animated MP4, and completed a real default-branch recovery run with one owner help message. The Groq primary produced ten schema-valid synthetic questions within the processing budget. The existing Gemini fallback has **not** been verified as usable; it needs a valid free-tier key before relying on fallback availability. No paid plan or add-on was enabled. Rotate the temporarily shared Supabase administrator password after setup; the running app uses a separately generated, restricted database role and does not depend on that administrator password.
 
 ## Schedule (Asia/Kolkata)
 
@@ -150,7 +152,7 @@ Dry run requires no database or messaging credentials and makes no writes. Apply
 
 Validated task records, complete six-day legacy plans and dated lesson topics are imported. The full supplied snapshot remains private archival data. Historical scores, active questions and incomplete setup are quarantined, not activated or counted as current assessment evidence. Incomplete plans remain in the archive. Legacy lesson delivery is marked unverified. Reassess the profile after import; old aggregate counters are not trusted.
 
-## Secure cutover checklist (operator-controlled; not executed here)
+## Secure cutover checklist (operator-controlled; retain for future releases)
 
 1. Review this worktree and run CI, including real PostgreSQL and media checks. The separate frontend stays unchanged.
 2. Arrange private PostgreSQL, backups, TLS verification, retention and restricted access outside chat. Use an administrator only for the explicit additive `python -m skillcoach.cli migrate`; grant the runtime role only required table/sequence permissions afterward. Never point tests at production.
