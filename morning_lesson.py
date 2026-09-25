@@ -176,26 +176,180 @@ def send_long(text):
             send(part)
 
 
+# Pre-written, validated Mermaid diagrams per topic — always render correctly
+DIAGRAMS = {
+    "rds": """flowchart TD
+    App[Application] --> ALB[Load Balancer]
+    ALB --> EC2a[EC2 App Server 1]
+    ALB --> EC2b[EC2 App Server 2]
+    EC2a --> RDS_P[(RDS Primary\nMulti-AZ)]
+    EC2b --> RDS_P
+    RDS_P -->|sync replication| RDS_S[(RDS Standby\nAZ-2)]
+    RDS_P -->|async replication| RR1[(Read Replica\nRegion-1)]
+    RDS_P --> S3[(S3 Auto Backups\n7-35 day retention)]
+    CW[CloudWatch\nAlarms] --> RDS_P""",
+
+    "s3": """flowchart LR
+    Client[Client / App] --> API[S3 API]
+    API --> Bucket[S3 Bucket]
+    Bucket --> STD[Standard\nHot Data]
+    Bucket --> IA[Standard-IA\nInfrequent Access]
+    Bucket --> Glacier[Glacier\nArchive 90+ days]
+    LC[Lifecycle Policy] -->|auto move| IA
+    IA -->|auto move| Glacier
+    Bucket --> VER[Versioning]
+    Bucket --> BP[Bucket Policy\n+ IAM]
+    BP --> KMS[KMS Encryption]""",
+
+    "ec2": """flowchart TD
+    User[User Request] --> R53[Route 53]
+    R53 --> ALB[Application Load Balancer]
+    ALB --> ASG[Auto Scaling Group]
+    ASG --> EC2a[EC2 t3.medium\nAZ-1]
+    ASG --> EC2b[EC2 t3.medium\nAZ-2]
+    ASG --> EC2c[EC2 t3.medium\nAZ-3]
+    EC2a --> EBS[(EBS Volume\ngp3 SSD)]
+    EC2a --> RDS[(RDS DB)]
+    CW[CloudWatch] -->|scale out| ASG
+    SG[Security Group\nPort 443 only] --> ALB""",
+
+    "vpc": """flowchart TD
+    IGW[Internet Gateway] --> PubSub1[Public Subnet\nAZ-1 10.0.1.0/24]
+    IGW --> PubSub2[Public Subnet\nAZ-2 10.0.2.0/24]
+    PubSub1 --> NAT[NAT Gateway]
+    PubSub1 --> ALB[Load Balancer]
+    NAT --> PrivSub1[Private Subnet\nAZ-1 10.0.3.0/24]
+    NAT --> PrivSub2[Private Subnet\nAZ-2 10.0.4.0/24]
+    PrivSub1 --> EC2[EC2 App Servers]
+    PrivSub2 --> RDS[(RDS Database)]
+    NACL[Network ACL] --> PubSub1
+    SG[Security Groups] --> EC2""",
+
+    "iam": """flowchart TD
+    User[IAM User] -->|assume| Role[IAM Role]
+    Group[IAM Group] -->|has| Policy[IAM Policy]
+    User -->|member of| Group
+    Role -->|attached| Policy
+    Policy -->|allow/deny| S3[S3 Bucket]
+    Policy -->|allow/deny| EC2[EC2 Actions]
+    Policy -->|allow/deny| RDS[RDS Actions]
+    STS[STS Token Service] -->|temp credentials| Role
+    SP[Service Principal\ne.g. Lambda] -->|assume| Role
+    MFA[MFA Device] -->|required for| User""",
+
+    "lambda": """flowchart LR
+    Trigger[Event Trigger\nAPI GW / S3 / SQS] --> Lambda[Lambda Function\nNode/Python/Java]
+    Lambda -->|read/write| DDB[(DynamoDB)]
+    Lambda -->|send| SQS[SQS Queue]
+    Lambda -->|store| S3[S3 Bucket]
+    Lambda -->|call| ExtAPI[External API]
+    CW[CloudWatch Logs] --> Lambda
+    VPC[VPC Config\noptional] --> Lambda
+    Role[Execution Role\nIAM] --> Lambda
+    Concurrency[Reserved\nConcurrency] --> Lambda""",
+
+    "kubernetes": """flowchart TD
+    User[kubectl / CI-CD] --> API[API Server]
+    API --> ETCD[(etcd\nCluster State)]
+    API --> SCH[Scheduler]
+    API --> CM[Controller Manager]
+    SCH --> Node1[Worker Node 1]
+    SCH --> Node2[Worker Node 2]
+    Node1 --> Pod1[Pod\nApp Container]
+    Node1 --> Pod2[Pod\nSidecar]
+    Node2 --> Pod3[Pod\nReplica]
+    SVC[Service\nClusterIP/LB] --> Pod1
+    SVC --> Pod3
+    Ingress[Ingress Controller] --> SVC""",
+
+    "terraform": """flowchart TD
+    Dev[Developer] -->|terraform plan| TF[Terraform Core]
+    TF -->|read| State[State File\nS3 Backend]
+    TF -->|lock| DDB[(DynamoDB\nState Lock)]
+    TF -->|create/update| AWS[AWS Provider]
+    AWS --> EC2[EC2 Resources]
+    AWS --> VPC[VPC Resources]
+    AWS --> RDS[RDS Resources]
+    TF -->|plan output| PR[Code Review\nPR Approval]
+    PR -->|terraform apply| TF
+    TF -->|update| State""",
+
+    "docker": """flowchart LR
+    Dev[Developer] -->|docker build| Image[Docker Image]
+    Image -->|docker push| Registry[Container Registry\nECR / DockerHub]
+    Registry -->|docker pull| Host[Docker Host]
+    Host --> C1[Container 1\nApp]
+    Host --> C2[Container 2\nNginx]
+    Host --> C3[Container 3\nRedis]
+    C1 <-->|network| C2
+    C1 <-->|network| C3
+    Vol[(Docker Volume\nPersistent Data)] --> C1
+    ENV[Env Vars\n.env / Secrets] --> C1""",
+
+    "cicd": """flowchart LR
+    Dev[Developer] -->|git push| GH[GitHub Repo]
+    GH -->|webhook| CI[CI Runner\nGitHub Actions]
+    CI --> Test[Run Tests]
+    CI --> Lint[Code Lint]
+    CI --> Build[Build Docker\nImage]
+    Build -->|push| ECR[ECR Registry]
+    ECR -->|deploy| ECS[ECS / EKS\nProduction]
+    CI -->|notify| Slack[Slack Alert]
+    Gate[Manual Approval\nProd Gate] --> ECS""",
+
+    "prometheus": """flowchart TD
+    Apps[App Instances] -->|/metrics endpoint| Prom[Prometheus Server]
+    Prom -->|scrape every 15s| Apps
+    Prom -->|store| TSDB[(Time Series DB\nLocal Storage)]
+    Prom -->|evaluate| Rules[Alert Rules]
+    Rules -->|fire| AM[Alertmanager]
+    AM -->|route| Slack[Slack]
+    AM -->|route| PD[PagerDuty]
+    Grafana[Grafana Dashboard] -->|PromQL query| Prom
+    SD[Service Discovery\nK8s / EC2] --> Prom""",
+
+    "genai": """flowchart TD
+    User[User Query] --> API[API Gateway]
+    API --> Orch[Orchestrator\nLangChain / Custom]
+    Orch --> Embed[Embedding Model]
+    Embed --> VS[(Vector Store\nPinecone / OpenSearch)]
+    VS -->|top-k docs| Orch
+    Orch --> LLM[LLM\nClaude / GPT / Gemini]
+    Orch --> Cache[Semantic Cache\nRedis]
+    LLM --> Response[Response to User]
+    Monitor[Observability\nPrompt logs + latency] --> LLM""",
+}
+
+
+def get_diagram_code(topic):
+    topic_lower = topic.lower()
+    for key, code in DIAGRAMS.items():
+        if key in topic_lower:
+            return code
+    return None
+
+
 def send_diagram(topic):
-    """Generate Mermaid diagram via Gemini and send as image via mermaid.ink."""
+    """Send architecture diagram using pre-written Mermaid code (always renders correctly)."""
+    mermaid_code = get_diagram_code(topic)
+    if not mermaid_code:
+        # Fallback: ask Gemini but with very strict simple format
+        try:
+            prompt = "\n".join([
+                "Write a simple Mermaid flowchart for: " + topic.split(":")[0].strip(),
+                "STRICT RULES:",
+                "- Start with exactly: flowchart TD",
+                "- Max 8 nodes",
+                "- Node names: letters and numbers ONLY, no spaces, no special chars",
+                "- Use quotes for labels: A[\"Label Text\"]",
+                "- Output ONLY the Mermaid code, nothing else",
+            ])
+            mermaid_code = gemini(prompt, 300)
+            mermaid_code = mermaid_code.replace("```mermaid", "").replace("```", "").strip()
+        except Exception:
+            return
+
     try:
-        mermaid_prompt = "\n".join([
-            "Generate a Mermaid architecture diagram for: " + topic,
-            "Rules:",
-            "- Use 'flowchart TD' or 'graph LR' format only",
-            "- Max 10 nodes showing all major components and their connections",
-            "- Show data flow with arrows and labels",
-            "- Return ONLY the Mermaid code, no explanation, no markdown fences",
-            "Example:",
-            "flowchart TD",
-            "    A[Client] --> B[Load Balancer]",
-            "    B --> C[EC2 Instance 1]",
-            "    B --> D[EC2 Instance 2]",
-            "    C --> E[(RDS Database)]",
-            "    D --> E",
-        ])
-        mermaid_code = gemini(mermaid_prompt, 400)
-        mermaid_code = mermaid_code.replace("```mermaid", "").replace("```", "").strip()
         encoded = b64lib.urlsafe_b64encode(mermaid_code.encode()).decode()
         diagram_url = f"https://mermaid.ink/img/{encoded}"
         resp = requests.post(
@@ -208,7 +362,7 @@ def send_diagram(topic):
             timeout=20,
         )
         if resp.status_code != 200:
-            send("Architecture Diagram (text):\n\n" + mermaid_code)
+            print("Diagram send failed:", resp.text[:100])
     except Exception as e:
         print("Diagram skipped:", e)
 
@@ -299,74 +453,86 @@ def main():
             + "Gap skills (prioritize these): " + ", ".join(profile.get("gap_skills", [])[:5]) + "."
         )
 
-    # ONE comprehensive lesson message
-    lesson_prompt = "\n".join([
-        "You are SkillCoach, an expert Cloud DevOps & AI Engineer coach for Harshit Shukla (targeting Senior level at top tech companies).",
-        "This is his primary study material for the entire day. Be THOROUGH, specific, and interview-focused.",
-        "Plain text only. No markdown symbols, no asterisks, no hashtags.",
-        *(["", profile_context] if profile_context else []),
+    base_ctx = "\n".join([
+        "You are SkillCoach, expert Cloud DevOps & AI Engineer coach for Harshit Shukla (Senior level target).",
+        "Be THOROUGH and specific. Plain text only — no asterisks, no hashtags, no markdown.",
+        *(([profile_context]) if profile_context else []),
+    ])
+
+    # --- PART 1: Concepts + Architecture (sent before diagram) ---
+    part1_prompt = "\n".join([
+        base_ctx,
         "",
-        "Write a COMPLETE, COMPREHENSIVE lesson on: " + topic,
-        "",
-        "Use EXACTLY this format with these section headers:",
+        "Write PART 1 of today's lesson on: " + topic,
         "",
         "GOOD MORNING, HARSHIT! " + day_name + " | " + today_str,
         "Today: " + topic,
         "",
         "WHY THIS MATTERS FOR YOUR INTERVIEW",
-        "[2-3 sentences: why Senior DevOps interviewers ask about this, what they are really testing for, which companies care most]",
+        "[2-3 sentences: what Senior DevOps interviewers test, which companies ask this most]",
         "",
         "WHAT IS " + topic.split(":")[0].upper().strip() + "?",
-        "[3-4 sentences: precise definition, the problem it solves, when AWS created it and why, how it fits in the AWS ecosystem]",
+        "[3-4 sentences: precise definition, the problem it solves, how it fits in the ecosystem]",
         "",
-        "CONCEPT 1: [Full concept name]",
-        "[5-6 sentences: exactly what it is, how it works internally step by step, a real-world example with specific numbers or sizes, common interview trap question about this concept]",
+        "CONCEPT 1: [name]",
+        "[5-6 sentences: what it is, how it works step-by-step internally, real example with numbers, interview trap]",
         "",
-        "CONCEPT 2: [Full concept name]",
-        "[5-6 sentences: definition, how it works, when to use vs when not to use, what breaks when misconfigured, cost or performance implication]",
+        "CONCEPT 2: [name]",
+        "[5-6 sentences: definition, when to use vs avoid, what breaks when misconfigured, cost/perf impact]",
         "",
-        "CONCEPT 3: [Full concept name]",
-        "[5-6 sentences: definition, how it differs from similar features, security angle, best practices, exam/interview gotcha]",
+        "CONCEPT 3: [name]",
+        "[5-6 sentences: how it differs from alternatives, security angle, best practices, exam gotcha]",
         "",
-        "CONCEPT 4: [Full concept name - choose an advanced or integration topic]",
-        "[5-6 sentences: advanced use case, integration with other AWS services, production war story style example, one thing most engineers miss]",
+        "CONCEPT 4: [name - advanced or cross-service integration]",
+        "[5-6 sentences: advanced use case, integration with other AWS services, thing most engineers miss]",
         "",
         "HOW IT WORKS END-TO-END",
-        "[6-8 sentences: walk through a complete real operation step by step - e.g. what happens when you upload a file to S3 from creation to availability. Number the steps. This describes the architecture diagram that follows.]",
+        "[6-8 numbered steps walking through a complete real operation from start to finish]",
+        "[End with: See the architecture diagram below for the visual view.]",
+    ])
+
+    # --- PART 2: Tasks + Interview Q&A (sent after diagram) ---
+    part2_prompt = "\n".join([
+        base_ctx,
+        "",
+        "Write PART 2 of today's lesson on: " + topic,
         "",
         "HANDS-ON TASKS FOR TODAY",
         "",
-        "Task 1 (20 min): [Specific hands-on task]",
+        "Task 1 (20 min): [specific actionable task with AWS Console or CLI]",
         "Goal: [what you will learn]",
         "Steps: 1.[step] 2.[step] 3.[step] 4.[step]",
         "",
-        "Task 2 (15 min): [Documentation reading or video watching with specific resource name]",
+        "Task 2 (15 min): [read specific doc section or watch specific video segment]",
         "Goal: [what you will learn]",
         "Steps: 1.[step] 2.[step]",
         "",
-        "Task 3 (20 min): [Write out your answer to an interview question practice]",
+        "Task 3 (20 min): [write out your interview answer practice]",
         "Goal: [what you will practice]",
         "Steps: 1.[step] 2.[step] 3.[step]",
         "",
         "INTERVIEW QUESTION & STRONG ANSWER",
-        "Q: [A real, commonly-asked Senior DevOps interview question on " + topic + " - scenario-based if possible]",
+        "Q: [A real Senior DevOps scenario-based interview question on " + topic + "]",
         "",
-        "A: [A 200-word model answer that would impress a principal engineer. Include: specific AWS limits/numbers, a decision you made in production, trade-offs you considered, what you would do differently. Sound like a senior who has actually done this.]",
+        "A: [200-word model answer: include specific AWS limits/numbers, a real trade-off decision, what you did in production. Sound like a senior engineer who has actually operated this at scale.]",
         "",
         "WHAT MAKES THIS ANSWER STRONG:",
         "1. [specific reason]",
         "2. [specific reason]",
         "3. [specific reason]",
         "",
-        "KEY TERMS TO DROP IN YOUR INTERVIEW ANSWER",
-        "[10 specific technical terms/phrases interviewers love, one per line with a 1-line explanation of each]",
+        "KEY TERMS TO USE IN YOUR ANSWER",
+        "[10 technical terms, one per line, each with a 1-sentence explanation of what it means]",
     ])
 
-    lesson_text = gemini(lesson_prompt, 2500)
-    send_long(lesson_text)
+    part1 = gemini(part1_prompt, 1800)
+    send_long(part1)
 
-    # Diagram image
+    # Diagram (pre-written, always renders)
     send_diagram(topic)
+
+    part2 = gemini(part2_prompt, 1600)
+    send_long(part2)
 
     # Resources
     resources_msg = "\n".join([
