@@ -3,6 +3,8 @@ import json
 import base64 as b64lib
 import os
 import sys
+import subprocess
+import tempfile
 import requests
 from datetime import datetime, date, timedelta
 import pytz
@@ -363,7 +365,7 @@ def send_diagram(topic):
             mermaid_code = mermaid_code.replace("```mermaid", "").replace("```", "").strip()
         except Exception:
             return
-    send_mermaid_diagram(mermaid_code, "Full Architecture: " + topic.split(":")[0].strip())
+    send_mermaid_video(mermaid_code, "Full Architecture: " + topic.split(":")[0].strip())
 
 
 def format_lesson_header(lesson, topic, day_name, today_str):
@@ -413,6 +415,82 @@ def send_mermaid_diagram(mermaid_code, caption):
             print("Diagram send failed:", resp.text[:100])
     except Exception as e:
         print("Diagram skipped:", e)
+
+
+def send_mermaid_video(mermaid_code, caption):
+    """Ken Burns zoom animation of the Mermaid diagram, sent as MP4 to Telegram.
+    Falls back to static image if ffmpeg is unavailable or fails."""
+    try:
+        encoded = b64lib.urlsafe_b64encode(mermaid_code.encode()).decode()
+        diagram_url = f"https://mermaid.ink/img/{encoded}"
+        img = requests.get(diagram_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if img.status_code != 200:
+            print("mermaid.ink fetch failed:", img.status_code)
+            return
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            img_path = os.path.join(tmpdir, "in.jpg")
+            vid_path = os.path.join(tmpdir, "out.mp4")
+            with open(img_path, "wb") as f:
+                f.write(img.content)
+
+            # Escape caption for ffmpeg drawtext
+            safe_text = (caption
+                .replace("\\", "\\\\")
+                .replace("'", "’")
+                .replace(":", "\\:")
+                .replace("[", "\\[")
+                .replace("]", "\\]")
+                .replace(",", "\\,")
+            )
+
+            # Ken Burns: slow zoom 1.0x -> 1.25x over 25s, fade in/out, caption overlay
+            vf = (
+                "zoompan=z='min(zoom+0.0005,1.25)':d=600"
+                ":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)',"
+                "scale=1280:720:flags=lanczos,"
+                "fade=t=in:st=0:d=1,"
+                "fade=t=out:st=23:d=2,"
+                f"drawtext=text='{safe_text}'"
+                ":fontsize=28:fontcolor=white:x=(w-text_w)/2:y=h-th-25"
+                ":box=1:boxcolor=black@0.6:boxborderw=10,"
+                "format=yuv420p"
+            )
+
+            proc = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-loop", "1",
+                    "-i", img_path,
+                    "-vf", vf,
+                    "-t", "25", "-r", "24",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    vid_path,
+                ],
+                capture_output=True, timeout=120,
+            )
+
+            if proc.returncode != 0:
+                print("ffmpeg error, falling back to image:", proc.stderr.decode()[-400:])
+                send_mermaid_diagram(mermaid_code, caption)
+                return
+
+            with open(vid_path, "rb") as vf_file:
+                resp = requests.post(
+                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo",
+                    data={"chat_id": CHAT_ID, "caption": caption, "supports_streaming": True},
+                    files={"video": ("diagram.mp4", vf_file, "video/mp4")},
+                    timeout=90,
+                )
+            if resp.status_code != 200:
+                print("sendVideo failed:", resp.text[:200])
+
+    except FileNotFoundError:
+        # ffmpeg not installed on this runner
+        print("ffmpeg not found, sending static image instead")
+        send_mermaid_diagram(mermaid_code, caption)
+    except Exception as e:
+        print("Video skipped, falling back to image:", e)
+        send_mermaid_diagram(mermaid_code, caption)
 
 
 def format_tasks_and_terms(lesson):
@@ -557,7 +635,7 @@ def main():
         for i, concept in enumerate(lesson["concepts"]):
             send_long(format_concept(concept, i + 1))
             if i < len(concept_diagrams):
-                send_mermaid_diagram(
+                send_mermaid_video(
                     concept_diagrams[i],
                     "Concept " + str(i + 1) + ": " + concept["name"]
                 )
