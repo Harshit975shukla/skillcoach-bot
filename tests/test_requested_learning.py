@@ -55,6 +55,19 @@ def test_short_webhook_budget_defers_unsent_work_without_failure_notice(harness)
     assert not any("delivery-error" in key for key in h.repo.outbox)
 
 
+def test_background_text_delivery_has_budget_for_private_database_roundtrips(harness, monkeypatch):
+    budgets = []
+    monkeypatch.setattr(harness.runtime, "process_one", lambda budget: False)
+
+    def delivery(budget, *, media=False):
+        budgets.append(budget.remaining())
+        return False
+
+    monkeypatch.setattr(harness.runtime, "deliver_one", delivery)
+    harness.runtime.recover(media=False, limit=1)
+    assert len(budgets) == 1 and 40 < budgets[0] <= 45
+
+
 @pytest.mark.postgres
 def test_recovered_delivery_suppresses_its_pending_error_notice(pg_repo, config):
     runtime = Runtime(config, pg_repo, FakeAI(), FakeTelegram(), FakePublisher())
