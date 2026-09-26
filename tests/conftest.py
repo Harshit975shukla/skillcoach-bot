@@ -1,5 +1,6 @@
 import copy
 import os
+from contextlib import nullcontext
 from datetime import datetime
 from types import SimpleNamespace
 from uuid import uuid4
@@ -108,6 +109,9 @@ class MemoryRepository:
     def for_learner(self, learner_id):
         assert learner_id == "owner", "Use real PostgreSQL tests for multi-learner persistence"
         return self
+
+    def session(self):
+        return nullcontext()
 
     def member(self):
         return {"id": "owner", "status": "active", "generation": 1}

@@ -36,6 +36,10 @@ def test_real_connection_disables_automatic_prepared_statements(monkeypatch):
         def execute(self, *args):
             return None
 
+        @contextmanager
+        def transaction(self):
+            yield
+
     @contextmanager
     def connect(*args, **kwargs):
         captured.update(kwargs)
@@ -45,6 +49,7 @@ def test_real_connection_disables_automatic_prepared_statements(monkeypatch):
     with Repository("postgresql://not-contacted").connection():
         pass
     assert captured["prepare_threshold"] is None
+    assert captured["autocommit"] is True
 
 
 def test_supabase_ca_is_packaged_and_requires_hostname_verification(monkeypatch):

@@ -121,16 +121,18 @@ def create_app(runtime=None):
                 return jsonify(error="unauthorized"), 403
             if status == "ignored":
                 return jsonify(status="ignored"), 200
-            admission = current.repo.accept_update(update["update_id"], payload, current.config)
-            if payload.get("callback_id"):
-                try:
-                    current.telegram.acknowledge(payload["callback_id"], budget)
-                except ExternalError as exc:
-                    log.warning("callback_ack_failed code=%s", exc.code)
-            current.process_one(budget)
-            for _ in range(3):
-                if not current.deliver_one(budget, media=False):
-                    break
+            with current.repo.session():
+                admission = current.repo.accept_update(update["update_id"], payload, current.config)
+                if payload.get("callback_id"):
+                    try:
+                        # Keep the optional callback toast from consuming the answer-processing budget.
+                        current.telegram.acknowledge(payload["callback_id"], Budget(3))
+                    except ExternalError as exc:
+                        log.warning("callback_ack_failed code=%s", exc.code)
+                current.process_one(budget)
+                for _ in range(3):
+                    if not current.deliver_one(budget, media=False):
+                        break
             return jsonify(status="persisted", access=admission, recovery="scheduled-worker-or-retry"), 202
         except ConfigurationError:
             log.error("configuration_unavailable")

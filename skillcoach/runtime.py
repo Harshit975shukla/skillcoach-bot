@@ -179,17 +179,18 @@ class Runtime:
         for _ in range(limit):
             if time.monotonic() + 20 >= deadline:
                 break
-            worked = self.process_one(Budget(20))
-            for _ in range(3):
-                can_render = media and time.monotonic() + 210 < deadline
-                # Background workers need room for DB authorization plus transport. Webhooks
-                # still use their own 20-second request budget and leave unsent work pending.
-                seconds = 210 if can_render else 45
-                if time.monotonic() + seconds >= deadline:
-                    break
-                if not self.deliver_one(Budget(seconds), media=can_render):
-                    break
-                worked = True
+            with self.repo.session():
+                worked = self.process_one(Budget(20))
+                for _ in range(3):
+                    can_render = media and time.monotonic() + 210 < deadline
+                    # Background workers need room for DB authorization plus transport. Webhooks
+                    # still use their own 20-second request budget and leave unsent work pending.
+                    seconds = 210 if can_render else 45
+                    if time.monotonic() + seconds >= deadline:
+                        break
+                    if not self.deliver_one(Budget(seconds), media=can_render):
+                        break
+                    worked = True
             if not worked:
                 break
 

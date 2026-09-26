@@ -3,6 +3,7 @@
 import os
 import re
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from uuid import uuid4
 
@@ -38,6 +39,7 @@ class Repository:
         self.schema = schema
         self.learner_id = learner_id
         self.owner_id = owner_id
+        self._session_connection = ContextVar("skillcoach_connection", default=None)
         configured_ca = os.getenv("DATABASE_CA_CERT_FILE", "")
         self.ca_cert_file = None
         if configured_ca:
@@ -55,7 +57,9 @@ class Repository:
         return self.learner_id == "owner"
 
     def for_learner(self, learner_id: str):
-        return Repository(self.url, schema=self.schema, learner_id=learner_id, owner_id=self.owner_id)
+        scoped = Repository(self.url, schema=self.schema, learner_id=learner_id, owner_id=self.owner_id)
+        scoped._session_connection = self._session_connection
+        return scoped
 
     def member(self):
         with self.connection() as conn:
@@ -105,19 +109,35 @@ class Repository:
         return row
 
     @contextmanager
-    def connection(self):
+    def session(self):
+        """Reuse one TCP connection in this request/worker turn, never one long transaction."""
+        if self._session_connection.get() is not None:
+            yield
+            return
         with psycopg.connect(
             self.url,
             connect_timeout=5,
             row_factory=dict_row,
             prepare_threshold=None,
+            autocommit=True,
             **({"sslrootcert": self.ca_cert_file} if self.ca_cert_file else {}),
         ) as conn:
-            # Transaction-local settings also work with session/transaction poolers.
-            conn.execute("SET LOCAL statement_timeout = '5s'")
-            conn.execute("SET LOCAL lock_timeout = '3s'")
-            conn.execute(sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(self.schema)))
-            yield conn
+            token = self._session_connection.set(conn)
+            try:
+                yield
+            finally:
+                self._session_connection.reset(token)
+
+    @contextmanager
+    def connection(self):
+        with self.session():
+            conn = self._session_connection.get()
+            with conn.transaction():
+                # Reapply within every short transaction, including with transaction poolers.
+                conn.execute("SET LOCAL statement_timeout = '5s'")
+                conn.execute("SET LOCAL lock_timeout = '3s'")
+                conn.execute(sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(self.schema)))
+                yield conn
 
     def migrate(self):
         with self.connection() as conn:
