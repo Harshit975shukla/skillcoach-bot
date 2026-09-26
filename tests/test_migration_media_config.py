@@ -120,6 +120,8 @@ def test_dependency_python_workflow_and_help_consistency():
     assert "rewrites" not in json.loads(Path("vercel.json").read_text())
     assert project["tool"]["vercel"]["entrypoint"] == "api.webhook:app"
     assert "needs: test" in ci and "vars.SKILLCOACH_BOOTSTRAP_SHA == github.sha" in ci
+    assert "github.event_name == 'workflow_dispatch' && vars.SKILLCOACH_UPGRADE_SHA == github.sha" in ci
+    assert "upgrade-schema --writers-stopped" in ci
     for caller in ("morning_lesson.yml", "evening_quiz.yml", "weekend.yml", "recovery.yml"):
         workflow = Path(".github", "workflows", caller).read_text()
         assert "contents: read" in workflow and "actions: read" in workflow

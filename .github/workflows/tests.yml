@@ -67,3 +67,24 @@ jobs:
           DATABASE_CA_CERT_FILE: ${{ vars.DATABASE_CA_CERT_FILE }}
           SKILLCOACH_RUNTIME_PASSWORD: ${{ secrets.SKILLCOACH_RUNTIME_PASSWORD }}
         run: python -m skillcoach.cli bootstrap-fresh
+  upgrade-existing-database:
+    needs: test
+    if: github.event_name == 'workflow_dispatch' && vars.SKILLCOACH_UPGRADE_SHA == github.sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - name: Apply explicitly authorized additive upgrade with writers stopped
+        env:
+          DATABASE_URL: ${{ secrets.SKILLCOACH_UPGRADE_DATABASE_URL }}
+          DATABASE_CA_CERT_FILE: ${{ vars.DATABASE_CA_CERT_FILE }}
+        run: python -m skillcoach.cli upgrade-schema --writers-stopped
+      - name: Verify the restricted production role can read the upgraded schema
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_CA_CERT_FILE: ${{ vars.DATABASE_CA_CERT_FILE }}
+        run: python -m skillcoach.cli status
