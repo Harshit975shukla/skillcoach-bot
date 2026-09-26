@@ -92,14 +92,22 @@ def _admin(conn, update_id, key, owner, command, argument, config, *, owner_outp
                 conn,
                 key,
                 owner,
-                "Open your owner-only admin dashboard. Guest learning documents and answers are not exposed.",
+                "Open your owner-only admin dashboard inside Telegram for automatic verification - no code "
+                "to copy. The browser alternative uses a matching-code approval. "
+                "Guest learning documents and answers are not exposed.",
                 buttons=[
                     [
                         {
-                            "text": "Open admin dashboard",
+                            "text": "Open Admin in Telegram",
+                            "web_app": {"url": urljoin(config.private_dashboard_url, "/admin")},
+                        }
+                    ],
+                    [
+                        {
+                            "text": "Open in browser",
                             "url": urljoin(config.private_dashboard_url, "/admin"),
                         }
-                    ]
+                    ],
                 ],
             )
     elif command == "invite":

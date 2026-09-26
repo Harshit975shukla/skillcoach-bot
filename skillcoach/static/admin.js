@@ -3,9 +3,9 @@
   const $ = id => document.getElementById(id);
   const telegram = window.Telegram && window.Telegram.WebApp;
   const framed = window.self !== window.top;
-  let csrf = "", preview = null, overview = null, poll = null, sessionTimer = null, busy = false;
+  let csrf = "", telegramSession = "", preview = null, overview = null, poll = null, sessionTimer = null, busy = false;
   let requestId = null;
-  let epoch = 0, actionVersion = 0, pendingLogin = null, loginPollBusy = false;
+  let epoch = 0, actionVersion = 0, pendingLogin = null, loginPollBusy = false, signedOut = false;
   const controllers = new Set();
   class StaleRequest extends Error {}
   const node = (tag, value, cls) => {
@@ -29,7 +29,7 @@
   }
   function clearPrivate(keepLogin = false) {
     invalidateRequests();
-    csrf = ""; preview = null; overview = null; requestId = null; busy = false; actionVersion += 1;
+    csrf = ""; telegramSession = ""; preview = null; overview = null; requestId = null; busy = false; actionVersion += 1;
     if (!keepLogin) {
       pendingLogin = null; $("login-challenge").hidden = true;
       $("login-code").textContent = ""; $("telegram-login-link").removeAttribute("href");
@@ -48,13 +48,23 @@
   }
   function showError(error) {
     if (error instanceof StaleRequest) return;
-    if (error.status === 403) clearPrivate();
+    if (error.status === 403) {
+      if (framed) { browserFallback(error.message); return; }
+      clearPrivate();
+    }
     message(error.message, true);
   }
-  async function api(path, body, method = "POST", csrfOverride) {
+  async function api(path, body, method = "POST", csrfOverride, telegramOverride) {
     const requestEpoch = epoch, controller = new AbortController();
     controllers.add(controller);
-    const options = {method, cache: "no-store", credentials: "same-origin", headers: {}, signal: controller.signal};
+    const memoryToken = telegramOverride || telegramSession;
+    const options = {method, cache: "no-store",
+      credentials: memoryToken || (telegram && telegram.initData) ? "omit" : "same-origin",
+      headers: {}, signal: controller.signal};
+    if (memoryToken) {
+      options.headers["X-Admin-Session"] = memoryToken;
+      options.headers["X-Telegram-Init-Data"] = telegram.initData;
+    }
     if (method !== "GET") {
       options.headers["Content-Type"] = "application/json";
       if (csrfOverride || csrf) options.headers["X-CSRF-Token"] = csrfOverride || csrf;
@@ -80,28 +90,35 @@
   function establish(session) {
     pendingLogin = null;
     csrf = session.csrf;
+    telegramSession = session.session_token || "";
     $("login").hidden = true; $("refresh").hidden = false; $("logout").hidden = false;
     if (poll) { clearInterval(poll); poll = null; }
     clearTimeout(sessionTimer);
     sessionTimer = setTimeout(() => {
-      clearPrivate(); message("Your admin session expired. Sign in again.");
+      clearPrivate();
+      if (framed) browserFallback("Your admin session expired.");
+      else message("Your admin session expired. Sign in again.");
     }, Math.max(0, new Date(session.expires_at).getTime() - Date.now()));
     $("session-expiry").textContent = `Owner session expires ${date(session.expires_at)} IST.`;
   }
   async function signIn() {
     try {
       let session;
-      try { session = await api("/admin/session", null, "GET"); }
-      catch (error) {
-        if (error instanceof StaleRequest || error.status !== 403) throw error;
-        if (!telegram || !telegram.initData) {
+      if (telegram && telegram.initData) {
+        session = await api("/admin/telegram-session", {init_data: telegram.initData});
+      } else {
+        try { session = await api("/admin/session", null, "GET"); }
+        catch (error) {
+          if (error instanceof StaleRequest || error.status !== 403) throw error;
           clearPrivate(); message("Owner sign-in is required."); return;
         }
-        session = await api("/admin/session", {init_data: telegram.initData});
       }
       establish(session); await refresh();
     } catch (error) {
-      if (!(error instanceof StaleRequest)) { clearPrivate(); message(error.message, true); }
+      if (!(error instanceof StaleRequest)) {
+        clearPrivate(); message(error.message, true);
+        if (framed) browserFallback(error.message);
+      }
     }
   }
   const empty = (id, text) => $(id).append(node("li", text, "empty"));
@@ -324,6 +341,7 @@
     }, 3000);
   }
   $("start-login").addEventListener("click", async () => {
+    signedOut = false;
     clearPrivate();
     const requestEpoch = epoch;
     $("start-login").disabled = true;
@@ -338,9 +356,14 @@
   });
   $("refresh").addEventListener("click", refresh);
   $("logout").addEventListener("click", async () => {
-    const previousCsrf = csrf;
+    const previousCsrf = csrf, previousTelegramSession = telegramSession;
+    signedOut = true;
     clearPrivate();
-    try { await api("/admin/logout", {}, "POST", previousCsrf); message("Signed out."); }
+    try {
+      await api("/admin/logout", {}, "POST", previousCsrf, previousTelegramSession);
+      if (framed) browserFallback("Signed out.");
+      else message("Signed out.");
+    }
     catch (error) { showError(error); }
   });
   if (telegram) {
@@ -354,13 +377,16 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) clearPrivate(true);
     else if (pendingLogin) pollLogin();
-    else if (!framed) signIn();
+    else if (!signedOut && (!framed || (telegram && telegram.initData))) signIn();
   });
-  if (framed) {
+  function browserFallback(errorText) {
     clearPrivate();
     $("start-login").hidden = true;
     $("open-browser").hidden = false;
     $("open-browser").href = new URL("/admin", location.href).href;
-    message("Open administration in your browser. Embedded Telegram Web frames can block secure session cookies.");
-  } else signIn();
+    message((errorText ? errorText + " " : "") +
+      "Reopen using /admin in Telegram for a fresh owner login, or use the browser approval option.", Boolean(errorText));
+  }
+  if (framed && !(telegram && telegram.initData)) browserFallback();
+  else signIn();
 })();

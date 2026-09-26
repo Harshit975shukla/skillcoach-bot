@@ -7,7 +7,7 @@ import secrets
 from datetime import timedelta
 from urllib.parse import urlsplit
 
-from skillcoach.dashboard import DashboardDenied, verify_init_data
+from skillcoach.dashboard import MAX_AUTH_AGE, DashboardDenied, verify_init_data
 
 SESSION_COOKIE = "__Host-skillcoach-admin"
 LOGIN_COOKIE = "__Host-skillcoach-login"
@@ -40,11 +40,17 @@ def same_origin(request):
         raise AdminDenied("Cross-site administration is not allowed.")
 
 
-def new_session(conn, config, now):
+def new_session(conn, config, now, *, telegram_issued=None):
     if config.owner_id <= 0:
         raise AdminDenied("Administrator identity is not configured.")
     token = secrets.token_urlsafe(32)
-    expires = now + timedelta(seconds=SESSION_SECONDS)
+    seconds = SESSION_SECONDS
+    if telegram_issued is not None:
+        token = "tg_" + token
+        seconds = min(MAX_AUTH_AGE, telegram_issued + MAX_AUTH_AGE - int(now.timestamp()))
+        if seconds <= 0:
+            raise AdminDenied("Reopen the admin panel from Telegram for a fresh launch.")
+    expires = now + timedelta(seconds=seconds)
     conn.execute(
         "INSERT INTO admin_sessions(token_hash,owner_id,expires_at) VALUES (%s,%s,%s)",
         (digest(token), config.owner_id, expires),
@@ -55,9 +61,27 @@ def new_session(conn, config, now):
 def authenticate(request, runtime, *, mutate=False):
     if request.args:
         raise AdminDenied("Do not put identity or credentials in URL parameters.")
-    token = request.cookies.get(SESSION_COOKIE, "")
-    if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
-        raise AdminDenied("Sign in as the owner to continue.")
+    cookie = request.cookies.get(SESSION_COOKIE, "")
+    header = request.headers.get("X-Admin-Session", "")
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    if header or init_data:
+        if not re.fullmatch(r"tg_[A-Za-z0-9_-]{43}", header) or not init_data:
+            raise AdminDenied("Reopen the admin panel using its Telegram button.")
+        if cookie and cookie != header:
+            raise AdminDenied("Conflicting authentication transports. Reopen the dashboard.")
+        try:
+            actor, _ = verify_init_data(
+                init_data, runtime.config.telegram_token, int(runtime.clock().timestamp())
+            )
+        except DashboardDenied as exc:
+            raise AdminDenied(str(exc)) from None
+        if actor != runtime.config.owner_id:
+            raise AdminDenied("Only the bot owner can use this admin panel.")
+        token = header
+    else:
+        token = cookie
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+            raise AdminDenied("Sign in as the owner to continue.")
     with runtime.repo.connection() as conn:
         session = conn.execute(
             "SELECT token_hash,owner_id,expires_at FROM admin_sessions "
@@ -75,9 +99,9 @@ def authenticate(request, runtime, *, mutate=False):
     return session, token
 
 
-def login_from_telegram(runtime, init_data):
+def login_from_telegram(runtime, init_data, *, memory=False):
     try:
-        actor, _ = verify_init_data(
+        actor, issued = verify_init_data(
             init_data, runtime.config.telegram_token, int(runtime.clock().timestamp())
         )
     except DashboardDenied as exc:
@@ -93,7 +117,7 @@ def login_from_telegram(runtime, init_data):
         ).fetchone()["n"]
         if count >= 20:
             raise AdminDenied("Too many recent admin sign-ins. Wait five minutes.")
-        return new_session(conn, runtime.config, runtime.clock())
+        return new_session(conn, runtime.config, runtime.clock(), telegram_issued=issued if memory else None)
 
 
 def start_login(runtime):

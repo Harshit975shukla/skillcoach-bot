@@ -535,6 +535,22 @@ def register_admin(app, runtime_factory):
         token, expires = login_from_telegram(runtime, body["init_data"])
         return session_response(runtime, token, expires)
 
+    @app.post("/admin/telegram-session")
+    @endpoint
+    def telegram_memory_session():
+        same_origin(request)
+        body = _json_body(request, {"init_data"})
+        runtime = runtime_factory()
+        token, expires = login_from_telegram(runtime, body["init_data"], memory=True)
+        # Cookie-free, memory-only transport for Telegram's cross-site embedded web clients.
+        return jsonify(
+            authenticated=True,
+            transport="telegram",
+            session_token=token,
+            csrf=csrf_token(token, runtime.config),
+            expires_at=expires.isoformat(),
+        )
+
     @app.post("/admin/login/start")
     @endpoint
     def begin_login():

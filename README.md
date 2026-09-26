@@ -7,18 +7,26 @@ An invite-only Telegram interview coach with one administrator: **full lessons a
 ### Owner administration
 
 The owner console is served at `/admin` on the existing Vercel application. Use `/admin` in your
-bot to get its browser link. It is not a public GitHub Pages data file and does not require a paid
+bot and tap **Open Admin in Telegram** for the simplest sign-in: Telegram supplies signed launch
+data and the server verifies the configured owner automatically. No code needs to be copied or shared.
+An **Open in browser** alternative is also available. It is not a public GitHub Pages data file and does not require a paid
 authentication provider.
 
 In a normal browser, select **Sign in through Telegram**. A five-minute request is bound to a
 high-entropy HttpOnly browser cookie. Open the bot link and approve only if the six-character code
 matches the browser you started. The link identifier alone cannot claim a login: only that browser's
 private verifier can exchange the owner-approved request, once. Reject unexpected requests.
-An owner-signed Telegram launch can also initialize a session in a first-party context. Embedded
-frames are directed to an external browser rather than weakening cross-site cookie security.
+The cookie-free Telegram flow also works in embedded Telegram Web frames. It creates a distinct
+short-lived session token stored only in JavaScript memory. Each request sends that token plus
+fresh signed Telegram initData in dedicated headers; the backend rechecks signature, owner,
+session expiry, Origin and CSRF. Its lifetime cannot exceed the launch data's five-minute freshness.
+It cannot be used as a browser-cookie credential, and conflicting header/cookie identities are rejected.
+No tokens are put in URLs, localStorage or sessionStorage. If Telegram authentication is absent,
+expired or denied, the interface offers a clear browser fallback rather than repeated sign-in attempts.
 
-Admin sessions expire after 15 minutes, use Secure/HttpOnly/SameSite=Strict cookies and can be
-signed out. Every private request rechecks the configured owner; every data/action POST checks its
+Browser admin sessions expire after 15 minutes, use Secure/HttpOnly/SameSite=Strict cookies and can be
+signed out. Telegram memory sessions expire within five minutes and also support logout.
+Every private request rechecks the configured owner; every data/action POST checks its
 Origin and CSRF token. No credentials are stored in URLs or localStorage. Pending browser responses
 are aborted and epoch-checked after logout, expiry or hiding the page, so an old response cannot
 repopulate private content.

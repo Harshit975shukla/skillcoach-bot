@@ -5,6 +5,8 @@ import { join } from "node:path";
 import puppeteer from "puppeteer";
 
 let authenticated = false, approved = false, executions = 0, authRequests = 0;
+let telegramFrameEnabled = false, rejectTelegramFrame = false;
+const memoryRequests = [];
 const received = [];
 const previewId = "b286e036-b0a5-4844-b0c2-8044a20c2389";
 const fixture = {
@@ -214,6 +216,27 @@ try {
     const host = new URL(request.url()).hostname;
     if (host === "embedded-admin.invalid") {
       const path = new URL(request.url()).pathname;
+      if (path === "/admin/telegram-session") {
+        authRequests += 1;
+        assert.equal(request.method(), "POST");
+        assert.deepEqual(JSON.parse(request.postData()), {init_data: "synthetic-owner-launch"});
+        request.respond({status: rejectTelegramFrame ? 403 : 200, contentType: "application/json", body: JSON.stringify(
+          rejectTelegramFrame ? {error: "Only the owner can open administration."} :
+          {authenticated: true, transport: "telegram", session_token: "tg_" + "x".repeat(43),
+           csrf: "memory-csrf", expires_at: new Date(Date.now() + 300000).toISOString()}
+        )});
+        return;
+      }
+      if (path === "/admin/data" || path === "/admin/logout") {
+        memoryRequests.push({path, headers: request.headers()});
+        assert.equal(request.headers()["x-admin-session"], "tg_" + "x".repeat(43));
+        assert.equal(request.headers()["x-telegram-init-data"], "synthetic-owner-launch");
+        assert.equal(request.headers()["x-csrf-token"], "memory-csrf");
+        assert.equal(request.headers().cookie, undefined);
+        request.respond({status: 200, contentType: "application/json",
+          body: JSON.stringify(path === "/admin/logout" ? {logged_out: true} : fixture)});
+        return;
+      }
       const file = path === "/admin" ? "admin.html" : path.replace("/static/", "");
       if (!["admin.html", "admin.css", "admin.js", "dashboard.css"].includes(file)) {
         authRequests += 1;
@@ -221,7 +244,10 @@ try {
       } else request.respond({status: 200,
         contentType: file.endsWith(".js") ? "text/javascript" : file.endsWith(".css") ? "text/css" : "text/html",
         body: await readFile(join("skillcoach", "static", file))});
-    } else if (request.url().startsWith("https://telegram.org/")) request.respond({status: 200, contentType: "text/javascript", body: ""});
+    } else if (request.url().startsWith("https://telegram.org/")) request.respond({
+      status: 200, contentType: "text/javascript", body: telegramFrameEnabled
+        ? "window.Telegram={WebApp:{initData:'synthetic-owner-launch',colorScheme:'light',ready(){},onEvent(){}}};" : ""
+    });
     else if (host === "127.0.0.1") request.continue();
     else request.abort();
   });
@@ -234,9 +260,32 @@ try {
   assert.equal(await embedded.$eval("#start-login", e => e.hidden), true);
   assert.equal(await embedded.$eval("#open-browser", e => e.target), "_blank");
   assert.equal(authRequests, priorAuthRequests);
+  telegramFrameEnabled = true;
+  await framePage.setCookie({name: "__Host-skillcoach-admin", value: "unrelated-strict-cookie",
+                            url: "https://embedded-admin.invalid/", secure: true, path: "/", sameSite: "Strict"});
+  await framePage.reload();
+  let miniapp = framePage.frames().find(frame => frame.url().includes("embedded-admin.invalid") && frame.url().endsWith("/admin"));
+  await miniapp.waitForFunction(() => !document.getElementById("console").hidden);
+  assert.equal(await miniapp.$$eval("#members tr", rows => rows.length), 3);
+  assert.ok(memoryRequests.some(item => item.path === "/admin/data"));
+  assert.equal(await miniapp.evaluate(() => localStorage.length + sessionStorage.length), 0);
+  await miniapp.click("#logout");
+  await miniapp.waitForFunction(() => document.getElementById("console").hidden);
+  assert.ok(memoryRequests.some(item => item.path === "/admin/logout"));
+  assert.equal(await miniapp.$$eval("#members tr", rows => rows.length), 0);
+  const afterLogoutRequests = authRequests;
+  await miniapp.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(authRequests, afterLogoutRequests);
+  rejectTelegramFrame = true;
+  await framePage.reload();
+  miniapp = framePage.frames().find(frame => frame.url().includes("embedded-admin.invalid") && frame.url().endsWith("/admin"));
+  await miniapp.waitForFunction(() => !document.getElementById("open-browser").hidden);
+  assert.equal(await miniapp.$eval("#console", e => e.hidden), true);
+  assert.match(await miniapp.$eval("#message", e => e.textContent), /Only the owner/);
   await framePage.close();
   assert.ok(received.every(body => body.target === "owner" && body.action === "invite"));
-  console.log("Admin desktop/mobile login, confirmation/idempotency, XSS, stale-response clearing and cross-site frame safe-opening checks passed.");
+  console.log("Admin browser and cookie-free Telegram-frame login, confirmation, XSS, logout, stale-response and safe fallback checks passed.");
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

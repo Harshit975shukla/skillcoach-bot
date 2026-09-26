@@ -353,3 +353,111 @@ def test_admin_overview_contains_counts_not_private_learning_content(admin):
     assert member["progress"]["assigned"] == 1 and member["progress"]["interviews_completed"] == 1
     assert "profile" not in member and "telegram_id" not in member
     assert response.headers["Cache-Control"] == "no-store, private"
+
+
+def memory_login(admin, actor=None, issued=None):
+    init_data = signed(
+        actor or admin.bot.config.owner_id,
+        admin.bot.config.telegram_token,
+        int(admin.clock.now.timestamp()) if issued is None else issued,
+    )
+    response = post(admin, "/admin/telegram-session", {"init_data": init_data})
+    return response, init_data
+
+
+def memory_post(admin, path, body, session, init_data, *, origin=ORIGIN, csrf=True):
+    headers = {
+        "Origin": origin,
+        "X-Admin-Session": session["session_token"],
+        "X-Telegram-Init-Data": init_data,
+    }
+    if csrf:
+        headers["X-CSRF-Token"] = session["csrf"]
+    return admin.client.post(path, base_url=ORIGIN, json=body, headers=headers)
+
+
+def test_one_tap_owner_session_needs_no_cookies_and_logs_out(admin):
+    response, init_data = memory_login(admin)
+    assert response.status_code == 200 and response.json["transport"] == "telegram"
+    assert "Set-Cookie" not in response.headers
+    assert response.headers["Cache-Control"] == "no-store, private"
+    session = response.json
+    assert session["session_token"].startswith("tg_")
+    assert (datetime.fromisoformat(session["expires_at"]) - admin.clock.now).total_seconds() <= 300
+    assert admin.client.get_cookie(SESSION_COOKIE) is None
+    assert memory_post(admin, "/admin/data", {}, session, init_data).status_code == 200
+    assert memory_post(admin, "/admin/data", {}, session, init_data, csrf=False).status_code == 403
+    assert (
+        memory_post(admin, "/admin/data", {}, session, init_data, origin="https://evil.invalid").status_code
+        == 403
+    )
+    assert memory_post(admin, "/admin/logout", {}, session, init_data).json["logged_out"]
+    assert memory_post(admin, "/admin/data", {}, session, init_data).status_code == 403
+
+
+def test_one_tap_revalidates_signed_owner_and_freshness_on_every_request(admin):
+    response, init_data = memory_login(admin)
+    session = response.json
+    guest_data = signed(101, admin.bot.config.telegram_token, int(admin.clock.now.timestamp()))
+    assert memory_post(admin, "/admin/data", {}, session, guest_data).status_code == 403
+    assert memory_post(admin, "/admin/data", {}, session, init_data + "&user=bad").status_code == 403
+    assert memory_post(admin, "/admin/data", {}, session, "").status_code == 403
+    admin.clock.now += timedelta(seconds=301)
+    assert memory_post(admin, "/admin/data", {}, session, init_data).status_code == 403
+    assert memory_login(admin, actor=101)[0].status_code == 403
+
+
+def test_one_tap_session_cannot_downgrade_to_cookie_or_mix_credentials(admin):
+    response, init_data = memory_login(admin)
+    session = response.json
+    admin.client.set_cookie(SESSION_COOKIE, session["session_token"])
+    admin.csrf = session["csrf"]
+    assert post(admin, "/admin/data").status_code == 403
+    admin.client.delete_cookie(SESSION_COOKIE)
+    login(admin)  # A distinct browser-cookie session must not silently switch preview identity.
+    assert memory_post(admin, "/admin/data", {}, session, init_data).status_code == 403
+
+
+def test_one_tap_preview_stays_bound_to_its_memory_session(admin):
+    first, init_data = memory_login(admin)
+    session = first.json
+    body = {
+        "request_id": str(uuid4()),
+        "action": "invite",
+        "target": "owner",
+        "arguments": {"label": "One tap test"},
+    }
+    previewed = memory_post(admin, "/admin/action/preview", body, session, init_data)
+    assert previewed.status_code == 200
+    confirmation = {
+        "request_id": previewed.json["request_id"],
+        "confirmation": previewed.json["confirmation"],
+    }
+    second, second_data = memory_login(admin)
+    assert (
+        memory_post(admin, "/admin/action/execute", confirmation, second.json, second_data).status_code == 403
+    )
+    assert memory_post(admin, "/admin/action/execute", confirmation, session, init_data).status_code == 200
+    assert memory_post(admin, "/admin/action/execute", confirmation, session, init_data).json["duplicate"]
+
+
+def test_one_tap_owner_reconfiguration_invalidates_header_session(admin):
+    from dataclasses import replace
+
+    response, init_data = memory_login(admin)
+    admin.bot.runtime.config = replace(admin.bot.runtime.config, owner_id=84)
+    assert memory_post(admin, "/admin/data", {}, response.json, init_data).status_code == 403
+
+
+def test_admin_command_has_one_tap_and_normal_browser_choices(admin):
+    from dataclasses import replace
+
+    config = replace(admin.bot.config, private_dashboard_url="https://example.com/app")
+    admin.bot.config = config
+    admin.bot.runtime.config = config
+    admin.bot.input(config.owner_id, "/admin")
+    buttons = admin.bot.runtime.telegram.messages[-1][1]
+    assert buttons == [
+        [{"text": "Open Admin in Telegram", "web_app": {"url": "https://example.com/admin"}}],
+        [{"text": "Open in browser", "url": "https://example.com/admin"}],
+    ]
