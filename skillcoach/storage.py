@@ -96,12 +96,12 @@ class Repository:
         return member
 
     def _job(self, conn, job):
+        member = self._ensure_access(conn)
         row = conn.execute(
             "SELECT * FROM jobs WHERE id=%s AND learner_id=%s FOR UPDATE", (job, self.learner_id)
         ).fetchone()
-        if not row or row["status"] == "cancelled":
+        if not row or row["status"] == "cancelled" or row["access_generation"] != member["generation"]:
             raise MembershipChanged("Work is no longer authorized")
-        self._ensure_access(conn, row["access_generation"])
         return row
 
     @contextmanager
@@ -201,11 +201,14 @@ class Repository:
             row = conn.execute(
                 "SELECT j.* FROM jobs j JOIN learners l ON l.id=j.learner_id "
                 "WHERE j.status IN ('pending','running','failed') AND j.available_at<=now() "
-                "AND j.attempts < 5 AND l.status='active' AND l.generation=j.access_generation ORDER BY "
+                "AND j.attempts < 5 AND l.status='active' AND l.generation=j.access_generation ORDER BY l.last_job_at, "
                 "CASE WHEN j.payload->>'text' IN ('/cancel','/pause','/retry') THEN 0 ELSE 1 END, j.sequence "
-                "LIMIT 1 FOR UPDATE OF j"
+                "LIMIT 1 FOR UPDATE OF l"
             ).fetchone()
             if row:
+                conn.execute(
+                    "UPDATE learners SET last_job_at=clock_timestamp() WHERE id=%s", (row["learner_id"],)
+                )
                 conn.execute(
                     "UPDATE jobs SET status='running', attempts=attempts+1 WHERE id=%s", (row["id"],)
                 )
@@ -352,14 +355,34 @@ class Repository:
                 "OR (l.status<>'active' AND NOT o.access_notice))"
             )
             # A failed item blocks only its own ordered message group, not unrelated commands.
-            return conn.execute(
-                "SELECT o.* FROM outbox o WHERE o.status IN ('pending','failed') "
+            row = conn.execute(
+                "SELECT o.* FROM outbox o JOIN learners l ON l.id=o.learner_id "
+                "WHERE o.status IN ('pending','failed') "
                 "AND o.available_at<=now() AND o.attempts < 5 "
                 "AND (%s OR o.body->>'kind' <> 'media') AND (o.body->>'recovery_notice'='true' OR NOT EXISTS "
                 "(SELECT 1 FROM outbox p WHERE p.job_id=o.job_id AND p.sequence<o.sequence "
-                "AND p.status IN ('pending','failed'))) ORDER BY o.sequence LIMIT 1",
+                "AND p.status IN ('pending','failed'))) "
+                "ORDER BY CASE WHEN o.body->>'kind'='media' THEN 1 ELSE 0 END, "
+                "l.last_delivery_at,o.sequence LIMIT 1",
                 (media,),
             ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE learners SET last_delivery_at=clock_timestamp() WHERE id=%s", (row["learner_id"],)
+                )
+            return row
+
+    def ensure_delivery_authorized(self, key: str, token: str):
+        with self.connection() as conn:
+            self._fence(conn, "delivery", token)
+            row = conn.execute(
+                "SELECT 1 FROM outbox o JOIN learners l ON l.id=o.learner_id "
+                "WHERE o.id=%s AND o.learner_id=%s AND o.status IN ('pending','failed') "
+                "AND o.access_generation=l.generation AND (l.status='active' OR o.access_notice)",
+                (key, self.learner_id),
+            ).fetchone()
+            if not row:
+                raise MembershipChanged("Queued delivery is no longer authorized")
 
     def prepare_delivery(self, key: str, token: str, body: dict):
         with self.connection() as conn:
@@ -371,12 +394,15 @@ class Repository:
     def delivery_result(self, key: str, token: str, status: str, code: str | None = None):
         with self.connection() as conn:
             self._fence(conn, "delivery", token)
-            conn.execute(
+            updated = conn.execute(
                 "UPDATE outbox SET status=%s, error_code=%s, attempts=attempts+1, "
                 "available_at=now()+interval '5 minutes', "
-                "delivered_at=CASE WHEN %s='sent' THEN now() ELSE NULL END WHERE id=%s AND learner_id=%s",
+                "delivered_at=CASE WHEN %s='sent' THEN now() ELSE NULL END WHERE id=%s AND learner_id=%s "
+                "AND status IN ('pending','failed') RETURNING id",
                 (status, code, status, key, self.learner_id),
-            )
+            ).fetchone()
+            if not updated:
+                return
             if status == "sent":
                 conn.execute(
                     "UPDATE coach_state SET displayed_target=(SELECT body->'target' FROM outbox WHERE id=%s) "

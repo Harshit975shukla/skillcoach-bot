@@ -85,20 +85,30 @@ class Runtime:
                 scoped.delivery_result(item["id"], token, "suppressed")
                 return True
             telegram = self.telegram if scoped.is_owner else self.telegram.for_chat(scoped.recipient())
+
+            def authorize_send():
+                scoped.ensure_delivery_authorized(item["id"], token)
+
             try:
                 if body["kind"] == "text":
+                    authorize_send()
                     telegram.send(body["text"], budget, body.get("buttons"))
                 elif body["kind"] == "media":
-                    deliver_media(telegram, body, budget)
+                    deliver_media(telegram, body, budget, before_send=authorize_send)
                 elif body["kind"] == "export":
                     if not scoped.is_owner:
                         raise ExternalError("publication_requires_owner", retryable=False)
                     if "base" not in body:
+                        authorize_send()
                         body["base"] = self.publisher.prepare(budget)
                         scoped.prepare_delivery(item["id"], token, body)
+                    authorize_send()
                     self.publisher.publish(body["document"], budget, body["base"])
                 else:
                     raise ExternalError("invalid_outbox_kind", retryable=False)
+            except MembershipChanged:
+                scoped.delivery_result(item["id"], token, "suppressed")
+                return True
             except ExternalError as exc:
                 log.warning("delivery_failed kind=%s code=%s", body["kind"], exc.code)
                 scoped.delivery_result(item["id"], token, "failed", exc.code)
@@ -113,13 +123,16 @@ class Runtime:
         for _ in range(limit):
             if time.monotonic() + 20 >= deadline:
                 break
-            if not self.process_one(Budget(20)):
-                break
-        for _ in range(limit):
-            seconds = 210 if media else 20
-            if time.monotonic() + seconds >= deadline:
-                break
-            if not self.deliver_one(Budget(seconds), media=media):
+            worked = self.process_one(Budget(20))
+            for _ in range(3):
+                can_render = media and time.monotonic() + 210 < deadline
+                seconds = 210 if can_render else 20
+                if time.monotonic() + seconds >= deadline:
+                    break
+                if not self.deliver_one(Budget(seconds), media=can_render):
+                    break
+                worked = True
+            if not worked:
                 break
 
 

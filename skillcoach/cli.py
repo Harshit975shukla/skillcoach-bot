@@ -14,7 +14,7 @@ from skillcoach.clients import Budget, ExternalError
 from skillcoach.config import ConfigurationError
 from skillcoach.migration import dry_run, load_snapshot
 from skillcoach.runtime import STORAGE_ERRORS, Runtime
-from skillcoach.storage import Repository
+from skillcoach.storage import MembershipChanged, Repository
 from skillcoach.timeutil import IST, now_ist
 from skillcoach.web import authorized_update
 
@@ -32,9 +32,12 @@ def schedule(runtime: Runtime, kind: str, day: date, *, media=True):
     key = schedule_key(kind, day)
     for learner in runtime.repo.active_learners():
         scoped = runtime.repo.for_learner(learner)
-        _, state = scoped.read()
-        if not state.paused:
-            scoped.enqueue(key, {"type": "schedule", "kind": kind, "date": day.isoformat()})
+        try:
+            _, state = scoped.read()
+            if not state.paused:
+                scoped.enqueue(key, {"type": "schedule", "kind": kind, "date": day.isoformat()})
+        except MembershipChanged:
+            logging.info("schedule_skipped_access_changed")
     runtime.recover(media=media)
 
 

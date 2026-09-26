@@ -10,7 +10,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 from test_flows import PROFILE, question_set
 
-from skillcoach.clients import ExternalError
+from skillcoach.clients import Budget, ExternalError
 from skillcoach.export import public_export
 from skillcoach.models import Profile, Task
 from skillcoach.runtime import Runtime
@@ -428,3 +428,143 @@ def test_version_two_migration_preserves_exact_owner_state_and_receipts(pg_repo)
     finally:
         with pg_repo.connection() as conn:
             conn.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(legacy_schema)))
+
+
+def test_revocation_while_media_renders_prevents_upload(bot, monkeypatch, tmp_path):
+    scoped = bot.join(101)
+    bot.sequence += 1
+    scoped.enqueue("media", {"type": "telegram", "text": "/help"})
+    key = f"learner:{scoped.learner_id}:media"
+    token = bot.repo.acquire("domain", 60)
+    revision, state = scoped.read()
+    scoped.finish(
+        key,
+        token,
+        revision,
+        state,
+        [{"kind": "media", "mode": "static", "code": "flowchart LR\nA-->B", "caption": "MUST NOT SEND"}],
+        [],
+    )
+    bot.repo.release("domain", token)
+    sent = []
+
+    def render(code, folder):
+        image = folder / "diagram.png"
+        image.write_bytes(b"fake-image")
+        bot.input(bot.config.owner_id, "/revoke " + scoped.learner_id, drain=False)
+        return image
+
+    class Recipient:
+        def call(self, *args, **kwargs):
+            sent.append(True)
+
+    monkeypatch.setattr("skillcoach.media.render_png", render)
+    monkeypatch.setattr(bot.runtime.telegram, "for_chat", lambda chat_id: Recipient())
+    assert bot.runtime.deliver_one(Budget(20), media=True)
+    assert sent == []
+    with bot.repo.connection() as conn:
+        assert (
+            conn.execute("SELECT status FROM outbox WHERE job_id=%s", (key,)).fetchone()["status"]
+            == "suppressed"
+        )
+    lease = bot.repo.acquire("delivery", 60)
+    scoped.delivery_result(key + ":0", lease, "sent")
+    bot.repo.release("delivery", lease)
+    with bot.repo.connection() as conn:
+        assert (
+            conn.execute("SELECT status FROM outbox WHERE job_id=%s", (key,)).fetchone()["status"]
+            == "suppressed"
+        )
+
+
+def test_finish_and_revoke_use_consistent_lock_order(bot):
+    from threading import Barrier
+
+    scoped = bot.join(101)
+    for attempt in range(4):
+        if attempt:
+            invitation = bot.invite()
+            bot.input(101, "/start " + invitation)
+            bot.input(bot.config.owner_id, "/approve " + scoped.learner_id)
+        scoped.enqueue(f"race-{attempt}", {"type": "telegram", "text": "/help"})
+        token = bot.repo.acquire("domain", 60)
+        job = bot.repo.next_job(token)
+        revision, state = scoped.read()
+        start = Barrier(2)
+
+        def finish():
+            start.wait()
+            try:
+                scoped.finish(job["id"], token, revision, state, [{"kind": "text", "text": "private"}], [])
+                return "committed_before_revoke"
+            except MembershipChanged:
+                return "revocation_fenced"
+
+        def revoke():
+            start.wait()
+            return bot.repo.accept_update(
+                20000 + attempt,
+                {
+                    "type": "telegram",
+                    "actor_id": bot.config.owner_id,
+                    "text": "/revoke " + scoped.learner_id,
+                },
+                bot.config,
+            )
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(finish), executor.submit(revoke)]
+                results = [future.result(timeout=10) for future in futures]
+            assert results[0] in ("committed_before_revoke", "revocation_fenced")
+            assert results[1] == "admin_handled"
+            with bot.repo.connection() as conn:
+                assert (
+                    conn.execute(
+                        "SELECT count(*) AS n FROM outbox WHERE job_id=%s AND status='pending'", (job["id"],)
+                    ).fetchone()["n"]
+                    == 0
+                )
+        finally:
+            bot.repo.release("domain", token)
+        bot.runtime.recover(media=False)
+
+
+def test_fair_interleaving_serves_second_learner_before_first_backlog_drains(bot):
+    a, _ = bot.join(101), bot.join(102)
+    for i in range(8):
+        bot.input(101, "/ask queued " + str(i), drain=False)
+        bot.runtime.ai.responses.append({"text": "Private A response"})
+    before_b = len(bot.runtime.telegram.chat_messages[102])
+    bot.input(102, "/help", drain=False)
+    bot.runtime.recover(limit=2, media=False)
+    assert len(bot.runtime.telegram.chat_messages[102]) > before_b
+    assert len(bot.runtime.ai.calls) <= 1
+    with bot.repo.connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT count(*) AS n FROM jobs WHERE learner_id=%s AND status='pending'", (a.learner_id,)
+            ).fetchone()["n"]
+            >= 7
+        )
+
+
+def test_revocation_during_schedule_fanout_does_not_skip_other_learners(bot, monkeypatch):
+    from skillcoach.cli import schedule
+
+    a, b = bot.join(101), bot.join(102)
+    original = bot.repo.for_learner
+    revoked = []
+
+    def scoped(learner):
+        result = original(learner)
+        if learner == a.learner_id and not revoked:
+            revoked.append(True)
+            bot.input(bot.config.owner_id, "/revoke " + learner, drain=False)
+        return result
+
+    monkeypatch.setattr(bot.repo, "for_learner", scoped)
+    schedule(bot.runtime, "lesson", date(2026, 9, 25), media=False)
+    with bot.repo.connection() as conn:
+        rows = conn.execute("SELECT learner_id FROM jobs WHERE payload->>'type'='schedule'").fetchall()
+        assert {row["learner_id"] for row in rows} == {"owner", b.learner_id}

@@ -106,7 +106,7 @@ def animate(image: Path, folder: Path, caption: str) -> Path | None:
     return output
 
 
-def deliver_media(telegram, body: dict, budget):
+def deliver_media(telegram, body: dict, budget, *, before_send=None):
     with tempfile.TemporaryDirectory(prefix="skillcoach-") as tmp:
         folder = Path(tmp)
         image = render_png(body["code"], folder)
@@ -116,6 +116,8 @@ def deliver_media(telegram, body: dict, budget):
         if body["mode"] == "video" and not video:
             caption += "\nStatic fallback: video rendering unavailable."
         kind = "video" if video else "photo"
+        if before_send is not None:
+            before_send()
         with path.open("rb") as stream:
             telegram.call(
                 "sendVideo" if video else "sendPhoto",

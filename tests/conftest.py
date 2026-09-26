@@ -229,6 +229,12 @@ class MemoryRepository:
     def prepare_delivery(self, key, token, body):
         self.outbox[key]["body"] = copy.deepcopy(body)
 
+    def ensure_delivery_authorized(self, key, token):
+        if self.outbox[key]["status"] not in ("pending", "failed"):
+            from skillcoach.storage import MembershipChanged
+
+            raise MembershipChanged("Delivery was suppressed")
+
     def delivery_result(self, key, token, status, code=None):
         item = self.outbox[key]
         item["status"] = status
