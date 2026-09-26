@@ -35,7 +35,7 @@ def test_connection_reuse_is_scoped_and_transactions_end_before_external_work(mo
             finally:
                 self.in_transaction = False
 
-        def execute(self, statement):
+        def execute(self, statement, *parameters):
             assert self.in_transaction
 
     @contextmanager
@@ -205,3 +205,12 @@ def test_failed_callback_toast_does_not_discard_answer_processing(harness, monke
     assert 0 < budgets[0] <= 3
     assert harness.repo.jobs["telegram:81002"]["status"] == "done"
     assert harness.telegram.messages
+
+
+def test_function_region_matches_current_database_without_paid_multiregion():
+    import json
+    from pathlib import Path
+
+    config = json.loads(Path("vercel.json").read_text())
+    assert config["regions"] == ["hnd1"]
+    assert config["functions"]["api/webhook.py"]["maxDuration"] == 60

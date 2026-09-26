@@ -107,6 +107,12 @@ calls. Learner-scoped repositories share only that request's connection, not aut
 and concurrent threads/requests use separate connections. Connections close at the end of the turn.
 Callback acknowledgement has its own small timeout so a stale toast cannot block grading or feedback.
 
+The current deployment pins its single Vercel Function region to `hnd1` (Tokyo), matching the
+existing Supabase `ap-northeast-1` database. This avoids trans-Pacific latency on every SQL
+round trip; it does not add multi-region or paid failover. If the database moves, review this
+setting and measure end-to-end webhook feedback delivery again. Transaction timeouts and
+search path are applied together in one parameterized SQL round trip.
+
 Vercel uses the native Flask entry point `api.webhook:app` from `pyproject.toml`. Do not add a catch-all rewrite to `/api/webhook`: backend rewrites change the path Flask receives and would break health/readiness routes.
 
 PostgreSQL stores the validated profile and separate setup draft, curriculum, task history, assessments/answers, interviews, preferences and dated activity in the dedicated `skillcoach_private` schema, **not `public`**. Migrations revoke PUBLIC access to that schema. Every real connection explicitly sets a transaction-local schema and statement/lock timeouts, including through poolers; URL search-path hints are not relied on. Do not add this schema to a provider's exposed Data API schemas or grant anonymous/API roles access. Grant only the bot's runtime role the required schema/table/sequence access. Versioned SQL migrations create a single-owner JSONB state row plus relational unique task/answer keys, update/schedule receipts, AI-result checkpoints, worker leases and an ordered transactional outbox. This is not an in-memory dedup cache and there is no GitHub-state fallback.

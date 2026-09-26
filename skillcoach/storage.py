@@ -134,9 +134,11 @@ class Repository:
             conn = self._session_connection.get()
             with conn.transaction():
                 # Reapply within every short transaction, including with transaction poolers.
-                conn.execute("SET LOCAL statement_timeout = '5s'")
-                conn.execute("SET LOCAL lock_timeout = '3s'")
-                conn.execute(sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(self.schema)))
+                conn.execute(
+                    "SELECT set_config('statement_timeout','5s',true), "
+                    "set_config('lock_timeout','3s',true), set_config('search_path',%s,true)",
+                    (self.schema,),
+                )
                 yield conn
 
     def migrate(self):
