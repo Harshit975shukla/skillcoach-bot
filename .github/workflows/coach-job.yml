@@ -66,6 +66,8 @@ jobs:
           fi
       - name: Verify the production runner's offline narration and video tools
         if: inputs.verify_media
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: python tests/verify_storytelling.py
       - name: Capture intended run timestamp
         env:

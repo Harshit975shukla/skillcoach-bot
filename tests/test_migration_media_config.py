@@ -124,6 +124,7 @@ def test_dependency_python_workflow_and_help_consistency():
     assert "upgrade-schema --writers-stopped" in ci
     assert "VERIFY_MEDIA: ${{ inputs.verify_media }}" in worker
     assert "run: python tests/verify_storytelling.py" in worker
+    assert "PYTHONPATH: ${{ github.workspace }}" in worker
     assert "verify_media: ${{ inputs.verify_media || false }}" in Path(
         ".github/workflows/recovery.yml"
     ).read_text()
