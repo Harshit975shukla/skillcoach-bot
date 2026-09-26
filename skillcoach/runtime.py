@@ -14,6 +14,10 @@ from skillcoach.timeutil import IST, now_ist
 log = logging.getLogger(__name__)
 
 
+class DeliveryDeferred(Exception):
+    """Leave unsent work pending when the request lacks time for a safe network attempt."""
+
+
 class Runtime:
     def __init__(self, config, repository=None, ai=None, telegram=None, publisher=None, clock=now_ist):
         self.config = config
@@ -65,6 +69,19 @@ class Runtime:
             self.repo.release("domain", token)
 
     def deliver_one(self, budget: Budget, *, media=False) -> bool:
+        def require_send_budget():
+            try:
+                if budget.remaining() < 8:
+                    raise DeliveryDeferred()
+            except ExternalError as exc:
+                if exc.code == "request_budget_exhausted":
+                    raise DeliveryDeferred() from None
+                raise
+
+        try:
+            require_send_budget()
+        except DeliveryDeferred:
+            return False
         token = self.repo.acquire("delivery", 240 if media else 60)
         if not token:
             return False
@@ -94,6 +111,7 @@ class Runtime:
 
             def authorize_send():
                 scoped.ensure_delivery_authorized(item["id"], token)
+                require_send_budget()
 
             try:
                 if body["kind"] == "text":
@@ -136,6 +154,8 @@ class Runtime:
                     self.publisher.publish(body["document"], budget, body["base"])
                 else:
                     raise ExternalError("invalid_outbox_kind", retryable=False)
+            except DeliveryDeferred:
+                return False
             except MembershipChanged:
                 scoped.delivery_result(item["id"], token, "suppressed")
                 return True

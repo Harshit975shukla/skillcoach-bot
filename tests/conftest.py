@@ -243,6 +243,10 @@ class MemoryRepository:
         item["status"] = status
         if status == "sent" and item["body"].get("target"):
             self.displayed = copy.deepcopy(item["body"]["target"])
+        if status == "sent":
+            notice = self.outbox.get(key + ":delivery-error")
+            if notice and notice["status"] in ("pending", "failed"):
+                notice["status"] = "suppressed"
         if status == "failed" and not key.endswith(":delivery-error"):
             error_id = key + ":delivery-error"
             self.outbox.setdefault(

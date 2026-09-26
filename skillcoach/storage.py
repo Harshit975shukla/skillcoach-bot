@@ -432,6 +432,11 @@ class Repository:
                 return
             if status == "sent":
                 conn.execute(
+                    "UPDATE outbox SET status='suppressed' WHERE id=%s AND learner_id=%s "
+                    "AND status IN ('pending','failed') AND body->>'recovery_notice'='true'",
+                    (key + ":delivery-error", self.learner_id),
+                )
+                conn.execute(
                     "UPDATE coach_state SET displayed_target=(SELECT body->'target' FROM outbox WHERE id=%s) "
                     "WHERE learner_id=%s AND (SELECT body ? 'target' FROM outbox WHERE id=%s)",
                     (key, self.learner_id, key),

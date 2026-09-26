@@ -6,7 +6,7 @@ from test_flows import PROFILE, question_set
 from test_postgres import seed
 
 from skillcoach.cli import queue_owner_quiz
-from skillcoach.clients import ExternalError
+from skillcoach.clients import Budget, ExternalError
 from skillcoach.models import Profile
 from skillcoach.runtime import Runtime
 from skillcoach.timeutil import IST
@@ -41,6 +41,38 @@ def test_oneoff_workflow_inputs_are_optional_and_passed_as_quoted_values():
     assert 'queue-owner-quiz --at "$QUIZ_AT" --topic "$QUIZ_TOPIC"' in workflow
     assert "QUIZ_AT: ${{ inputs.quiz_at }}" in workflow
     assert "quiz_at: ${{ inputs.quiz_at || '' }}" in caller
+
+
+def test_short_webhook_budget_defers_unsent_work_without_failure_notice(harness):
+    h = harness
+    h.repo.enqueue("brief", {"type": "telegram", "text": "/help"})
+    assert h.runtime.process_one(Budget(20))
+    assert not h.runtime.deliver_one(Budget(3), media=False)
+    assert all(item["status"] == "pending" for item in h.repo.outbox.values())
+    assert not h.telegram.messages
+    h.runtime.recover(media=False)
+    assert h.telegram.messages
+    assert not any("delivery-error" in key for key in h.repo.outbox)
+
+
+@pytest.mark.postgres
+def test_recovered_delivery_suppresses_its_pending_error_notice(pg_repo, config):
+    runtime = Runtime(config, pg_repo, FakeAI(), FakeTelegram(), FakePublisher())
+    runtime.telegram.fail = True
+    pg_repo.enqueue("recover-delivery", {"type": "telegram", "text": "/help"})
+    assert runtime.process_one(Budget(20))
+    assert runtime.deliver_one(Budget(20), media=False)
+    runtime.telegram.fail = False
+    with pg_repo.connection() as conn:
+        conn.execute("UPDATE outbox SET available_at=now() WHERE id='recover-delivery:0'")
+    assert runtime.deliver_one(Budget(20), media=False)
+    with pg_repo.connection() as conn:
+        assert (
+            conn.execute("SELECT status FROM outbox WHERE id='recover-delivery:0:delivery-error'").fetchone()[
+                "status"
+            ]
+            == "suppressed"
+        )
 
 
 def test_requested_quiz_works_without_profile_but_requires_delivered_topic(harness):
