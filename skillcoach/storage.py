@@ -144,7 +144,9 @@ class Repository:
                 raise MembershipChanged("Learner state is unavailable")
             return row["revision"], State.model_validate(row["body"])
 
-    def enqueue(self, key: str, payload: dict) -> bool:
+    def enqueue(self, key: str, payload: dict, *, available_at=None) -> bool:
+        if available_at is not None and (available_at.tzinfo is None or available_at.utcoffset() is None):
+            raise ValueError("Scheduled work requires a timezone-aware due time")
         with self.connection() as conn:
             member = self._ensure_access(conn)
             row = conn.execute(
@@ -154,13 +156,15 @@ class Repository:
             if body.get("type") == "telegram":
                 body["target"] = row["displayed_target"]
             result = conn.execute(
-                "INSERT INTO jobs(id, payload,learner_id,access_generation) VALUES (%s,%s,%s,%s) "
+                "INSERT INTO jobs(id,payload,learner_id,access_generation,available_at) "
+                "VALUES (%s,%s,%s,%s,coalesce(%s,now())) "
                 "ON CONFLICT DO NOTHING RETURNING id",
                 (
                     key if self.is_owner else f"learner:{self.learner_id}:{key}",
                     Jsonb(body),
                     self.learner_id,
                     member["generation"],
+                    available_at,
                 ),
             ).fetchone()
             return result is not None

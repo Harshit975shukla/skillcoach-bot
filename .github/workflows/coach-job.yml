@@ -17,6 +17,14 @@ on:
         required: false
         type: boolean
         default: false
+      quiz_at:
+        required: false
+        type: string
+        default: ""
+      quiz_topic:
+        required: false
+        type: string
+        default: ""
 permissions:
   contents: read
   actions: read
@@ -97,11 +105,16 @@ jobs:
           INTENDED_DATE: ${{ inputs.intended_date }}
           MEDIA_READY: ${{ steps.media.outputs.needed }}
           NOTIFY_OWNER: ${{ inputs.notify_owner }}
+          QUIZ_AT: ${{ inputs.quiz_at }}
+          QUIZ_TOPIC: ${{ inputs.quiz_topic }}
         run: |
           export PATH="$PWD/node_modules/.bin:$PATH"
           MEDIA_ARGS=()
           if [ "$MEDIA_READY" != "true" ]; then MEDIA_ARGS+=(--no-media); fi
           if [ "$OPERATION" = "recover" ]; then
+            if [ -n "$QUIZ_AT" ]; then
+              python -m skillcoach.cli queue-owner-quiz --at "$QUIZ_AT" --topic "$QUIZ_TOPIC"
+            fi
             if [ "$NOTIFY_OWNER" = "true" ]; then
               python -m skillcoach.cli announce-ready --release "$GITHUB_SHA"
             fi

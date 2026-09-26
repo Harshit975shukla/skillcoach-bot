@@ -15,6 +15,16 @@ on:
         description: "Render and verify a local narrated clip without sending or storing learner progress"
         type: boolean
         default: false
+      quiz_at:
+        description: "Optional one-off owner quiz due time, including timezone"
+        required: false
+        type: string
+        default: ""
+      quiz_topic:
+        description: "Topic of the owner's delivered lesson for that one-off quiz"
+        required: false
+        type: string
+        default: ""
 jobs:
   recovery:
     uses: ./.github/workflows/coach-job.yml
@@ -22,4 +32,6 @@ jobs:
       kind: recover
       notify_owner: ${{ inputs.notify_owner || false }}
       verify_media: ${{ inputs.verify_media || false }}
+      quiz_at: ${{ inputs.quiz_at || '' }}
+      quiz_topic: ${{ inputs.quiz_topic || '' }}
     secrets: inherit

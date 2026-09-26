@@ -41,6 +41,40 @@ def schedule(runtime: Runtime, kind: str, day: date, *, media=True):
     runtime.recover(media=media)
 
 
+def queue_owner_quiz(runtime: Runtime, due: datetime, topic: str):
+    current = runtime.clock().astimezone(IST)
+    if due.tzinfo is None or due.utcoffset() is None:
+        raise ValueError("Quiz due time must include a timezone.")
+    due = due.astimezone(IST)
+    if due <= current or (due - current).total_seconds() > 7 * 86400:
+        raise ValueError("Quiz due time must be in the future, within seven days.")
+    topic = topic.strip()
+    if not topic or len(topic) > 300:
+        raise ValueError("A topic of 1-300 characters is required.")
+    _, state = runtime.repo.read()
+    if state.paused:
+        raise ValueError("Owner notifications are paused. No quiz was queued; use /unpause explicitly.")
+    key = f"requested:quiz:{due.date().isoformat()}"
+    created = runtime.repo.enqueue(
+        key,
+        {
+            "type": "schedule",
+            "kind": "quiz",
+            "date": due.date().isoformat(),
+            "requested_topic": topic,
+            "requested_due_at": due.isoformat(),
+        },
+        available_at=due,
+    )
+    return {
+        "job": key,
+        "created": created,
+        "due_at": due.isoformat() if created else None,
+        "owner_only": True,
+        "existing_request_unchanged": not created,
+    }
+
+
 def polling(runtime: Runtime):
     info = runtime.telegram.call("getWebhookInfo", Budget())
     if info.get("url"):
@@ -90,6 +124,11 @@ def main(argv=None):
     dates.add_argument(
         "--at", type=datetime.fromisoformat, help="Workflow creation timestamp including timezone"
     )
+    quiz = sub.add_parser(
+        "queue-owner-quiz", help="Queue one owner-only quiz without changing recurring schedules"
+    )
+    quiz.add_argument("--at", required=True, type=datetime.fromisoformat)
+    quiz.add_argument("--topic", required=True)
     importer = sub.add_parser("import-legacy")
     importer.add_argument("snapshot", type=Path)
     importer.add_argument("--apply", action="store_true")
@@ -145,6 +184,9 @@ def main(argv=None):
         if args.command == "needs-media":
             return 0 if Repository(database_url()).needs_media() else 3
         runtime = Runtime.from_env()
+        if args.command == "queue-owner-quiz":
+            print(json.dumps(queue_owner_quiz(runtime, args.at, args.topic), indent=2))
+            return 0
         if args.command == "announce-ready":
             if not re.fullmatch(r"[0-9a-f]{7,40}", args.release):
                 raise ValueError("--release must be a Git commit identifier.")

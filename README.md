@@ -40,6 +40,15 @@ Each schedule has a unique local-date receipt. Workflow reruns use the original 
 
 ## Architecture and delivery semantics
 
+For an explicitly requested one-off owner quiz, the operator can run
+`python -m skillcoach.cli queue-owner-quiz --at <timezone-aware-ISO-time> --topic <topic>`.
+This saves a durable future-due job (one request per local date), not a new recurring cron.
+Recovery cannot claim it before `available_at`; repeated queueing preserves the original time/topic.
+It requires the matching day's lesson to have finished delivery and does not overwrite another
+active assessment. This quiz can follow a manually requested lesson even before profile setup;
+it is lesson-based rather than claimed to be personalized. Paused notifications are respected.
+Actual delivery begins on a recovery run at or after the due time, so Actions delays still apply.
+
 `skillcoach/config.py`, `clients.py`, `models.py`, `storage.py`, `service.py`, `runtime.py`, `export.py`, and `media.py` are shared by the thin existing entry points.
 
 Vercel uses the native Flask entry point `api.webhook:app` from `pyproject.toml`. Do not add a catch-all rewrite to `/api/webhook`: backend rewrites change the path Flask receives and would break health/readiness routes.

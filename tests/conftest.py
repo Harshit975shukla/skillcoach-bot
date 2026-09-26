@@ -126,13 +126,13 @@ class MemoryRepository:
             raise ExternalError("daily_ai_budget_exhausted", retryable=False)
         self.ai_reservations.append((job, operation, local_date))
 
-    def enqueue(self, key, payload):
+    def enqueue(self, key, payload, *, available_at=None):
         if key in self.jobs:
             return False
         payload = copy.deepcopy(payload)
         if payload["type"] == "telegram":
             payload["target"] = copy.deepcopy(self.displayed)
-        self.jobs[key] = {"id": key, "payload": payload, "status": "pending"}
+        self.jobs[key] = {"id": key, "payload": payload, "status": "pending", "available_at": available_at}
         return True
 
     def read(self):

@@ -125,9 +125,10 @@ def test_dependency_python_workflow_and_help_consistency():
     assert "VERIFY_MEDIA: ${{ inputs.verify_media }}" in worker
     assert "run: python tests/verify_storytelling.py" in worker
     assert "PYTHONPATH: ${{ github.workspace }}" in worker
-    assert "verify_media: ${{ inputs.verify_media || false }}" in Path(
-        ".github/workflows/recovery.yml"
-    ).read_text()
+    assert (
+        "verify_media: ${{ inputs.verify_media || false }}"
+        in Path(".github/workflows/recovery.yml").read_text()
+    )
     for caller in ("morning_lesson.yml", "evening_quiz.yml", "weekend.yml", "recovery.yml"):
         workflow = Path(".github", "workflows", caller).read_text()
         assert "contents: read" in workflow and "actions: read" in workflow

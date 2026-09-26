@@ -569,16 +569,31 @@ class Service:
         kind, day = self.payload["kind"], date.fromisoformat(self.payload["date"])
         if day != self.now.date() or self.state.paused:
             return
-        if self.state.profile is None:
+        if self.state.profile is None and kind != "quiz":
             self.say(
                 "Set up your private coaching profile with /setup before personalized scheduled lessons."
             )
         elif kind == "lesson":
             self.lesson(self.plan(monday(day)).days[day], day)
         elif kind == "quiz":
+            requested_topic = self.payload.get("requested_topic")
             topics = [
-                item["topic"] for item in self.state.lessons.values() if item["date"] == day.isoformat()
+                item["topic"]
+                for item in self.state.lessons.values()
+                if item["date"] == day.isoformat()
+                and (
+                    not requested_topic
+                    or (topic_key(item["topic"]) == topic_key(requested_topic) and item.get("delivered_at"))
+                )
             ]
+            if requested_topic:
+                from skillcoach.clients import ExternalError
+
+                if not topics:
+                    raise ExternalError("requested_lesson_not_delivered")
+                active = self.state.assessments.get(self.state.active_assessment)
+                if active and active.status == "active" and active.date == day:
+                    raise ExternalError("finish_or_cancel_current_assessment_before_requested_quiz")
             if not topics:
                 self.say(
                     "No lesson was prepared for today; no unrelated quiz was invented. Use /learn <topic>."
