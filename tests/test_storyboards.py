@@ -80,6 +80,26 @@ def test_request_markers_move_without_changing_camera_or_caption():
     assert hashlib.sha256(early.tobytes()).digest() != hashlib.sha256(later.tobytes()).digest()
 
 
+def test_edge_labels_are_present_in_rendered_output():
+    story = reviewed_architecture("EC2")
+    font_set = fonts()
+    original = render_frame(story, 0, 0.3, 0.1, font_set).crop((35, 555, 1245, 602))
+    story.edges[0].label = "HTTPS request"
+    labelled = render_frame(story, 0, 0.3, 0.1, font_set).crop((35, 555, 1245, 602))
+    assert original.tobytes() != labelled.tobytes()
+
+
+def test_authored_concept_actors_are_specific_not_generic_camera_slides():
+    families = concept_walkthrough(Lesson.model_validate(LESSONS["ec2"]), 0)
+    storage = concept_walkthrough(Lesson.model_validate(LESSONS["s3"]), 0)
+    policies = concept_walkthrough(Lesson.model_validate(LESSONS["iam"]), 0)
+    assert "Burstable CPU credits" in {actor.label for actor in families.actors}
+    assert "Standard-IA" in {actor.label for actor in storage.actors}
+    assert "Explicit deny" in {actor.label for actor in policies.actors}
+    assert {actor.label for actor in families.actors} != {actor.label for actor in storage.actors}
+    assert all(story.pattern == "comparison" and not story.edges for story in (families, storage, policies))
+
+
 def test_narration_scene_lengths_follow_actual_wave_duration(tmp_path, monkeypatch):
     monkeypatch.setattr("skillcoach.story_renderer.shutil.which", lambda name: "/fake/espeak-ng")
     durations = iter((3.0, 5.0, 7.0, 4.0))
@@ -136,6 +156,87 @@ def test_voice_controls_topics_and_generated_topic_storyboards(harness):
     media = [item["body"] for item in harness.repo.outbox.values() if item["body"]["kind"] == "media"]
     assert len(media) == 5 and all(not item["voice"] and not item["shared_reviewed"] for item in media)
     assert any("storyboard:concept" in key[1] for key in harness.repo.cache_data)
+
+
+def test_static_generated_lesson_does_not_require_storyboard_or_voice_generation(harness):
+    from test_flows import command
+
+    command(harness, "/media static")
+    raw = json.loads(json.dumps(LESSONS["ec2"]))
+    raw["title"] = "Python automation"
+    raw["reviewed_at"] = "AI-generated"
+    harness.ai.responses.append(raw)
+    command(harness, "/learn Python")
+    assert len(harness.ai.calls) == 1
+    assert len(harness.repo.state.tasks) == 3
+    bodies = [row["body"] for row in harness.repo.outbox.values() if row["body"]["kind"] == "media"]
+    assert len(bodies) == 5 and all("storyboard" not in body for body in bodies)
+
+
+@pytest.mark.postgres
+def test_slow_multicall_lesson_checkpoints_resume_without_exhausting_failures(pg_repo, config):
+    from datetime import date, datetime, timedelta
+
+    from conftest import FakeAI, FakePublisher, FakeTelegram
+    from test_flows import PROFILE
+    from test_postgres import seed
+
+    from skillcoach.models import Profile
+    from skillcoach.runtime import Runtime
+    from skillcoach.timeutil import IST
+
+    class TimedBudget:
+        def __init__(self):
+            self.left = 20
+
+        def remaining(self):
+            if self.left <= 0:
+                raise ExternalError("request_budget_exhausted")
+            return self.left
+
+    class SlowAI(FakeAI):
+        def structured(self, prompt, model, budget, validate=None):
+            # Two ordinary 15-second generations cannot fit in a single 20-second request.
+            assert budget.remaining() >= 15
+            budget.left -= 15
+            return super().structured(prompt, model, budget, validate)
+
+    ai = SlowAI()
+    start = date(2026, 9, 21)
+    plan = {
+        "days": {(start + timedelta(days=i)).isoformat(): "Python automation" for i in range(6)},
+        "rationale": "Actual profile practice",
+    }
+    lesson = json.loads(json.dumps(LESSONS["ec2"]))
+    lesson["title"], lesson["reviewed_at"] = "Python automation", "AI-generated"
+    ai.responses.extend([plan, lesson, *[reviewed_architecture("EC2").model_dump() for _ in range(5)]])
+    seed(pg_repo, lambda state: setattr(state, "profile", Profile(**PROFILE)))
+    runtime = Runtime(
+        config, pg_repo, ai, FakeTelegram(), FakePublisher(), lambda: datetime(2026, 9, 25, 9, tzinfo=IST)
+    )
+    pg_repo.enqueue("slow-lesson", {"type": "schedule", "kind": "lesson", "date": "2026-09-25"})
+    for turn in range(7):
+        assert runtime.process_one(TimedBudget())
+        with pg_repo.connection() as conn:
+            job = conn.execute("SELECT status,attempts FROM jobs WHERE id='slow-lesson'").fetchone()
+            assert job["status"] == ("done" if turn == 6 else "pending")
+            assert job["attempts"] == (1 if turn == 6 else 0)
+        if turn < 6:
+            assert pg_repo.read()[1].tasks == {}
+    assert len(ai.calls) == 7 and not ai.responses
+    assert len(pg_repo.read()[1].tasks) == 3
+    with pg_repo.connection() as conn:
+        assert (
+            conn.execute("SELECT count(*) AS n FROM ai_results WHERE job_id='slow-lesson'").fetchone()["n"]
+            == 7
+        )
+        assert (
+            conn.execute("SELECT count(*) AS n FROM ai_usage WHERE job_id='slow-lesson'").fetchone()["n"] == 7
+        )
+        assert (
+            conn.execute("SELECT count(*) AS n FROM outbox WHERE id='slow-lesson:failure'").fetchone()["n"]
+            == 0
+        )
 
 
 @pytest.mark.postgres

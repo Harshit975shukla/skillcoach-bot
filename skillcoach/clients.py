@@ -19,6 +19,10 @@ class ExternalError(RuntimeError):
         self.retryable = retryable
 
 
+class WorkDeferred(Exception):
+    """Validated partial work is checkpointed; resume without spending a failure attempt."""
+
+
 class Budget:
     def __init__(self, seconds: float = 20):
         self.end = time.monotonic() + seconds

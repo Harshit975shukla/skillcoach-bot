@@ -123,11 +123,21 @@ generation support from the six fully reviewed AWS lesson topics.
 New media uses validated storyboards: two to six labelled actors, typed request/control/replication
 edges, and three to five explanation scenes. Flow/decision scenes move markers along the active
 paths; timeline/comparison scenes highlight the relevant steps rather than invent network traffic.
-The six reviewed AWS architectures have authored behavior sequences. Their concept walkthroughs
-narrate bounded excerpts of the reviewed lesson, while the full written concept remains available.
+The six reviewed AWS architectures have authored behavior sequences. Their 24 concept-specific
+comparison walkthroughs show actual named options/entities (CPU credits, storage classes, policy
+types and similar), with narrated bounded excerpts while the full written concept remains available.
+These are narrated comparisons, not 24 additional moving system architectures. Active edge labels
+are displayed rather than discarded.
 Generated topics receive concept-specific and end-to-end AI storyboards, clearly labelled
 **AI-generated; verify the references**. Only supported JSON scene data is accepted; no generated
 Python, HTML, shell commands, file paths or executable animation code is run.
+
+Long lesson preparation is incremental: at most one new structured AI generation is started per
+processing turn. Validated plan/lesson/storyboard results are checkpointed and reused; normal
+continuation does **not** spend one of the five transient-failure attempts. Other learners receive
+turns between those steps, and `/cancel` cancels the learner's unfinished preparation. The full
+lesson/tasks commit only when preparation is complete. Static mode skips storyboard/narration AI
+generation and uses the existing diagram path.
 
 `/voice on` enables **offline synthetic narration**, on by default for the new video renderer;
 `/voice off` keeps captions and motion. `/media static` remains an optional, captioned first-scene

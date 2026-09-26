@@ -4,7 +4,7 @@ import time
 import psycopg
 from pydantic import ValidationError
 
-from skillcoach.clients import AI, Budget, ExternalError, Publisher, Telegram
+from skillcoach.clients import AI, Budget, ExternalError, Publisher, Telegram, WorkDeferred
 from skillcoach.config import Config
 from skillcoach.media import deliver_media, deliver_storyboard
 from skillcoach.service import Service
@@ -42,6 +42,12 @@ class Runtime:
             revision, state = scoped.read()
             result = Service(scoped, self.ai, self.config, self.clock).apply(job, state, token, budget)
             scoped.finish(job["id"], token, revision, *result)
+            return True
+        except WorkDeferred:
+            try:
+                scoped.defer(job["id"], token)
+            except MembershipChanged:
+                log.info("learner_access_changed_partial_work_cancelled")
             return True
         except MembershipChanged:
             log.info("learner_access_changed_work_cancelled")

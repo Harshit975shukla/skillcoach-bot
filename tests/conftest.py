@@ -184,7 +184,7 @@ class MemoryRepository:
         elif control == "cancel":
             failed_groups = {row["job_id"] for row in self.outbox.values() if row["status"] == "failed"}
             for row in self.jobs.values():
-                if row["status"] == "failed":
+                if row["status"] in ("pending", "running", "failed") and row["id"] != job:
                     row["status"] = "cancelled"
             for row in self.outbox.values():
                 if row["status"] in ("failed", "pending") and (
@@ -210,6 +210,9 @@ class MemoryRepository:
                 },
             },
         )
+
+    def defer(self, job, token):
+        self.jobs[job]["status"] = "pending"
 
     def next_delivery(self, token, media=True):
         blocked = set()

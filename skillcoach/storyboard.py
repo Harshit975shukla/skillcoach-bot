@@ -378,6 +378,95 @@ def reviewed_architecture(topic: str) -> Storyboard | None:
     )
 
 
+CONCEPT_ACTORS = {
+    "ec2": [
+        ["Burstable CPU credits", "General purpose", "Compute optimized", "Memory optimized"],
+        [
+            "On-Demand",
+            "Reserved Instances",
+            "Spot Instances",
+            "Compute Savings Plans",
+            "EC2 Instance Savings Plans",
+        ],
+        ["Launch template", "Desired capacity", "Target tracking", "Instance warm-up", "ELB health checks"],
+        ["Cluster placement", "Spread placement", "Partition placement", "Enhanced networking"],
+    ],
+    "s3": [
+        [
+            "Standard",
+            "Standard-IA",
+            "Glacier Instant",
+            "Glacier Flexible",
+            "Deep Archive",
+            "Intelligent-Tiering",
+        ],
+        [
+            "Current versions",
+            "Noncurrent versions",
+            "Transition rules",
+            "Restore and copy",
+            "Minimum durations",
+        ],
+        ["Identity policies", "Bucket policy", "Object Ownership", "Block Public Access", "Encryption"],
+        [
+            "Partitioned prefixes",
+            "Multipart parts",
+            "Parallel uploads",
+            "Retry with backoff",
+            "Abort incomplete uploads",
+        ],
+    ],
+    "rds": [
+        [
+            "DB instance primary",
+            "DB instance standby",
+            "DB cluster writer",
+            "DB cluster readable replicas",
+            "Aurora: different design",
+        ],
+        ["Primary writer", "Asynchronous replica", "Replication lag", "Read routing", "Promotion"],
+        ["gp2", "gp3", "io1", "io2 Block Express", "Storage autoscaling"],
+        [
+            "Automated backups",
+            "Transaction logs",
+            "Manual snapshots",
+            "Restorable window",
+            "New restored instance",
+        ],
+    ],
+    "vpc": [
+        ["VPC CIDR", "Public subnet", "Application subnet", "Data subnet", "Availability zones"],
+        ["Internet gateway", "Public zonal NAT", "Regional NAT", "Private NAT", "Route table"],
+        ["Security group", "Network ACL", "Connection tracking", "Return traffic", "Ephemeral ports"],
+        ["VPC peering", "Transit Gateway", "Site-to-site VPN", "Direct Connect"],
+    ],
+    "iam": [
+        [
+            "Identity-based policy",
+            "Resource-based policy",
+            "Managed policy",
+            "Inline policy",
+            "Explicit deny",
+        ],
+        ["Trust policy", "STS", "Temporary credentials", "SDK provider chain", "PassRole"],
+        ["Identity permissions", "Permission boundary", "Resource grants", "Access Analyzer"],
+        ["GitHub OIDC", "Role trust conditions", "EKS workload identity", "Organizations SCP"],
+    ],
+    "lambda": [
+        ["Initialization", "Warm reuse", "Provisioned concurrency", "SnapStart"],
+        [
+            "Regional concurrency",
+            "Reserved concurrency",
+            "Provisioned concurrency",
+            "Async retry policy",
+            "Event age",
+        ],
+        ["Synchronous caller", "Asynchronous queue", "SQS mapping", "Stream mapping", "Failure policy"],
+        ["VPC networking", "Lambda layers", "ZIP expanded limit", "Container image", "Ephemeral storage"],
+    ],
+}
+
+
 def concept_walkthrough(lesson, index: int) -> Storyboard:
     """Narrate exact reviewed concept text in bounded excerpts; never invent a system data path."""
     concept = lesson.concepts[index]
@@ -398,29 +487,36 @@ def concept_walkthrough(lesson, index: int) -> Storyboard:
             "Apply this concept to a safe paper design. Explain the assumptions, compare trade-offs, "
             "and check the official documentation before provisioning resources."
         )
-    actors = [
-        Actor(id="concept", label=concept.name[:48]),
-        Actor(id="mechanism", label="Explain the mechanism"),
-        Actor(id="tradeoff", label="Check assumptions and trade-offs"),
-        Actor(id="practice", label="Apply and verify"),
-    ]
-    steps = ["mechanism", "tradeoff", "practice", "practice"]
+    words = re.sub(r"[^a-z0-9]+", " ", lesson.title.casefold()).split()
+    topic = next((key for key in CONCEPT_ACTORS if key in words), None)
+    if topic is None:
+        raise ValueError("An authored concept walkthrough requires a reviewed topic")
+    actors = [Actor(id=f"n{i}", label=label) for i, label in enumerate(CONCEPT_ACTORS[topic][index])]
+
+    def focus(text):
+        related = [
+            actor.id
+            for actor in actors
+            if any(
+                word in text.casefold()
+                for word in re.findall(r"[a-z0-9]+", actor.label.casefold())
+                if len(word) >= 3
+            )
+        ]
+        return related or [actor.id for actor in actors]
+
     return Storyboard(
         title=concept.name[:100],
         objective="Explain this concept and its operational trade-offs.",
-        pattern="timeline",
+        pattern="comparison",
         actors=actors,
-        edges=[
-            Edge(id="e0", source="concept", target="mechanism", kind="control"),
-            Edge(id="e1", source="mechanism", target="tradeoff", kind="control"),
-            Edge(id="e2", source="tradeoff", target="practice", kind="control"),
-        ],
+        edges=[],
         scenes=[
             Scene(
-                title=f"Concept walkthrough - part {i + 1}",
+                title=f"Narrated concept comparison - part {i + 1}",
                 caption=text[:177] + ("..." if len(text) > 177 else ""),
                 narration=text,
-                highlights=["concept", steps[i]],
+                highlights=focus(text),
             )
             for i, text in enumerate(chunks)
         ],

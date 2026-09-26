@@ -104,7 +104,7 @@ def render_frame(
         ax, ay = centers[edge.source]
         bx, by = centers[edge.target]
         if ay == by and abs(bx - ax) > 500:
-            return [(ax, ay + 57), (ax, ay + 85), (bx, by + 85), (bx, by + 57)]
+            return [(ax, ay + 57), (ax, ay + 72), (bx, by + 72), (bx, by + 57)]
         dx, dy = bx - ax, by - ay
         ratio = min(165 / abs(dx) if dx else math.inf, 57 / abs(dy) if dy else math.inf)
         return [(ax + dx * ratio, ay + dy * ratio), (bx - dx * ratio, by - dy * ratio)]
@@ -150,6 +150,13 @@ def render_frame(
             text(x, bounds[1] + 15 + index * 25, line, 22, heavy=True)
         if status:
             text(bounds[0] + 15, bounds[3] - 25, status.upper(), 17, accent)
+    labels = [edge.label for edge in story.edges if edge.id in scene.active_edges and edge.label]
+    if labels:
+        legend = _wrapped(draw, "Active paths: " + "  |  ".join(labels), font_set[17, False], 1190)
+        if len(legend) > 2:
+            raise ExternalError("edge_labels_do_not_fit", retryable=False)
+        for index, line in enumerate(legend):
+            text(40, 556 + index * 20, line, 17, muted)
     draw.rounded_rectangle((30, 604, 1250, 696), radius=12, fill="#24364D")
     captions = _wrapped(draw, scene.caption, font_set[22, False], 1170)
     if len(captions) > 2:

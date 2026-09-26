@@ -298,8 +298,9 @@ class Repository:
                 )
             elif control == "cancel":
                 conn.execute(
-                    "UPDATE jobs SET status='cancelled' WHERE status='failed' AND learner_id=%s",
-                    (self.learner_id,),
+                    "UPDATE jobs SET status='cancelled' WHERE status IN ('pending','running','failed') "
+                    "AND learner_id=%s AND id<>%s",
+                    (self.learner_id, job),
                 )
                 conn.execute(
                     "UPDATE outbox SET status='suppressed' WHERE status IN ('failed','pending') AND learner_id=%s "
@@ -320,6 +321,28 @@ class Repository:
                     (self.learner_id,),
                 )
             conn.execute("UPDATE jobs SET status='done', error_code=NULL WHERE id=%s", (job,))
+
+    def defer(self, job: str, token: str):
+        with self.connection() as conn:
+            self._fence(conn, "domain", token)
+            authorized = self._job(conn, job)
+            conn.execute(
+                "UPDATE jobs SET status='pending',attempts=greatest(attempts-1,0),available_at=now() "
+                "WHERE id=%s",
+                (job,),
+            )
+            notice = {
+                "kind": "text",
+                "text": "Preparing your full lesson and explanatory media. "
+                "Validated steps are saved as I work. You can /cancel while it is being prepared.",
+            }
+            if authorized["payload"].get("type") == "schedule":
+                notice.update(scheduled=True, scheduled_date=authorized["payload"]["date"])
+            conn.execute(
+                "INSERT INTO outbox(id,job_id,body,learner_id,access_generation) VALUES (%s,%s,%s,%s,%s) "
+                "ON CONFLICT DO NOTHING",
+                (job + ":preparing", job, Jsonb(notice), self.learner_id, authorized["access_generation"]),
+            )
 
     def fail(self, job: str, token: str, code: str):
         with self.connection() as conn:
