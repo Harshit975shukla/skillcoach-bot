@@ -33,5 +33,15 @@ COMMANDS = {
 }
 
 
-def help_text():
-    return "SkillCoach\n\n" + "\n".join(f"/{name} - {desc}" for name, desc in COMMANDS.items())
+def help_text(*, admin=True):
+    from skillcoach.access import ADMIN_COMMANDS
+
+    commands = {key: value for key, value in COMMANDS.items() if admin or key != "publish"}
+    text = "SkillCoach - your private learning space\n\n" + "\n".join(
+        f"/{name} - {desc}" for name, desc in commands.items()
+    )
+    if admin:
+        text += "\n\nOWNER ACCESS MANAGEMENT\n" + "\n".join(
+            f"/{name} - {description}" for name, description in ADMIN_COMMANDS.items()
+        )
+    return text

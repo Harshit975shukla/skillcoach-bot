@@ -146,12 +146,18 @@ def chunks(text: str, limit: int = 3500) -> list[str]:
 
 
 class Telegram:
-    def __init__(self, config: Config, http=None):
+    def __init__(self, config: Config, http=None, *, recipient_id=None):
         self.config = config
         self.http = http or HTTP()
+        self.recipient_id = config.owner_id if recipient_id is None else recipient_id
+        if type(self.recipient_id) is not int or self.recipient_id <= 0:
+            raise ValueError("A valid private recipient is required")
+
+    def for_chat(self, chat_id: int):
+        return Telegram(self.config, self.http, recipient_id=chat_id)
 
     def call(self, method, budget: Budget, *, data=None, files=None):
-        payload = {"chat_id": self.config.owner_id, **(data or {})}
+        payload = {"chat_id": self.recipient_id, **(data or {})}
         if method in ("answerCallbackQuery", "getWebhookInfo", "getUpdates"):
             payload.pop("chat_id", None)
         kwargs = {"data": payload, "files": files} if files else {"json": payload}

@@ -8,7 +8,7 @@ from skillcoach.clients import AI, Budget, ExternalError, Publisher, Telegram
 from skillcoach.config import Config
 from skillcoach.media import deliver_media
 from skillcoach.service import Service
-from skillcoach.storage import LostLease, Repository
+from skillcoach.storage import LostLease, MembershipChanged, Repository
 from skillcoach.timeutil import IST, now_ist
 
 log = logging.getLogger(__name__)
@@ -18,6 +18,7 @@ class Runtime:
     def __init__(self, config, repository=None, ai=None, telegram=None, publisher=None, clock=now_ist):
         self.config = config
         self.repo = repository or Repository(config.database_url)
+        self.repo.owner_id = config.owner_id
         self.ai = ai or AI(config)
         self.telegram = telegram or Telegram(config)
         self.publisher = publisher or Publisher(config)
@@ -32,19 +33,27 @@ class Runtime:
         if not token:
             return False
         job = None
+        scoped = self.repo
         try:
             job = self.repo.next_job(token)
             if job is None:
                 return False
-            revision, state = self.repo.read()
-            result = Service(self.repo, self.ai, self.config, self.clock).apply(job, state, token, budget)
-            self.repo.finish(job["id"], token, revision, *result)
+            scoped = self.repo.for_learner(job.get("learner_id", "owner"))
+            revision, state = scoped.read()
+            result = Service(scoped, self.ai, self.config, self.clock).apply(job, state, token, budget)
+            scoped.finish(job["id"], token, revision, *result)
             return True
+        except MembershipChanged:
+            log.info("learner_access_changed_work_cancelled")
+            return job is not None
         except (ExternalError, ValidationError, ValueError) as exc:
             code = exc.code if isinstance(exc, ExternalError) else "invalid_operation"
             log.warning("operation_failed code=%s", code)
             if job:
-                self.repo.fail(job["id"], token, code)
+                try:
+                    scoped.fail(job["id"], token, code)
+                except MembershipChanged:
+                    log.info("learner_access_changed_failed_work_cancelled")
             return job is not None
         finally:
             self.repo.release("domain", token)
@@ -58,7 +67,14 @@ class Runtime:
             if item is None:
                 return False
             body = item["body"]
-            _, state = self.repo.read()
+            scoped = self.repo.for_learner(item.get("learner_id", "owner"))
+            member = scoped.member()
+            if member["generation"] != item.get("access_generation", 1) or (
+                member["status"] != "active" and not item.get("access_notice")
+            ):
+                scoped.delivery_result(item["id"], token, "suppressed")
+                return True
+            _, state = scoped.read()
             if (
                 body.get("scheduled")
                 and (
@@ -66,25 +82,28 @@ class Runtime:
                     or body.get("scheduled_date") != self.clock().astimezone(IST).date().isoformat()
                 )
             ) or (body.get("target") and body["target"] != state.target()):
-                self.repo.delivery_result(item["id"], token, "suppressed")
+                scoped.delivery_result(item["id"], token, "suppressed")
                 return True
+            telegram = self.telegram if scoped.is_owner else self.telegram.for_chat(scoped.recipient())
             try:
                 if body["kind"] == "text":
-                    self.telegram.send(body["text"], budget, body.get("buttons"))
+                    telegram.send(body["text"], budget, body.get("buttons"))
                 elif body["kind"] == "media":
-                    deliver_media(self.telegram, body, budget)
+                    deliver_media(telegram, body, budget)
                 elif body["kind"] == "export":
+                    if not scoped.is_owner:
+                        raise ExternalError("publication_requires_owner", retryable=False)
                     if "base" not in body:
                         body["base"] = self.publisher.prepare(budget)
-                        self.repo.prepare_delivery(item["id"], token, body)
+                        scoped.prepare_delivery(item["id"], token, body)
                     self.publisher.publish(body["document"], budget, body["base"])
                 else:
                     raise ExternalError("invalid_outbox_kind", retryable=False)
             except ExternalError as exc:
                 log.warning("delivery_failed kind=%s code=%s", body["kind"], exc.code)
-                self.repo.delivery_result(item["id"], token, "failed", exc.code)
+                scoped.delivery_result(item["id"], token, "failed", exc.code)
                 return True
-            self.repo.delivery_result(item["id"], token, "sent")
+            scoped.delivery_result(item["id"], token, "sent")
             return True
         finally:
             self.repo.release("delivery", token)

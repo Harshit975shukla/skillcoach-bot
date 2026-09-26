@@ -84,6 +84,7 @@ class Service:
             if validate:
                 validate(result)
             return result
+        self.repo.reserve_ai(self.job["id"], operation, self.now.date(), self.config.daily_ai_operations)
         result = self.ai.structured(prompt, model, self.budget, validate)
         self.repo.cache(self.job["id"], operation, result.model_dump(mode="json"), self.token)
         return result
@@ -593,7 +594,7 @@ class Service:
         if cmd not in COMMANDS:
             self.say("Unknown command. Use /help.")
         elif cmd in ("start", "help"):
-            self.say(help_text())
+            self.say(help_text(admin=self.repo.is_owner))
         elif cmd == "setup" or (cmd == "profile" and (arg == "setup" or not self.state.profile)):
             if self.state.focus:
                 self.say("Finish or /cancel the current flow before starting profile setup.")
@@ -764,6 +765,9 @@ class Service:
             )
             self.say(("SAMPLE Q&A (not graded)\n\n" if cmd == "mock" else "") + answer.text)
         elif cmd == "publish":
+            if not self.repo.is_owner:
+                self.say("Only the owner can publish. Your private learning history is not exported.")
+                return
             self.messages.append({"kind": "export", "document": public_export(self.state, self.now)})
             self.say("Anonymous dashboard summary published.")
         elif cmd == "dashboard":

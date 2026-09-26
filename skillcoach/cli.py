@@ -29,7 +29,12 @@ def schedule_key(kind: str, day: date):
 
 
 def schedule(runtime: Runtime, kind: str, day: date, *, media=True):
-    runtime.repo.enqueue(schedule_key(kind, day), {"type": "schedule", "kind": kind, "date": day.isoformat()})
+    key = schedule_key(kind, day)
+    for learner in runtime.repo.active_learners():
+        scoped = runtime.repo.for_learner(learner)
+        _, state = scoped.read()
+        if not state.paused:
+            scoped.enqueue(key, {"type": "schedule", "kind": kind, "date": day.isoformat()})
     runtime.recover(media=media)
 
 
@@ -44,9 +49,9 @@ def polling(runtime: Runtime):
             payload["offset"] = offset
         updates = runtime.telegram.call("getUpdates", Budget(), data=payload)
         for update in updates:
-            status, data = authorized_update(update, runtime.config.owner_id)
+            status, data = authorized_update(update)
             if status == "action":
-                runtime.repo.enqueue(f"telegram:{update['update_id']}", data)
+                runtime.repo.accept_update(update["update_id"], data, runtime.config)
                 if data.get("callback_id"):
                     try:
                         runtime.telegram.acknowledge(data["callback_id"], Budget())
@@ -63,6 +68,10 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("migrate", help="Explicitly apply additive PostgreSQL schema migrations")
     sub.add_parser("bootstrap-fresh", help="Explicit empty-project migration and least-privilege role setup")
+    upgrade = sub.add_parser(
+        "upgrade-schema", help="Additive existing-owner migration; requires stopped writers"
+    )
+    upgrade.add_argument("--writers-stopped", action="store_true")
     recover = sub.add_parser("recover", help="Retry persisted processing/delivery; no new scheduled lessons")
     recover.add_argument("--no-media", action="store_true")
     sub.add_parser("status", help="Show non-sensitive durable queue counts")
@@ -86,6 +95,13 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     try:
+        if args.command == "upgrade-schema":
+            from skillcoach.bootstrap import upgrade_existing
+
+            if not args.writers_stopped:
+                raise ValueError("Pause webhooks and scheduled workers and back up current state first.")
+            print(json.dumps(upgrade_existing(database_url()), indent=2))
+            return 0
         if args.command == "bootstrap-fresh":
             from skillcoach.bootstrap import bootstrap_fresh
 
@@ -121,7 +137,7 @@ def main(argv=None):
             print("Private schema migrations applied.")
             return 0
         if args.command == "status":
-            print(json.dumps(Repository(database_url()).status(), indent=2))
+            print(json.dumps(Repository(database_url()).status(all_learners=True), indent=2))
             return 0
         if args.command == "needs-media":
             return 0 if Repository(database_url()).needs_media() else 3
@@ -140,7 +156,7 @@ def main(argv=None):
                 raise ValueError("--at must include a timezone")
             intended = args.date or (args.at.astimezone(IST).date() if args.at else now_ist().date())
             schedule(runtime, args.kind, intended, media=not args.no_media)
-        counts = runtime.repo.status()
+        counts = runtime.repo.status(all_learners=True)
         print(json.dumps(counts))
         if any(row["status"] == "failed" and row["count"] for rows in counts.values() for row in rows):
             print(

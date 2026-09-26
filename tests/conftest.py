@@ -52,6 +52,18 @@ class FakeTelegram:
         self.messages = []
         self.acks = []
         self.fail = False
+        self.chat_messages = {}
+
+    def for_chat(self, chat_id):
+        parent = self
+
+        class Recipient:
+            def send(self, text, budget, buttons=None):
+                if parent.fail:
+                    raise ExternalError("fake_telegram_failure")
+                parent.chat_messages.setdefault(chat_id, []).append((text, buttons))
+
+        return Recipient()
 
     def send(self, text, budget, buttons=None):
         if self.fail:
@@ -88,6 +100,31 @@ class MemoryRepository:
         self.displayed = None
         self.leases = {}
         self.answer_keys = set()
+        self.is_owner = True
+        self.learner_id = "owner"
+        self.owner_id = 42
+        self.ai_reservations = []
+
+    def for_learner(self, learner_id):
+        assert learner_id == "owner", "Use real PostgreSQL tests for multi-learner persistence"
+        return self
+
+    def member(self):
+        return {"id": "owner", "status": "active", "generation": 1}
+
+    def active_learners(self):
+        return ["owner"]
+
+    def accept_update(self, update_id, payload, config):
+        if payload["actor_id"] != config.owner_id:
+            return "invite_required"
+        body = {k: v for k, v in payload.items() if k not in ("actor_id", "display_name")}
+        return "queued" if self.enqueue(f"telegram:{update_id}", body) else "duplicate"
+
+    def reserve_ai(self, job, operation, local_date, limit):
+        if sum(day == local_date for _, _, day in self.ai_reservations) >= limit:
+            raise ExternalError("daily_ai_budget_exhausted", retryable=False)
+        self.ai_reservations.append((job, operation, local_date))
 
     def enqueue(self, key, payload):
         if key in self.jobs:
@@ -213,7 +250,7 @@ class MemoryRepository:
                 },
             )
 
-    def status(self):
+    def status(self, *, all_learners=False):
         return {"jobs": [], "outbox": []}
 
 

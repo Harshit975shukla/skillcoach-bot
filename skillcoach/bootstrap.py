@@ -12,7 +12,20 @@ from skillcoach.storage import Repository
 
 ROLE = "skillcoach_runtime"
 ROLE_MARKER = "SkillCoach bot runtime; managed by explicit bootstrap-fresh"
-TABLES = ("coach_state", "worker_leases", "jobs", "ai_results", "task_keys", "answer_keys", "outbox")
+TABLES = (
+    "coach_state",
+    "worker_leases",
+    "jobs",
+    "ai_results",
+    "task_keys",
+    "answer_keys",
+    "outbox",
+    "learners",
+    "invitations",
+    "telegram_receipts",
+    "access_audit",
+    "ai_usage",
+)
 log = logging.getLogger(__name__)
 
 
@@ -159,4 +172,48 @@ def bootstrap_fresh(admin_url: str, password: str) -> dict:
         "fresh_state": True,
         "private_write_permission": True,
         "learner_data_seeded": False,
+    }
+
+
+def upgrade_existing(admin_url: str):
+    """Apply additive migrations and grants without replacing a password or owner data."""
+    import hashlib
+    import json
+
+    if conninfo_to_dict(admin_url).get("sslmode") != "verify-full":
+        raise ValueError("Schema upgrades require verified TLS.")
+    admin = Repository(admin_url)
+    with admin.connection() as conn:
+        owner = conn.execute("SELECT body,revision,displayed_target FROM coach_state WHERE id=1").fetchone()
+        if owner is None:
+            raise ValueError("Existing owner state is required for this upgrade.")
+        role = conn.execute(
+            "SELECT shobj_description(oid,'pg_authid') AS marker FROM pg_roles WHERE rolname=%s", (ROLE,)
+        ).fetchone()
+        if not role or role["marker"] != ROLE_MARKER:
+            raise ValueError("The existing runtime role is not recognized; no automatic grant changes.")
+    before = hashlib.sha256(json.dumps(owner, sort_keys=True, default=str).encode()).hexdigest()
+    admin.migrate()
+    with admin.connection() as conn:
+        after = conn.execute("SELECT body,revision,displayed_target FROM coach_state WHERE id=1").fetchone()
+        if hashlib.sha256(json.dumps(after, sort_keys=True, default=str).encode()).hexdigest() != before:
+            raise ValueError(
+                "Owner state changed during upgrade; keep writers stopped and inspect the backup."
+            )
+        for table in TABLES:
+            conn.execute(
+                sql.SQL("GRANT SELECT,INSERT,UPDATE,DELETE ON {} TO {}").format(
+                    sql.Identifier(admin.schema, table), sql.Identifier(ROLE)
+                )
+            )
+        conn.execute(
+            sql.SQL("GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA {} TO {}").format(
+                sql.Identifier(admin.schema), sql.Identifier(ROLE)
+            )
+        )
+    return {
+        "owner_state_preserved": True,
+        "owner_state_sha256": before,
+        "runtime_password_changed": False,
+        "schema": admin.schema,
     }

@@ -19,12 +19,25 @@ class LostLease(RuntimeError):
     pass
 
 
+class MembershipChanged(LostLease):
+    pass
+
+
 class Repository:
-    def __init__(self, url: str, *, schema: str = "skillcoach_private"):
+    def __init__(
+        self,
+        url: str,
+        *,
+        schema: str = "skillcoach_private",
+        learner_id: str = "owner",
+        owner_id: int | None = None,
+    ):
         if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", schema):
             raise ValueError("Invalid private schema identifier")
         self.url = url
         self.schema = schema
+        self.learner_id = learner_id
+        self.owner_id = owner_id
         configured_ca = os.getenv("DATABASE_CA_CERT_FILE", "")
         self.ca_cert_file = None
         if configured_ca:
@@ -36,6 +49,60 @@ class Repository:
             if conninfo_to_dict(url).get("sslmode") != "verify-full":
                 raise ValueError("A configured CA certificate requires sslmode=verify-full.")
             self.ca_cert_file = str(path.resolve())
+
+    @property
+    def is_owner(self):
+        return self.learner_id == "owner"
+
+    def for_learner(self, learner_id: str):
+        return Repository(self.url, schema=self.schema, learner_id=learner_id, owner_id=self.owner_id)
+
+    def member(self):
+        with self.connection() as conn:
+            row = conn.execute("SELECT * FROM learners WHERE id=%s", (self.learner_id,)).fetchone()
+            if row is None:
+                raise MembershipChanged("Learner does not exist")
+            return row
+
+    def recipient(self):
+        member = self.member()
+        destination = self.owner_id if self.is_owner else member["telegram_id"]
+        if type(destination) is not int or destination <= 0:
+            raise ValueError("Recipient is not configured")
+        return destination
+
+    def accept_update(self, update_id: int, payload: dict, config):
+        from skillcoach.access import accept_update
+
+        return accept_update(self, update_id, payload, config)
+
+    def active_learners(self):
+        with self.connection() as conn:
+            return [
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM learners WHERE status='active' ORDER BY joined_at, id"
+                )
+            ]
+
+    def _ensure_access(self, conn, generation=None):
+        member = conn.execute("SELECT * FROM learners WHERE id=%s FOR UPDATE", (self.learner_id,)).fetchone()
+        if (
+            not member
+            or member["status"] != "active"
+            or (generation is not None and generation != member["generation"])
+        ):
+            raise MembershipChanged("Learner access changed; no mutation applied")
+        return member
+
+    def _job(self, conn, job):
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE id=%s AND learner_id=%s FOR UPDATE", (job, self.learner_id)
+        ).fetchone()
+        if not row or row["status"] == "cancelled":
+            raise MembershipChanged("Work is no longer authorized")
+        self._ensure_access(conn, row["access_generation"])
+        return row
 
     @contextmanager
     def connection(self):
@@ -70,18 +137,31 @@ class Repository:
 
     def read(self) -> tuple[int, State]:
         with self.connection() as conn:
-            row = conn.execute("SELECT revision, body FROM coach_state WHERE id=1").fetchone()
+            row = conn.execute(
+                "SELECT revision, body FROM coach_state WHERE learner_id=%s", (self.learner_id,)
+            ).fetchone()
+            if row is None:
+                raise MembershipChanged("Learner state is unavailable")
             return row["revision"], State.model_validate(row["body"])
 
     def enqueue(self, key: str, payload: dict) -> bool:
         with self.connection() as conn:
-            row = conn.execute("SELECT displayed_target FROM coach_state WHERE id=1 FOR UPDATE").fetchone()
+            member = self._ensure_access(conn)
+            row = conn.execute(
+                "SELECT displayed_target FROM coach_state WHERE learner_id=%s FOR UPDATE", (self.learner_id,)
+            ).fetchone()
             body = dict(payload)
             if body.get("type") == "telegram":
                 body["target"] = row["displayed_target"]
             result = conn.execute(
-                "INSERT INTO jobs(id, payload) VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING id",
-                (key, Jsonb(body)),
+                "INSERT INTO jobs(id, payload,learner_id,access_generation) VALUES (%s,%s,%s,%s) "
+                "ON CONFLICT DO NOTHING RETURNING id",
+                (
+                    key if self.is_owner else f"learner:{self.learner_id}:{key}",
+                    Jsonb(body),
+                    self.learner_id,
+                    member["generation"],
+                ),
             ).fetchone()
             return result is not None
 
@@ -119,10 +199,11 @@ class Repository:
                 "WHERE status='running' AND attempts>=5"
             )
             row = conn.execute(
-                "SELECT * FROM jobs WHERE status IN ('pending','running','failed') AND available_at<=now() "
-                "AND attempts < 5 ORDER BY "
-                "CASE WHEN payload->>'text' IN ('/cancel','/pause','/retry') THEN 0 ELSE 1 END, sequence "
-                "LIMIT 1 FOR UPDATE"
+                "SELECT j.* FROM jobs j JOIN learners l ON l.id=j.learner_id "
+                "WHERE j.status IN ('pending','running','failed') AND j.available_at<=now() "
+                "AND j.attempts < 5 AND l.status='active' AND l.generation=j.access_generation ORDER BY "
+                "CASE WHEN j.payload->>'text' IN ('/cancel','/pause','/retry') THEN 0 ELSE 1 END, j.sequence "
+                "LIMIT 1 FOR UPDATE OF j"
             ).fetchone()
             if row:
                 conn.execute(
@@ -133,16 +214,35 @@ class Repository:
     def cached(self, job: str, operation: str):
         with self.connection() as conn:
             row = conn.execute(
-                "SELECT body FROM ai_results WHERE job_id=%s AND operation=%s", (job, operation)
+                "SELECT a.body FROM ai_results a JOIN jobs j ON j.id=a.job_id "
+                "WHERE a.job_id=%s AND a.operation=%s AND j.learner_id=%s",
+                (job, operation, self.learner_id),
             ).fetchone()
             return row["body"] if row else None
 
     def cache(self, job: str, operation: str, body: dict, token: str):
         with self.connection() as conn:
             self._fence(conn, "domain", token)
+            self._job(conn, job)
             conn.execute(
                 "INSERT INTO ai_results VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                 (job, operation, Jsonb(body)),
+            )
+
+    def reserve_ai(self, job: str, operation: str, local_date, limit: int):
+        from skillcoach.clients import ExternalError
+
+        with self.connection() as conn:
+            self._job(conn, job)
+            count = conn.execute(
+                "SELECT count(*) AS n FROM ai_usage WHERE learner_id=%s AND local_date=%s",
+                (self.learner_id, local_date),
+            ).fetchone()["n"]
+            if count >= limit:
+                raise ExternalError("daily_ai_budget_exhausted", retryable=False)
+            conn.execute(
+                "INSERT INTO ai_usage(learner_id,job_id,operation,local_date) VALUES (%s,%s,%s,%s)",
+                (self.learner_id, job, operation, local_date),
             )
 
     def finish(
@@ -157,53 +257,72 @@ class Repository:
     ):
         with self.connection() as conn:
             self._fence(conn, "domain", token)
+            authorized = self._job(conn, job)
             updated = conn.execute(
-                "UPDATE coach_state SET body=%s, revision=revision+1 WHERE id=1 AND revision=%s RETURNING id",
-                (Jsonb(state.model_dump(mode="json")), revision),
+                "UPDATE coach_state SET body=%s, revision=revision+1 WHERE learner_id=%s "
+                "AND revision=%s RETURNING id",
+                (Jsonb(state.model_dump(mode="json")), self.learner_id, revision),
             ).fetchone()
             if not updated:
                 raise LostLease("State revision changed; transaction not applied.")
             for task in state.tasks.values():
                 conn.execute(
-                    "INSERT INTO task_keys VALUES (%s,%s) ON CONFLICT(id) DO NOTHING", (task.id, task.origin)
+                    "INSERT INTO task_keys(id,origin,learner_id) VALUES (%s,%s,%s) "
+                    "ON CONFLICT(learner_id,id) DO NOTHING",
+                    (task.id, task.origin, self.learner_id),
                 )
             for session, question in answers:
-                conn.execute("INSERT INTO answer_keys VALUES (%s,%s,%s)", (session, question, job))
+                conn.execute(
+                    "INSERT INTO answer_keys(session_id,question_id,job_id,learner_id) VALUES (%s,%s,%s,%s)",
+                    (session, question, job, self.learner_id),
+                )
             for index, body in enumerate(messages):
                 conn.execute(
-                    "INSERT INTO outbox(id,job_id,body) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-                    (f"{job}:{index}", job, Jsonb(body)),
+                    "INSERT INTO outbox(id,job_id,body,learner_id,access_generation) "
+                    "VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                    (f"{job}:{index}", job, Jsonb(body), self.learner_id, authorized["access_generation"]),
                 )
             if control == "retry":
                 conn.execute(
-                    "UPDATE jobs SET status='pending', attempts=0, available_at=now() WHERE status='failed'"
+                    "UPDATE jobs SET status='pending', attempts=0, available_at=now() "
+                    "WHERE status='failed' AND learner_id=%s AND access_generation=%s",
+                    (self.learner_id, authorized["access_generation"]),
                 )
                 conn.execute(
-                    "UPDATE outbox SET status='pending', attempts=0, available_at=now() WHERE status='failed'"
+                    "UPDATE outbox SET status='pending', attempts=0, available_at=now() "
+                    "WHERE status='failed' AND learner_id=%s AND access_generation=%s",
+                    (self.learner_id, authorized["access_generation"]),
                 )
             elif control == "cancel":
-                conn.execute("UPDATE jobs SET status='cancelled' WHERE status='failed'")
                 conn.execute(
-                    "UPDATE outbox SET status='suppressed' WHERE status IN ('failed','pending') "
+                    "UPDATE jobs SET status='cancelled' WHERE status='failed' AND learner_id=%s",
+                    (self.learner_id,),
+                )
+                conn.execute(
+                    "UPDATE outbox SET status='suppressed' WHERE status IN ('failed','pending') AND learner_id=%s "
                     "AND (body->>'target' IS NOT NULL OR job_id IN "
                     "(SELECT id FROM jobs WHERE status='cancelled') OR job_id IN "
-                    "(SELECT job_id FROM outbox WHERE status='failed'))"
+                    "(SELECT job_id FROM outbox WHERE status='failed' AND learner_id=%s))",
+                    (self.learner_id, self.learner_id),
                 )
             elif control == "pause":
                 conn.execute(
                     "UPDATE outbox SET status='suppressed' WHERE status IN ('failed','pending') "
-                    "AND body->>'scheduled'='true'"
+                    "AND body->>'scheduled'='true' AND learner_id=%s",
+                    (self.learner_id,),
                 )
                 conn.execute(
                     "UPDATE jobs SET status='cancelled' WHERE status IN ('pending','failed','running') "
-                    "AND payload->>'type'='schedule'"
+                    "AND payload->>'type'='schedule' AND learner_id=%s",
+                    (self.learner_id,),
                 )
             conn.execute("UPDATE jobs SET status='done', error_code=NULL WHERE id=%s", (job,))
 
     def fail(self, job: str, token: str, code: str):
         with self.connection() as conn:
             self._fence(conn, "domain", token)
-            payload = conn.execute("SELECT payload FROM jobs WHERE id=%s", (job,)).fetchone()["payload"]
+            authorized = self._job(conn, job)
+            payload = authorized["payload"]
             notice = {
                 "kind": "text",
                 "recovery_notice": True,
@@ -219,13 +338,19 @@ class Repository:
                 (code, job),
             )
             conn.execute(
-                "INSERT INTO outbox(id,job_id,body) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-                (f"{job}:failure", job, Jsonb(notice)),
+                "INSERT INTO outbox(id,job_id,body,learner_id,access_generation) "
+                "VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                (f"{job}:failure", job, Jsonb(notice), self.learner_id, authorized["access_generation"]),
             )
 
     def next_delivery(self, token: str, *, media: bool = True) -> dict | None:
         with self.connection() as conn:
             self._fence(conn, "delivery", token)
+            conn.execute(
+                "UPDATE outbox o SET status='suppressed' FROM learners l WHERE o.learner_id=l.id "
+                "AND o.status IN ('pending','failed') AND (o.access_generation<>l.generation "
+                "OR (l.status<>'active' AND NOT o.access_notice))"
+            )
             # A failed item blocks only its own ordered message group, not unrelated commands.
             return conn.execute(
                 "SELECT o.* FROM outbox o WHERE o.status IN ('pending','failed') "
@@ -239,7 +364,9 @@ class Repository:
     def prepare_delivery(self, key: str, token: str, body: dict):
         with self.connection() as conn:
             self._fence(conn, "delivery", token)
-            conn.execute("UPDATE outbox SET body=%s WHERE id=%s", (Jsonb(body), key))
+            conn.execute(
+                "UPDATE outbox SET body=%s WHERE id=%s AND learner_id=%s", (Jsonb(body), key, self.learner_id)
+            )
 
     def delivery_result(self, key: str, token: str, status: str, code: str | None = None):
         with self.connection() as conn:
@@ -247,24 +374,26 @@ class Repository:
             conn.execute(
                 "UPDATE outbox SET status=%s, error_code=%s, attempts=attempts+1, "
                 "available_at=now()+interval '5 minutes', "
-                "delivered_at=CASE WHEN %s='sent' THEN now() ELSE NULL END WHERE id=%s",
-                (status, code, status, key),
+                "delivered_at=CASE WHEN %s='sent' THEN now() ELSE NULL END WHERE id=%s AND learner_id=%s",
+                (status, code, status, key, self.learner_id),
             )
             if status == "sent":
                 conn.execute(
                     "UPDATE coach_state SET displayed_target=(SELECT body->'target' FROM outbox WHERE id=%s) "
-                    "WHERE id=1 AND (SELECT body ? 'target' FROM outbox WHERE id=%s)",
-                    (key, key),
+                    "WHERE learner_id=%s AND (SELECT body ? 'target' FROM outbox WHERE id=%s)",
+                    (key, self.learner_id, key),
                 )
                 conn.execute(
                     "UPDATE coach_state SET body=jsonb_set(body, "
                     "ARRAY['lessons',(SELECT body->>'lesson_key' FROM outbox WHERE id=%s),'delivered_at'], "
-                    "to_jsonb(now())), revision=revision+1 WHERE id=1 "
+                    "to_jsonb(now())), revision=revision+1 WHERE learner_id=%s "
                     "AND (SELECT body ? 'lesson_key' FROM outbox WHERE id=%s)",
-                    (key, key),
+                    (key, self.learner_id, key),
                 )
             elif status == "failed":
-                item = conn.execute("SELECT job_id, body FROM outbox WHERE id=%s", (key,)).fetchone()
+                item = conn.execute(
+                    "SELECT * FROM outbox WHERE id=%s AND learner_id=%s", (key, self.learner_id)
+                ).fetchone()
                 if not key.endswith(":delivery-error"):
                     notice = {
                         "kind": "text",
@@ -276,16 +405,27 @@ class Repository:
                     if item["body"].get("scheduled"):
                         notice.update(scheduled=True, scheduled_date=item["body"].get("scheduled_date"))
                     conn.execute(
-                        "INSERT INTO outbox(id,job_id,body) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-                        (key + ":delivery-error", item["job_id"], Jsonb(notice)),
+                        "INSERT INTO outbox(id,job_id,body,learner_id,access_generation,access_notice) "
+                        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                        (
+                            key + ":delivery-error",
+                            item["job_id"],
+                            Jsonb(notice),
+                            self.learner_id,
+                            item["access_generation"],
+                            item["access_notice"],
+                        ),
                     )
 
-    def status(self) -> dict:
+    def status(self, *, all_learners=False) -> dict:
         with self.connection() as conn:
             return {
                 table: [
                     dict(row)
-                    for row in conn.execute(f"SELECT status, count(*) AS count FROM {table} GROUP BY status")
+                    for row in conn.execute(
+                        f"SELECT status, count(*) AS count FROM {table} WHERE (%s OR learner_id=%s) GROUP BY status",
+                        (all_learners and self.is_owner, self.learner_id),
+                    )
                 ]
                 for table in ("jobs", "outbox")
             }

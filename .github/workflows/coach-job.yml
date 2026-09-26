@@ -67,6 +67,9 @@ jobs:
           DATABASE_CA_CERT_FILE: ${{ vars.DATABASE_CA_CERT_FILE }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           OWNER_ID: ${{ secrets.OWNER_ID || secrets.CHAT_ID }}
+          TELEGRAM_BOT_USERNAME: ${{ vars.TELEGRAM_BOT_USERNAME }}
+          MAX_LEARNERS: ${{ vars.MAX_LEARNERS || '10' }}
+          DAILY_AI_OPERATIONS: ${{ vars.DAILY_AI_OPERATIONS || '40' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_MODEL: ${{ vars.GROQ_MODEL || 'openai/gpt-oss-120b' }}

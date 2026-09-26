@@ -21,6 +21,9 @@ class Config:
     dashboard_repo: str = ""
     dashboard_path: str = "docs/data.json"
     dashboard_url: str = ""
+    max_learners: int = 10
+    daily_ai_operations: int = 40
+    bot_username: str = ""
 
     @classmethod
     def from_env(cls, *, webhook: bool = False) -> "Config":
@@ -40,6 +43,15 @@ class Config:
             raise ConfigurationError("DASHBOARD_REPO must be owner/repository.")
         if path.startswith("/") or any(p in ("", ".", "..") for p in path.split("/")):
             raise ConfigurationError("DASHBOARD_PATH must be a relative repository path.")
+        maximum = os.getenv("MAX_LEARNERS", "10")
+        ai_limit = os.getenv("DAILY_AI_OPERATIONS", "40")
+        username = os.getenv("TELEGRAM_BOT_USERNAME", "")
+        if not maximum.isdecimal() or not 1 <= int(maximum) <= 100:
+            raise ConfigurationError("MAX_LEARNERS must be between 1 and 100, including the owner.")
+        if not ai_limit.isdecimal() or not 1 <= int(ai_limit) <= 200:
+            raise ConfigurationError("DAILY_AI_OPERATIONS must be between 1 and 200 per learner.")
+        if username and not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+            raise ConfigurationError("TELEGRAM_BOT_USERNAME must be the bot username, without @.")
         return cls(
             database,
             token,
@@ -53,4 +65,7 @@ class Config:
             repo,
             path,
             os.getenv("DASHBOARD_URL", ""),
+            int(maximum),
+            int(ai_limit),
+            username,
         )

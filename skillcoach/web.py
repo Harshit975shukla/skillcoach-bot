@@ -11,7 +11,7 @@ from skillcoach.runtime import STORAGE_ERRORS, Runtime
 log = logging.getLogger(__name__)
 
 
-def authorized_update(update, owner: int):
+def authorized_update(update, owner: int | None = None):
     if not isinstance(update, dict) or type(update.get("update_id")) is not int:
         return "invalid", None
     if update["update_id"] < 0:
@@ -34,8 +34,10 @@ def authorized_update(update, owner: int):
     chat = message.get("chat", {})
     if (
         not isinstance(chat, dict)
-        or sender.get("id") != owner
-        or chat.get("id") != owner
+        or type(sender.get("id")) is not int
+        or sender["id"] <= 0
+        or chat.get("id") != sender["id"]
+        or (owner is not None and sender["id"] != owner)
         or chat.get("type") != "private"
     ):
         return "denied", None
@@ -44,13 +46,23 @@ def authorized_update(update, owner: int):
             return "invalid", None
         if len(callback["data"].encode()) > 64:
             return "invalid", None
-        return "action", {"type": "telegram", "callback": callback["data"], "callback_id": callback["id"]}
+        return "action", {
+            "type": "telegram",
+            "callback": callback["data"],
+            "callback_id": callback["id"],
+            "actor_id": sender["id"],
+        }
     text = message.get("text")
     if not isinstance(text, str):
         return "ignored", None
     if not text.strip() or len(text) > 16000:
         return "invalid", None
-    return "action", {"type": "telegram", "text": text}
+    return "action", {
+        "type": "telegram",
+        "text": text,
+        "actor_id": sender["id"],
+        "display_name": str(sender.get("first_name") or sender.get("username") or "")[:100],
+    }
 
 
 def create_app(runtime=None):
@@ -97,14 +109,14 @@ def create_app(runtime=None):
             if current.config.owner_id <= 0:
                 return jsonify(error="not_configured"), 503
             update = request.get_json(silent=True)
-            status, payload = authorized_update(update, current.config.owner_id)
+            status, payload = authorized_update(update)
             if status == "invalid":
                 return jsonify(error="invalid_update"), 400
             if status == "denied":
                 return jsonify(error="unauthorized"), 403
             if status == "ignored":
                 return jsonify(status="ignored"), 200
-            current.repo.enqueue(f"telegram:{update['update_id']}", payload)
+            admission = current.repo.accept_update(update["update_id"], payload, current.config)
             if payload.get("callback_id"):
                 try:
                     current.telegram.acknowledge(payload["callback_id"], budget)
@@ -114,7 +126,7 @@ def create_app(runtime=None):
             for _ in range(3):
                 if not current.deliver_one(budget, media=False):
                     break
-            return jsonify(status="persisted", recovery="scheduled-worker-or-retry"), 202
+            return jsonify(status="persisted", access=admission, recovery="scheduled-worker-or-retry"), 202
         except ConfigurationError:
             log.error("configuration_unavailable")
             return jsonify(error="not_configured"), 503

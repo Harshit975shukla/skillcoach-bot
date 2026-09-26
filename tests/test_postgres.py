@@ -234,7 +234,7 @@ def test_repeated_migrations_and_idempotent_legacy_import(pg_repo):
     assert len(repo.read()[1].tasks) == 1
     with repo.connection() as conn:
         assert conn.execute("SELECT count(*) AS n FROM task_keys").fetchone()["n"] == 1
-        assert conn.execute("SELECT count(*) AS n FROM schema_migrations").fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) AS n FROM schema_migrations").fetchone()["n"] == 2
     repo.release("domain", token)
 
 
