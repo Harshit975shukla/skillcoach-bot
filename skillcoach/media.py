@@ -125,3 +125,52 @@ def deliver_media(telegram, body: dict, budget, *, before_send=None):
                 data={"caption": caption[:900], **({"supports_streaming": "true"} if video else {})},
                 files={kind: (path.name, stream, "video/mp4" if video else "image/png")},
             )
+
+
+def deliver_storyboard(telegram, body, budget, *, before_send, cached=None):
+    from skillcoach.story_renderer import render_storyboard
+    from skillcoach.storyboard import Storyboard
+
+    story = Storyboard.model_validate(body["storyboard"])
+    caption = body["caption"][:500]
+    caption += (
+        "\nReviewed authored explanation."
+        if body.get("shared_reviewed")
+        else "\nAI-generated explanation; verify against the lesson references."
+    )
+    caption += (
+        "\nSynthetic offline narration + captions."
+        if body.get("voice", True) and body["mode"] == "video"
+        else "\nCaptioned walkthrough."
+    )
+    if cached:
+        before_send()
+        kind = cached["kind"]
+        telegram.call(
+            "sendVideo" if kind == "video" else "sendPhoto",
+            budget,
+            data={kind: cached["file_id"], "caption": caption},
+        )
+        return cached
+    with tempfile.TemporaryDirectory(prefix="skillcoach-storyboard-") as tmp:
+        path, metadata = render_storyboard(
+            story,
+            Path(tmp),
+            budget,
+            voice=body.get("voice", True),
+            static=body["mode"] == "static",
+            reviewed=body.get("shared_reviewed", False),
+        )
+        before_send()
+        kind = metadata["kind"]
+        with path.open("rb") as media_file:
+            result = telegram.call(
+                "sendVideo" if kind == "video" else "sendPhoto",
+                budget,
+                data={"caption": caption, **({"supports_streaming": "true"} if kind == "video" else {})},
+                files={kind: (path.name, media_file, "video/mp4" if kind == "video" else "image/png")},
+            )
+        delivered = result.get("video") if kind == "video" else (result.get("photo") or [{}])[-1]
+        if not delivered or not isinstance(delivered.get("file_id"), str):
+            raise ExternalError("media_delivery_receipt_invalid")
+        return {"file_id": delivered["file_id"], "kind": kind, "metadata": metadata}

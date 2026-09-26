@@ -90,7 +90,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str):
             "setup_complete": profile is not None,
         },
         "stats": stats(state, now),
-        "preferences": {"paused": state.paused, "media": state.media},
+        "preferences": {"paused": state.paused, "media": state.media, "voice": state.voice},
         "tasks": [
             {
                 "id": t.id,
@@ -137,7 +137,7 @@ def register_dashboard(app, runtime_factory):
         try:
             runtime = runtime_factory()
             body = request.get_json(silent=True)
-            if not isinstance(body, dict) or set(body) != {"init_data"}:
+            if request.args or not isinstance(body, dict) or set(body) != {"init_data"}:
                 raise DashboardDenied("Open this dashboard from the bot.")
             actor, issued = verify_init_data(
                 body["init_data"], runtime.config.telegram_token, int(runtime.clock().timestamp())

@@ -111,6 +111,48 @@ Resume/JD alignment scores are explicitly provisional document-based estimates. 
 
 ## Full lessons and media
 
+### Explanatory-media upgrade (requires the matching code/schema rollout)
+
+`/topics` exposes a versioned Cloud/DevOps syllabus covering foundations, Linux, networking, Git,
+scripting, AWS, Azure, Google Cloud, containers, Kubernetes, infrastructure as code, CI/CD, GitOps,
+observability, SRE, DevSecOps, platform engineering, data systems, MLOps and FinOps. `/topics <module>`
+lists stable topic IDs; `/learn <topic_id>` uses that entry. This is an explicit syllabus, not a promise
+that every vendor feature or future version is already reviewed. The catalogue distinguishes broad
+generation support from the six fully reviewed AWS lesson topics.
+
+New media uses validated storyboards: two to six labelled actors, typed request/control/replication
+edges, and three to five explanation scenes. Flow/decision scenes move markers along the active
+paths; timeline/comparison scenes highlight the relevant steps rather than invent network traffic.
+The six reviewed AWS architectures have authored behavior sequences. Their concept walkthroughs
+narrate bounded excerpts of the reviewed lesson, while the full written concept remains available.
+Generated topics receive concept-specific and end-to-end AI storyboards, clearly labelled
+**AI-generated; verify the references**. Only supported JSON scene data is accepted; no generated
+Python, HTML, shell commands, file paths or executable animation code is run.
+
+`/voice on` enables **offline synthetic narration**, on by default for the new video renderer;
+`/voice off` keeps captions and motion. `/media static` remains an optional, captioned first-scene
+walkthrough. Stock eSpeak NG `en-us` at 150 words/minute provides the fee-free baseline; it is
+understandable synthesized speech, not a claim of natural human narration. Every scene is timed from
+its actual WAV duration plus a short pause, and the final MP4 includes synchronized AAC audio.
+Missing narration/render dependencies cause visible recoverable failures, not a silent “narrated”
+video. Worker setup installs `espeak-ng` and readable system fonts only when media work is ready.
+
+MP4s/WAVs/frames exist in temporary worker storage during rendering. After successful Telegram upload,
+the bot saves the Telegram media `file_id` and versioned rendering metadata in private PostgreSQL.
+It reuses that file ID for unchanged media; the cache key includes storyboard, renderer, voice and
+mode. Only fixed reviewed content can share a cache entry across learners. Generated/personalized
+media is learner-scoped. No large media blobs or personal storyboards are committed to Git or sent
+to an external diagram service. Telegram reuse is not an archival backup: preserve the source
+templates/storyboards and database backups so assets can be regenerated.
+
+The renderer uses Pillow and FFmpeg, and narration uses stock eSpeak NG. These do not require a
+paid speech API or a software licence purchase, but their open-source licences still apply:
+[Pillow licence](https://pillow.readthedocs.io/en/stable/about.html#license),
+[FFmpeg licensing](https://ffmpeg.org/legal.html), and
+[eSpeak NG GPLv3+](https://github.com/espeak-ng/espeak-ng/blob/master/COPYING).
+The system consumes installed tools; redistribution must preserve their applicable notices/source
+obligations. No third-party neural voice model is bundled or assumed to share the engine's licence.
+
 Authored EC2, S3, RDS, VPC, IAM and Lambda lessons contain four concepts, end-to-end flows, three stable tasks, key terms, official references, review metadata, cost cautions and cleanup instructions. Other topics use validated full AI-generated lessons, explicitly not independently reviewed. Generic exercise-flow diagrams for generated topics are illustrative, not invented service architectures.
 
 The original video enhancement was preserved before refactoring. `skillcoach/media.py` retains the 25-second center-anchored Ken Burns zoom (1.0x to 1.25x), one-second fade-in, two-second fade-out, caption overlay, H.264 1280x720 at 24fps, and static fallback on encoding failure. Captions use a text file to avoid filter injection. Static preference keeps the full lesson.

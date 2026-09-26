@@ -26,6 +26,7 @@ TABLES = (
     "access_audit",
     "ai_usage",
     "dashboard_sessions",
+    "media_assets",
 )
 log = logging.getLogger(__name__)
 

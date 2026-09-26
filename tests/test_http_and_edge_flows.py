@@ -176,10 +176,13 @@ def test_generated_full_lesson_has_stable_tasks_and_video_default(harness):
     generated["title"] = "Python full practice"
     generated["reviewed_at"] = "AI-generated; not independently reviewed"
     h.ai.responses.append(generated)
+    from skillcoach.storyboard import reviewed_architecture
+
+    h.ai.responses.extend([reviewed_architecture("EC2").model_dump() for _ in range(5)])
     command(h, "/learn Python")
     assert len(h.repo.state.tasks) == 3
-    assert len(h.ai.calls) == 1
+    assert len(h.ai.calls) == 6
     assert len([o for o in h.repo.outbox.values() if o["body"]["kind"] == "media"]) == 5
     assert all(t.skill == "python" for t in h.repo.state.tasks.values())
     command(h, "/learn Python")
-    assert len(h.repo.state.tasks) == 3 and len(h.ai.calls) == 1
+    assert len(h.repo.state.tasks) == 3 and len(h.ai.calls) == 6

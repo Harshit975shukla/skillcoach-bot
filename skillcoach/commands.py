@@ -27,6 +27,8 @@ COMMANDS = {
     "cancel": "Cancel current flow and failed work, preserving completed history",
     "retry": "Retry failed operations and deliveries without regrading",
     "media": "<video|static>; animated video is the default",
+    "voice": "<on|off> offline narration; captions are always included",
+    "topics": "[module_id] browse the versioned Cloud/DevOps syllabus",
     "publish": "Queue an anonymous dashboard summary",
     "dashboard": "Open your authenticated private learner dashboard",
     "status": "Private pending/retry queue counts",

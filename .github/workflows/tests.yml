@@ -45,6 +45,11 @@ jobs:
             sudo apt-get install -y ffmpeg
           fi
           python tests/verify_media.py
+      - name: Verify narrated explanatory video and audio synchronization
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y espeak-ng fonts-dejavu-core
+          python tests/verify_storytelling.py
   prepare-fresh-database:
     needs: test
     if: github.event_name == 'push' && vars.SKILLCOACH_BOOTSTRAP_SHA == github.sha

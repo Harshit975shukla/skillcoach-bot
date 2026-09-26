@@ -69,7 +69,7 @@
       $("interviews").append(item);
     }
     if (!data.recent_interviews.length) empty("interviews", "No graded interviews yet. Try /interview in the bot.");
-    $("preferences").textContent = `Scheduled coaching ${data.preferences.paused ? "paused" : "active"} · Media: ${data.preferences.media}`;
+    $("preferences").textContent = `Scheduled coaching ${data.preferences.paused ? "paused" : "active"} · Media: ${data.preferences.media} · Voice: ${data.preferences.voice ? "on" : "off"}`;
     $("updated").textContent = `Updated ${new Date(data.generated_at).toLocaleString()}`;
     $("notice").hidden = true;
     $("content").hidden = false;

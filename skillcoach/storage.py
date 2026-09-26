@@ -464,3 +464,35 @@ class Repository:
                 "SELECT 1 FROM jobs WHERE status IN ('pending','failed','running') AND attempts<5 AND "
                 "(payload->>'text' LIKE '/learn %' OR payload->>'kind'='lesson')) AS needed"
             ).fetchone()["needed"]
+
+    def media_asset(self, key: str):
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT file_id,kind,metadata FROM media_assets "
+                "WHERE asset_key=%s AND (learner_id=%s OR learner_id IS NULL)",
+                (key, self.learner_id),
+            ).fetchone()
+            return row
+
+    def save_media_asset(self, key: str, artifact: dict, token: str, *, shared_reviewed=False):
+        with self.connection() as conn:
+            self._fence(conn, "delivery", token)
+            self._ensure_access(conn)
+            conn.execute(
+                "INSERT INTO media_assets(asset_key,learner_id,file_id,kind,metadata) VALUES (%s,%s,%s,%s,%s) "
+                "ON CONFLICT(asset_key) DO NOTHING",
+                (
+                    key,
+                    None if shared_reviewed else self.learner_id,
+                    artifact["file_id"],
+                    artifact["kind"],
+                    Jsonb(artifact["metadata"]),
+                ),
+            )
+
+    def forget_media_asset(self, key: str):
+        with self.connection() as conn:
+            conn.execute(
+                "DELETE FROM media_assets WHERE asset_key=%s AND (learner_id=%s OR learner_id IS NULL)",
+                (key, self.learner_id),
+            )

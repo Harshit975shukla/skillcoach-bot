@@ -10,6 +10,7 @@ import pytest
 from test_multiuser import Bot
 
 from skillcoach.dashboard import DashboardDenied, verify_init_data
+from skillcoach.models import Interview, InterviewFeedback, OpenQuestion, Profile, Task
 from skillcoach.web import create_app
 
 
@@ -69,20 +70,64 @@ def test_dashboard_command_uses_private_web_app_button(harness):
 def test_dashboard_is_personal_and_revocation_removes_access(pg_repo, config):
     bot = Bot(pg_repo, config)
     a, b = bot.join(101), bot.join(102)
-    bot.input(101, "/nextweek PRIVATE-A")
-    bot.input(102, "/nextweek PRIVATE-B")
+    for scoped, marker in ((a, "PRIVATE-A"), (b, "PRIVATE-B")):
+
+        def personalize(state, marker=marker):
+            from test_flows import PROFILE
+
+            state.profile = Profile(**{**PROFILE, "name": marker, "target_role": marker + " role"})
+            state.tasks["private-task"] = Task(
+                id="private-task",
+                origin=marker,
+                title=marker + " title",
+                skill=marker,
+                detail=marker + " detail",
+                assigned_date=datetime.now().date(),
+            )
+            state.interviews["private-interview"] = Interview(
+                id="private-interview",
+                question=OpenQuestion(skill=marker, question=marker + " question"),
+                status="completed",
+                completed_at=datetime.now().astimezone(),
+                answer=marker + " answer",
+                feedback=InterviewFeedback(
+                    score=7,
+                    accuracy=7,
+                    reasoning=7,
+                    communication=7,
+                    feedback=marker + " feedback",
+                    model_answer=marker + " model",
+                ),
+            )
+
+        bot.save(scoped, personalize)
     bot.runtime.clock = lambda: datetime.now().astimezone()
     client = create_app(bot.runtime).test_client()
     issued = int(time.time()) + 2
     token_a = signed(101, config.telegram_token, issued)
     response = client.post("/app/data", json={"init_data": token_a})
     assert response.status_code == 200 and response.json["private"]
-    assert "PRIVATE-B" not in response.get_data(as_text=True)
+    encoded_a = response.get_data(as_text=True)
+    for suffix in ("role", "title", "detail", "question", "feedback"):
+        assert "PRIVATE-A " + suffix in encoded_a
+    assert "PRIVATE-B" not in encoded_a
     assert (
         client.post("/app/data", json={"init_data": token_a, "learner_id": b.learner_id}).status_code == 403
     )
     token_b = signed(102, config.telegram_token, issued)
-    assert client.post("/app/data", json={"init_data": token_b}).status_code == 200
+    response_b = client.post("/app/data", json={"init_data": token_b})
+    assert response_b.status_code == 200
+    encoded_b = response_b.get_data(as_text=True)
+    for suffix in ("role", "title", "detail", "question", "feedback"):
+        assert "PRIVATE-B " + suffix in encoded_b
+    assert "PRIVATE-A" not in encoded_b
+    query_attempt = client.post("/app/data?user_id=102", json={"init_data": token_a})
+    assert "PRIVATE-B" not in query_attempt.get_data(as_text=True)
+    owner_response = client.post(
+        "/app/data", json={"init_data": signed(config.owner_id, config.telegram_token, issued)}
+    )
+    assert owner_response.status_code == 200
+    assert "PRIVATE-" not in owner_response.get_data(as_text=True)
     bot.input(config.owner_id, "/revoke " + a.learner_id)
     assert client.post("/app/data", json={"init_data": token_a}).status_code == 403
     assert client.post("/app/data", json={"init_data": token_b}).status_code == 200
@@ -90,6 +135,8 @@ def test_dashboard_is_personal_and_revocation_removes_access(pg_repo, config):
     bot.input(101, "/start " + invitation)
     bot.input(config.owner_id, "/approve " + a.learner_id)
     assert client.post("/app/data", json={"init_data": token_a}).status_code == 403
+    new_launch = signed(101, config.telegram_token, int(time.time()) + 2, query_id="new-launch")
+    assert client.post("/app/data", json={"init_data": new_launch}).status_code == 200
 
 
 @pytest.mark.postgres

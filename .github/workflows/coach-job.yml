@@ -55,6 +55,10 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y ffmpeg
           fi
+          if ! command -v espeak-ng >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y espeak-ng fonts-dejavu-core
+          fi
       - name: Capture intended run timestamp
         env:
           GH_TOKEN: ${{ github.token }}

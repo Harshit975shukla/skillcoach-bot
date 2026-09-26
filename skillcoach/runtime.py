@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from skillcoach.clients import AI, Budget, ExternalError, Publisher, Telegram
 from skillcoach.config import Config
-from skillcoach.media import deliver_media
+from skillcoach.media import deliver_media, deliver_storyboard
 from skillcoach.service import Service
 from skillcoach.storage import LostLease, MembershipChanged, Repository
 from skillcoach.timeutil import IST, now_ist
@@ -94,7 +94,31 @@ class Runtime:
                     authorize_send()
                     telegram.send(body["text"], budget, body.get("buttons"))
                 elif body["kind"] == "media":
-                    deliver_media(telegram, body, budget, before_send=authorize_send)
+                    if "storyboard" in body:
+                        from skillcoach.storyboard import Storyboard, asset_key
+
+                        key = asset_key(
+                            Storyboard.model_validate(body["storyboard"]),
+                            scoped.learner_id,
+                            voice=body.get("voice", True) and body["mode"] == "video",
+                            shared_reviewed=body.get("shared_reviewed", False),
+                        )
+                        key += ":" + body["mode"]
+                        cached = scoped.media_asset(key)
+                        try:
+                            artifact = deliver_storyboard(
+                                telegram, body, budget, before_send=authorize_send, cached=cached
+                            )
+                        except ExternalError as exc:
+                            if cached and exc.code == "http_400":
+                                scoped.forget_media_asset(key)
+                            raise
+                        if not cached:
+                            scoped.save_media_asset(
+                                key, artifact, token, shared_reviewed=body.get("shared_reviewed", False)
+                            )
+                    else:
+                        deliver_media(telegram, body, budget, before_send=authorize_send)
                 elif body["kind"] == "export":
                     if not scoped.is_owner:
                         raise ExternalError("publication_requires_owner", retryable=False)
