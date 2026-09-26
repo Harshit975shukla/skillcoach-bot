@@ -11,10 +11,15 @@ on:
         description: "Send one release-keyed help message after a verified cutover"
         type: boolean
         default: false
+      verify_media:
+        description: "Render and verify a local narrated clip without sending or storing learner progress"
+        type: boolean
+        default: false
 jobs:
   recovery:
     uses: ./.github/workflows/coach-job.yml
     with:
       kind: recover
       notify_owner: ${{ inputs.notify_owner || false }}
+      verify_media: ${{ inputs.verify_media || false }}
     secrets: inherit

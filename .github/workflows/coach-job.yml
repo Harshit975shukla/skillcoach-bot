@@ -13,6 +13,10 @@ on:
         required: false
         type: boolean
         default: false
+      verify_media:
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: read
   actions: read
@@ -36,8 +40,9 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_CA_CERT_FILE: ${{ vars.DATABASE_CA_CERT_FILE }}
           OPERATION: ${{ inputs.kind }}
+          VERIFY_MEDIA: ${{ inputs.verify_media }}
         run: |
-          if [ "$OPERATION" = "lesson" ] || python -m skillcoach.cli needs-media; then
+          if [ "$VERIFY_MEDIA" = "true" ] || [ "$OPERATION" = "lesson" ] || python -m skillcoach.cli needs-media; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
           else
             RESULT=$?
@@ -59,6 +64,9 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y espeak-ng fonts-dejavu-core
           fi
+      - name: Verify the production runner's offline narration and video tools
+        if: inputs.verify_media
+        run: python tests/verify_storytelling.py
       - name: Capture intended run timestamp
         env:
           GH_TOKEN: ${{ github.token }}

@@ -4,7 +4,7 @@ An invite-only Telegram interview coach with one administrator: **full lessons a
 
 ## Invite-only multi-user upgrade
 
-The version-two access model is a code upgrade and requires its explicit schema cutover before activation; do not relax the currently deployed owner check without completing that cutover. The administrator remains the configured `OWNER_ID` (legacy `CHAT_ID` alias), validated against Telegram sender identity and matching private chat. Users cannot choose, promote or reassign the administrator.
+The invite-only access model is deployed. Its additive schema cutover preserved the existing owner's profile, history, revision and displayed question exactly. The administrator remains the configured `OWNER_ID` (legacy `CHAT_ID` alias), validated against Telegram sender identity and matching private chat. Users cannot choose, promote or reassign the administrator.
 
 The admission flow is **one-use invitation, then owner approval**. `/invite [label]` creates a cryptographically random link valid for 24 hours; `TELEGRAM_BOT_USERNAME` must identify the existing bot. The intended recipient opens it and becomes pending, with no AI/coaching access. The owner receives an opaque learner ID and can `/approve <id>` or `/reject <id>`. `/requests` lists pending invitations, `/members` lists access status, `/invites` lists unclaimed links, and `/revokeinvite <id>` cancels an unused link. Treat invitation links as private bearer credentials: only the first claimant can consume a link, and possession alone does not grant coaching access.
 
@@ -71,6 +71,11 @@ The optional database-preparation CI job runs only after all tests pass, only fo
 
 The authenticated `GET /health/ready` endpoint checks private storage without exposing state; it requires the webhook-secret header. After cutover, manually dispatch the default-branch recovery workflow to verify real configuration and role permissions. Its optional `notify_owner` input sends one idempotent, release-keyed help message and creates no fake learner profile or grades. Scheduled recovery never sends that announcement by default.
 
+For a production-runner media check, dispatch recovery with `verify_media=true`. It installs the
+normal offline tools and locally renders/decodes a narrated EC2 clip before recovery, without
+uploading that clip, calling AI, or creating learner tasks or grades. This option defaults to false
+for scheduled recovery.
+
 ## Learning and commands
 
 `/dashboard` opens a read-only private Telegram Mini App when `PRIVATE_DASHBOARD_URL` is configured
@@ -111,7 +116,7 @@ Resume/JD alignment scores are explicitly provisional document-based estimates. 
 
 ## Full lessons and media
 
-### Explanatory-media upgrade (requires the matching code/schema rollout)
+### Explanatory media and offline narration
 
 `/topics` exposes a versioned Cloud/DevOps syllabus covering foundations, Linux, networking, Git,
 scripting, AWS, Azure, Google Cloud, containers, Kubernetes, infrastructure as code, CI/CD, GitOps,
