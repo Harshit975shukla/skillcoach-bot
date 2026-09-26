@@ -37,6 +37,7 @@ jobs:
       - run: npm ci
       - run: npm run test:diagrams
       - run: npm run test:dashboard
+      - run: npm run test:admin
       - name: Render authored diagrams and check animated media locally
         run: |
           export PATH="$PWD/node_modules/.bin:$PATH"

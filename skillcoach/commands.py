@@ -46,4 +46,7 @@ def help_text(*, admin=True):
         text += "\n\nOWNER ACCESS MANAGEMENT\n" + "\n".join(
             f"/{name} - {description}" for name, description in ADMIN_COMMANDS.items()
         )
-    return text
+    return (
+        text + "\n\nPrivacy: the owner sees access status, activity counts and delivery health, "
+        "not your private documents, answers or feedback."
+    )

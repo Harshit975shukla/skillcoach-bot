@@ -15,7 +15,7 @@ from skillcoach.config import ConfigurationError
 from skillcoach.migration import dry_run, load_snapshot
 from skillcoach.runtime import STORAGE_ERRORS, Runtime
 from skillcoach.storage import MembershipChanged, Repository
-from skillcoach.timeutil import IST, now_ist
+from skillcoach.timeutil import IST, now_ist, requested_quiz_payload
 from skillcoach.web import authorized_update
 
 
@@ -42,28 +42,14 @@ def schedule(runtime: Runtime, kind: str, day: date, *, media=True):
 
 
 def queue_owner_quiz(runtime: Runtime, due: datetime, topic: str):
-    current = runtime.clock().astimezone(IST)
-    if due.tzinfo is None or due.utcoffset() is None:
-        raise ValueError("Quiz due time must include a timezone.")
-    due = due.astimezone(IST)
-    if due <= current or (due - current).total_seconds() > 7 * 86400:
-        raise ValueError("Quiz due time must be in the future, within seven days.")
-    topic = topic.strip()
-    if not topic or len(topic) > 300:
-        raise ValueError("A topic of 1-300 characters is required.")
+    due, payload = requested_quiz_payload(runtime.clock(), due, topic)
     _, state = runtime.repo.read()
     if state.paused:
         raise ValueError("Owner notifications are paused. No quiz was queued; use /unpause explicitly.")
     key = f"requested:quiz:{due.date().isoformat()}"
     created = runtime.repo.enqueue(
         key,
-        {
-            "type": "schedule",
-            "kind": "quiz",
-            "date": due.date().isoformat(),
-            "requested_topic": topic,
-            "requested_due_at": due.isoformat(),
-        },
+        payload,
         available_at=due,
     )
     return {

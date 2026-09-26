@@ -10,6 +10,7 @@ from psycopg.types.json import Jsonb
 from skillcoach.clients import chunks
 
 ADMIN_COMMANDS = {
+    "admin": "Open the owner-only administration dashboard",
     "invite": "[label] create a one-use invite, valid for 24 hours",
     "invites": "List open invitations",
     "revokeinvite": "<invite_id> cancel an unused invitation",
@@ -29,15 +30,19 @@ def _job(conn, key, member, payload, *, done=False):
     )
 
 
-def _notice(conn, key, member, text, *, suffix="reply"):
-    for index, part in enumerate(chunks(text)):
+def _notice(conn, key, member, text, *, suffix="reply", buttons=None):
+    parts = chunks(text)
+    for index, part in enumerate(parts):
+        body = {"kind": "text", "text": part}
+        if buttons and index == len(parts) - 1:
+            body["buttons"] = buttons
         conn.execute(
             "INSERT INTO outbox(id,job_id,body,learner_id,access_generation,access_notice) "
             "VALUES (%s,%s,%s,%s,%s,true) ON CONFLICT DO NOTHING",
             (
                 f"{key}:access:{suffix}:{index}",
                 key,
-                Jsonb({"kind": "text", "text": part}),
+                Jsonb(body),
                 member["id"],
                 member["generation"],
             ),
@@ -45,6 +50,12 @@ def _notice(conn, key, member, text, *, suffix="reply"):
 
 
 def _audit(conn, update_id, action, subject):
+    if isinstance(update_id, str):
+        conn.execute(
+            "INSERT INTO admin_audit(request_id,action,subject_id) VALUES (%s,%s,%s)",
+            (update_id, action, subject),
+        )
+        return
     conn.execute(
         "INSERT INTO access_audit(update_id,action,subject_id) VALUES (%s,%s,%s)",
         (update_id, action, subject),
@@ -63,17 +74,43 @@ def _invalidate(conn, member_id):
     conn.execute("UPDATE coach_state SET displayed_target=NULL WHERE learner_id=%s", (member_id,))
 
 
-def _admin(conn, update_id, key, owner, command, argument, config):
+def _admin(conn, update_id, key, owner, command, argument, config, *, owner_output=None):
+    def reply(text):
+        if owner_output is not None:
+            owner_output.extend(chunks(text))
+        else:
+            _notice(conn, key, owner, text)
+
     _job(conn, key, owner, {"type": "access_admin", "command": command}, done=True)
-    if command == "invite":
+    if command == "admin":
+        from urllib.parse import urljoin
+
+        if not config.private_dashboard_url:
+            reply("The private admin dashboard is not configured yet.")
+        else:
+            _notice(
+                conn,
+                key,
+                owner,
+                "Open your owner-only admin dashboard. Guest learning documents and answers are not exposed.",
+                buttons=[
+                    [
+                        {
+                            "text": "Open admin dashboard",
+                            "url": urljoin(config.private_dashboard_url, "/admin"),
+                        }
+                    ]
+                ],
+            )
+    elif command == "invite":
         if not config.bot_username:
-            _notice(conn, key, owner, "Invites are unavailable until TELEGRAM_BOT_USERNAME is configured.")
+            reply("Invites are unavailable until TELEGRAM_BOT_USERNAME is configured.")
             return
         open_count = conn.execute(
             "SELECT count(*) AS n FROM invitations WHERE status='open' AND expires_at>now()"
         ).fetchone()["n"]
         if open_count >= 50:
-            _notice(conn, key, owner, "There are already 50 open invitations. Revoke an unused invite first.")
+            reply("There are already 50 open invitations. Revoke an unused invite first.")
             return
         ident, token = "i_" + uuid4().hex[:12], secrets.token_urlsafe(24)
         digest = hashlib.sha256(token.encode()).hexdigest()
@@ -83,10 +120,7 @@ def _admin(conn, update_id, key, owner, command, argument, config):
             (ident, digest, argument[:100]),
         )
         _audit(conn, update_id, "invite", ident)
-        _notice(
-            conn,
-            key,
-            owner,
+        reply(
             f"Invitation {ident} (one use, expires in 24 hours).\n"
             f"https://t.me/{config.bot_username}?start=invite_{token}\n\n"
             "Share privately with one person. Redeeming it only requests access; you must /approve them. "
@@ -97,10 +131,7 @@ def _admin(conn, update_id, key, owner, command, argument, config):
             "SELECT id,label,expires_at FROM invitations "
             "WHERE status='open' AND expires_at>now() ORDER BY created_at LIMIT 50"
         ).fetchall()
-        _notice(
-            conn,
-            key,
-            owner,
+        reply(
             "\n".join(
                 f"{r['id']}: {r['label'] or 'No label'}; expires {r['expires_at'].isoformat()}" for r in rows
             )
@@ -113,43 +144,35 @@ def _admin(conn, update_id, key, owner, command, argument, config):
         ).fetchone()
         if row:
             _audit(conn, update_id, "revoke_invite", argument)
-        _notice(conn, key, owner, "Unused invitation cancelled." if row else "No matching open invitation.")
+        reply("Unused invitation cancelled." if row else "No matching open invitation.")
     elif command in ("members", "requests"):
         rows = conn.execute(
             "SELECT id,display_name,status FROM learners WHERE id<>'owner' AND (%s OR status='pending') "
             "ORDER BY updated_at DESC LIMIT 100",
             (command == "members",),
         ).fetchall()
-        _notice(
-            conn,
-            key,
-            owner,
+        reply(
             "\n".join(f"{r['id']}: {r['display_name'] or 'Learner'} [{r['status']}]" for r in rows)
             or "No matching learners.",
         )
     else:
         if argument == "owner":
-            _notice(conn, key, owner, "The owner cannot be rejected or revoked.")
+            reply("The owner cannot be rejected or revoked.")
             return
         member = conn.execute("SELECT * FROM learners WHERE id=%s FOR UPDATE", (argument,)).fetchone()
         if member is None or member["id"] == "owner":
-            _notice(conn, key, owner, "Use a learner ID from /requests or /members.")
+            reply("Use a learner ID from /requests or /members.")
             return
         if command in ("approve", "reject") and member["status"] != "pending":
-            _notice(
-                conn, key, owner, "That learner has no pending invite request. A fresh invite is required."
-            )
+            reply("That learner has no pending invite request. A fresh invite is required.")
             return
         if command == "revoke" and member["status"] not in ("active", "pending"):
-            _notice(conn, key, owner, "That learner does not currently have active or pending access.")
+            reply("That learner does not currently have active or pending access.")
             return
         if command == "approve":
             count = conn.execute("SELECT count(*) AS n FROM learners WHERE status='active'").fetchone()["n"]
             if count >= config.max_learners:
-                _notice(
-                    conn,
-                    key,
-                    owner,
+                reply(
                     f"Active learner limit ({config.max_learners}, including you) reached. "
                     "Review free-tier capacity before increasing MAX_LEARNERS.",
                 )
@@ -161,16 +184,14 @@ def _admin(conn, update_id, key, owner, command, argument, config):
             (status, member["id"]),
         ).fetchone()
         _audit(conn, update_id, command, member["id"])
-        _notice(
-            conn,
-            key,
-            owner,
+        reply(
             f"{member['id']}: access {status}. "
             "Only access status was changed; their private history is preserved.",
         )
         message = {
             "active": "Your invitation has been approved. Use /setup to start, or /profile to view your own profile. "
-            "Your private learning data is not published to the owner's dashboard.",
+            "The owner can see access status, activity counts and delivery health, but not your private "
+            "resume, job description, answers or feedback. Your data is not published to the public dashboard.",
             "rejected": "Your access request was rejected. No coaching access has been granted.",
             "revoked": "Your bot access was revoked. Queued coaching has been cancelled. "
             "A new invitation and approval are required to return.",
@@ -225,7 +246,8 @@ def _claim(conn, update_id, key, actor, display_name, owner, token, current):
         key,
         member,
         "Invitation received. Access is pending the owner's approval. "
-        "Do not send your resume or private answers until you are approved.",
+        "Do not send your resume or private answers until you are approved. "
+        "The owner can see participation counts and delivery health, not your private documents or answers.",
     )
     _notice(
         conn,
@@ -267,7 +289,13 @@ def accept_update(repo, update_id: int, payload: dict, config) -> str:
         if not receipt or conn.execute("SELECT 1 FROM jobs WHERE id=%s", (key,)).fetchone():
             return "duplicate"
         outcome = "invite_required"
-        if command in ADMIN_COMMANDS:
+        if (command == "start" and argument.startswith("admin_login_")) or payload.get(
+            "callback", ""
+        ).startswith("adminlogin:"):
+            from skillcoach.admin_auth import telegram_login_action
+
+            outcome = telegram_login_action(conn, key, actor, owner, payload, config)
+        elif command in ADMIN_COMMANDS:
             if actor != config.owner_id:
                 if member:
                     _job(conn, key, member, {"type": "access_denied"}, done=True)

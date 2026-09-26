@@ -165,7 +165,7 @@ def register_dashboard(app, runtime_factory):
 
     @app.after_request
     def private_headers(response):
-        if request.path.startswith(("/app", "/static/dashboard")):
+        if request.path.startswith(("/app", "/admin", "/static/dashboard", "/static/admin")):
             response.headers["Cache-Control"] = "no-store, private"
             response.headers["Pragma"] = "no-cache"
             response.headers["Referrer-Policy"] = "no-referrer"

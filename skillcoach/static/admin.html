@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Administration · SkillCoach</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <link rel="stylesheet" href="/static/admin.css">
+  <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+  <script src="/static/admin.js" defer></script>
+</head>
+<body>
+  <!-- Task-first owner console extending the existing SkillCoach interface. Restrained system
+       typography and status-led tables put approvals and delivery health before decoration.
+       The action preview is inline and shows the exact recipient. The page shell contains no
+       user data; signed owner authentication is required before any private content is loaded. -->
+  <main class="workspace admin-workspace">
+    <header class="header">
+      <a class="brand" href="/admin">SkillCoach <span>Administration</span></a>
+      <div class="header-actions">
+        <button id="refresh" type="button" hidden>Refresh</button>
+        <button id="logout" type="button" hidden>Sign out</button>
+      </div>
+    </header>
+    <div id="message" class="notice" role="status" aria-live="polite">Checking owner access…</div>
+    <section id="login" class="login-panel" hidden aria-labelledby="login-title">
+      <h1 id="login-title">Your bot, under your control.</h1>
+      <p>Sign in as the configured owner to manage invitations, participation summaries and delivery health.</p>
+      <button id="start-login" class="primary" type="button">Sign in through Telegram</button>
+      <a id="open-browser" class="button-link" target="_blank" rel="noopener noreferrer" hidden>Open admin in browser</a>
+      <div id="login-challenge" hidden>
+        <h2>Match this code in Telegram</h2>
+        <output id="login-code"></output>
+        <a id="telegram-login-link" class="button-link" target="_blank" rel="noopener noreferrer">Open sign-in request</a>
+        <p>Only approve if the same code appears in your bot chat. Return to this browser afterward. The request expires in five minutes.</p>
+      </div>
+      <p class="privacy">A shared page URL cannot grant access. No password, token or private data belongs in this page’s URL.</p>
+    </section>
+    <div id="console" hidden>
+      <div class="admin-title">
+        <h1>People, learning and delivery</h1>
+        <p id="summary-line"></p>
+      </div>
+      <nav class="sections" aria-label="Administration sections">
+        <a href="#people">Users &amp; access</a>
+        <a href="#actions">Actions</a>
+        <a href="#operations">Delivery health</a>
+        <a href="#history">Audit history</a>
+      </nav>
+      <section id="people" aria-labelledby="people-title">
+        <div class="section-heading">
+          <h2 id="people-title">Users &amp; access</h2>
+          <button id="new-invite" type="button">Create invitation</button>
+        </div>
+        <p class="section-description">Opening an invitation requests access. Only your approval enables coaching.</p>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Learner access and participation">
+          <table>
+            <thead><tr><th scope="col">Learner</th><th scope="col">Access</th><th scope="col">Participation</th><th scope="col">Last bot interaction</th><th scope="col">Manage</th></tr></thead>
+            <tbody id="members"></tbody>
+          </table>
+        </div>
+        <h3>Recent invitations</h3>
+        <ul id="invites" class="admin-list"></ul>
+      </section>
+      <section id="actions" aria-labelledby="actions-title">
+        <h2 id="actions-title">Preview before you act</h2>
+        <p class="section-description">Choose one recipient. Every action is rechecked on the server and recorded. No arbitrary shell, SQL, grade editing or bulk sends.</p>
+        <form id="action-form">
+          <div class="form-grid">
+            <label>Action<select id="action-kind" required></select></label>
+            <label>Recipient<select id="action-target" required></select></label>
+          </div>
+          <div id="action-fields" class="form-grid"></div>
+          <p id="action-help" class="section-description"></p>
+          <button id="preview-action" class="primary" type="submit">Review action</button>
+        </form>
+        <section id="action-preview" class="preview-panel" hidden aria-labelledby="preview-title">
+          <h3 id="preview-title"></h3>
+          <p id="preview-recipient"></p>
+          <ul id="preview-details"></ul>
+          <ul id="preview-warnings"></ul>
+          <p id="preview-delivery" class="section-description"></p>
+          <label class="confirmation"><input id="confirm-checkbox" type="checkbox"> I confirm this action and recipient.</label>
+          <div class="preview-buttons">
+            <button id="execute-action" class="primary" type="button" disabled>Confirm action</button>
+            <button id="cancel-preview" type="button">Cancel preview</button>
+          </div>
+        </section>
+        <section id="action-result" class="result-panel" hidden aria-labelledby="result-title">
+          <h3 id="result-title">Action result</h3>
+          <div id="result-messages"></div>
+          <div id="invite-result" hidden>
+            <label>Private one-use invitation<input id="invite-url" type="text" readonly></label>
+            <button id="copy-invite" type="button">Copy invitation</button>
+          </div>
+        </section>
+      </section>
+      <section id="operations" aria-labelledby="operations-title">
+        <h2 id="operations-title">Delivery health</h2>
+        <p class="section-description">Queued is not delivered. A delivered video is not proof it was watched or understood.</p>
+        <div class="operations-grid">
+          <div><h3>Processing &amp; scheduled work</h3><ul id="jobs" class="admin-list"></ul></div>
+          <div><h3>Pending or failed deliveries</h3><ul id="deliveries" class="admin-list"></ul></div>
+        </div>
+        <p id="limits" class="guidance"></p>
+      </section>
+      <section id="history" aria-labelledby="history-title">
+        <h2 id="history-title">Audit history</h2>
+        <p class="section-description">Invitation and access changes from Telegram and this dashboard. Private message contents are excluded.</p>
+        <ul id="audit" class="audit-list"></ul>
+      </section>
+      <footer>
+        <p id="privacy-note"></p>
+        <p id="updated"></p>
+        <p id="session-expiry"></p>
+      </footer>
+    </div>
+  </main>
+</body>
+</html>

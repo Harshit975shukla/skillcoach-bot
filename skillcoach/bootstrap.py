@@ -27,6 +27,10 @@ TABLES = (
     "ai_usage",
     "dashboard_sessions",
     "media_assets",
+    "admin_logins",
+    "admin_sessions",
+    "admin_requests",
+    "admin_audit",
 )
 log = logging.getLogger(__name__)
 

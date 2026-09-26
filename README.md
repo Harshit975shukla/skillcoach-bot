@@ -4,6 +4,47 @@ An invite-only Telegram interview coach with one administrator: **full lessons a
 
 ## Invite-only multi-user upgrade
 
+### Owner administration
+
+The owner console is served at `/admin` on the existing Vercel application. Use `/admin` in your
+bot to get its browser link. It is not a public GitHub Pages data file and does not require a paid
+authentication provider.
+
+In a normal browser, select **Sign in through Telegram**. A five-minute request is bound to a
+high-entropy HttpOnly browser cookie. Open the bot link and approve only if the six-character code
+matches the browser you started. The link identifier alone cannot claim a login: only that browser's
+private verifier can exchange the owner-approved request, once. Reject unexpected requests.
+An owner-signed Telegram launch can also initialize a session in a first-party context. Embedded
+frames are directed to an external browser rather than weakening cross-site cookie security.
+
+Admin sessions expire after 15 minutes, use Secure/HttpOnly/SameSite=Strict cookies and can be
+signed out. Every private request rechecks the configured owner; every data/action POST checks its
+Origin and CSRF token. No credentials are stored in URLs or localStorage. Pending browser responses
+are aborted and epoch-checked after logout, expiry or hiding the page, so an old response cannot
+repopulate private content.
+
+The console shows member access, invitations, participation counts, last bot interaction, queued
+work, delivery failures and access/action audit history. It does **not** return learner resumes,
+job descriptions, private task descriptions, questions, answers or feedback. Learners are told
+which participation/health summaries the owner can see. Delivery is never labelled as viewing or
+mastery.
+
+Actions require a server-generated preview and explicit confirmation bound to the same session,
+exact action/recipient/arguments, membership generation and five-minute expiry. Confirmation,
+job/invitation creation and audit recording share one PostgreSQL transaction; retries and concurrent
+double-clicks return the same result. Stale recipients, expired previews, unknown actions and
+unexpected fields are rejected.
+
+Available controls are invitations/approval/rejection/revocation, one-recipient lesson or quiz
+requests, pause/unpause, cancel/retry, and an allowlisted **own-chat** bot-command panel. There is no
+shell, SQL, bulk-send or grade editor. Submit quiz/interview answers, complete tasks and edit private
+setup/resume data in Telegram, not through the admin console. Scheduling a quiz cannot overwrite an
+existing request for that learner/date. Queued commands retain normal learner limits and routing.
+
+Schema migration `006_owner_admin_console.sql` adds private login/session/request/audit tables.
+Apply it and grant the existing restricted runtime role access using the explicit upgrade procedure,
+after a fresh backup. It does not alter learner records or existing scheduled quizzes.
+
 The invite-only access model is deployed. Its additive schema cutover preserved the existing owner's profile, history, revision and displayed question exactly. The administrator remains the configured `OWNER_ID` (legacy `CHAT_ID` alias), validated against Telegram sender identity and matching private chat. Users cannot choose, promote or reassign the administrator.
 
 The admission flow is **one-use invitation, then owner approval**. `/invite [label]` creates a cryptographically random link valid for 24 hours; `TELEGRAM_BOT_USERNAME` must identify the existing bot. The intended recipient opens it and becomes pending, with no AI/coaching access. The owner receives an opaque learner ID and can `/approve <id>` or `/reject <id>`. `/requests` lists pending invitations, `/members` lists access status, `/invites` lists unclaimed links, and `/revokeinvite <id>` cancels an unused link. Treat invitation links as private bearer credentials: only the first claimant can consume a link, and possession alone does not grant coaching access.
