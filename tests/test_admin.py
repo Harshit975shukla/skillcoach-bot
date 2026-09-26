@@ -89,7 +89,9 @@ def test_direct_browser_is_private_and_signed_owner_cookie_is_secure(admin):
         assert flag in cookie
     assert SESSION_COOKIE in cookie
     assert post(admin, "/admin/data").status_code == 200
+    previous_token = admin.client.get_cookie(SESSION_COOKIE).value
     assert post(admin, "/admin/logout").json["logged_out"]
+    admin.client.set_cookie(SESSION_COOKIE, previous_token)
     assert post(admin, "/admin/data").status_code == 403
 
 

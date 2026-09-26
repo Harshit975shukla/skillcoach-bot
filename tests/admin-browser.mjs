@@ -92,6 +92,7 @@ try {
   for (const [name, width] of [["mobile", 390], ["desktop", 1280]]) {
     authenticated = false; approved = false; executions = 0;
     const page = await browser.newPage();
+    page.on("pageerror", error => console.error("Admin browser page error:", error.message));
     await page.setViewport({width, height: 900, deviceScaleFactor: 1});
     await page.setRequestInterception(true);
     page.on("request", request => {
@@ -119,7 +120,11 @@ try {
     await page.select("#action-kind", "invite");
     await page.type('[name="label"]', "Browser test");
     await page.click("#preview-action");
-    await page.waitForFunction(() => !document.getElementById("action-preview").hidden);
+    try {
+      await page.waitForFunction(() => !document.getElementById("action-preview").hidden, {timeout: 5000});
+    } catch {
+      throw new Error("Preview failed: " + await page.$eval("#message", e => e.textContent));
+    }
     assert.equal(executions, 0);
     assert.equal(await page.$eval("#execute-action", e => e.disabled), true);
     assert.match(await page.$eval("#preview-recipient", e => e.textContent), /owner/);
@@ -284,6 +289,27 @@ try {
   assert.equal(await miniapp.$eval("#console", e => e.hidden), true);
   assert.match(await miniapp.$eval("#message", e => e.textContent), /Only the owner/);
   await framePage.close();
+  const nativePage = await browser.newPage();
+  let expiredLaunchAttempts = 0;
+  await nativePage.setRequestInterception(true);
+  nativePage.on("request", request => {
+    if (request.url().startsWith("https://telegram.org/")) {
+      request.respond({status: 200, contentType: "text/javascript",
+        body: "window.Telegram={WebApp:{initData:'expired-owner-launch',colorScheme:'light',ready(){},onEvent(){}}};"});
+    } else if (request.url() === origin + "/admin/telegram-session") {
+      expiredLaunchAttempts += 1;
+      request.respond({status: 403, contentType: "application/json", body: '{"error":"Launch expired; reopen from Telegram."}'});
+    } else if (request.url().startsWith(origin)) request.continue();
+    else request.abort();
+  });
+  await nativePage.goto(origin + "/admin");
+  await nativePage.waitForFunction(() => !document.getElementById("open-browser").hidden);
+  assert.equal(await nativePage.$eval("#start-login", e => e.hidden), true);
+  assert.equal(await nativePage.$eval("#console", e => e.hidden), true);
+  assert.match(await nativePage.$eval("#message", e => e.textContent), /expired/);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(expiredLaunchAttempts, 1);
+  await nativePage.close();
   assert.ok(received.every(body => body.target === "owner" && body.action === "invite"));
   console.log("Admin browser and cookie-free Telegram-frame login, confirmation, XSS, logout, stale-response and safe fallback checks passed.");
 } finally {

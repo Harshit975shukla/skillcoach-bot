@@ -49,7 +49,7 @@
   function showError(error) {
     if (error instanceof StaleRequest) return;
     if (error.status === 403) {
-      if (framed) { browserFallback(error.message); return; }
+      if (framed || (telegram && telegram.initData)) { browserFallback(error.message); return; }
       clearPrivate();
     }
     message(error.message, true);
@@ -96,7 +96,7 @@
     clearTimeout(sessionTimer);
     sessionTimer = setTimeout(() => {
       clearPrivate();
-      if (framed) browserFallback("Your admin session expired.");
+      if (framed || (telegram && telegram.initData)) browserFallback("Your admin session expired.");
       else message("Your admin session expired. Sign in again.");
     }, Math.max(0, new Date(session.expires_at).getTime() - Date.now()));
     $("session-expiry").textContent = `Owner session expires ${date(session.expires_at)} IST.`;
@@ -117,7 +117,7 @@
     } catch (error) {
       if (!(error instanceof StaleRequest)) {
         clearPrivate(); message(error.message, true);
-        if (framed) browserFallback(error.message);
+        if (framed || (telegram && telegram.initData)) browserFallback(error.message);
       }
     }
   }
@@ -355,13 +355,19 @@
     finally { if (requestEpoch === epoch) $("start-login").disabled = false; }
   });
   $("refresh").addEventListener("click", refresh);
+  $("open-browser").addEventListener("click", event => {
+    if (telegram && typeof telegram.openLink === "function") {
+      event.preventDefault();
+      telegram.openLink(new URL("/admin", location.href).href);
+    }
+  });
   $("logout").addEventListener("click", async () => {
     const previousCsrf = csrf, previousTelegramSession = telegramSession;
     signedOut = true;
     clearPrivate();
     try {
       await api("/admin/logout", {}, "POST", previousCsrf, previousTelegramSession);
-      if (framed) browserFallback("Signed out.");
+      if (framed || previousTelegramSession) browserFallback("Signed out.");
       else message("Signed out.");
     }
     catch (error) { showError(error); }

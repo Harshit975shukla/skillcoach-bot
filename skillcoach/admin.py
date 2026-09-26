@@ -585,7 +585,8 @@ def register_admin(app, runtime_factory):
         _json_body(request, set())
         with runtime.repo.connection() as conn:
             conn.execute(
-                "UPDATE admin_sessions SET expires_at=now() WHERE token_hash=%s", (session["token_hash"],)
+                "UPDATE admin_sessions SET expires_at=%s WHERE token_hash=%s",
+                (runtime.clock(), session["token_hash"]),
             )
         response = jsonify(logged_out=True)
         response.delete_cookie(SESSION_COOKIE, secure=True, httponly=True, samesite="Strict", path="/")
