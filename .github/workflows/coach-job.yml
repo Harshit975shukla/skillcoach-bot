@@ -68,6 +68,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           OWNER_ID: ${{ secrets.OWNER_ID || secrets.CHAT_ID }}
           TELEGRAM_BOT_USERNAME: ${{ vars.TELEGRAM_BOT_USERNAME }}
+          PRIVATE_DASHBOARD_URL: ${{ vars.PRIVATE_DASHBOARD_URL }}
           MAX_LEARNERS: ${{ vars.MAX_LEARNERS || '10' }}
           DAILY_AI_OPERATIONS: ${{ vars.DAILY_AI_OPERATIONS || '40' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}

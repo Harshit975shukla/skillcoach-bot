@@ -24,6 +24,7 @@ class Config:
     max_learners: int = 10
     daily_ai_operations: int = 40
     bot_username: str = ""
+    private_dashboard_url: str = ""
 
     @classmethod
     def from_env(cls, *, webhook: bool = False) -> "Config":
@@ -46,6 +47,19 @@ class Config:
         maximum = os.getenv("MAX_LEARNERS", "10")
         ai_limit = os.getenv("DAILY_AI_OPERATIONS", "40")
         username = os.getenv("TELEGRAM_BOT_USERNAME", "")
+        private_dashboard = os.getenv("PRIVATE_DASHBOARD_URL", "")
+        if private_dashboard:
+            from urllib.parse import urlsplit
+
+            parsed_dashboard = urlsplit(private_dashboard)
+            if (
+                parsed_dashboard.scheme != "https"
+                or not parsed_dashboard.hostname
+                or parsed_dashboard.username
+            ):
+                raise ConfigurationError(
+                    "PRIVATE_DASHBOARD_URL must be an HTTPS URL for the private Mini App."
+                )
         if not maximum.isdecimal() or not 1 <= int(maximum) <= 100:
             raise ConfigurationError("MAX_LEARNERS must be between 1 and 100, including the owner.")
         if not ai_limit.isdecimal() or not 1 <= int(ai_limit) <= 200:
@@ -68,4 +82,5 @@ class Config:
             int(maximum),
             int(ai_limit),
             username,
+            private_dashboard,
         )

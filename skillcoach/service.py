@@ -771,9 +771,24 @@ class Service:
             self.messages.append({"kind": "export", "document": public_export(self.state, self.now)})
             self.say("Anonymous dashboard summary published.")
         elif cmd == "dashboard":
-            self.say(
-                self.config.dashboard_url or "Dashboard URL is not configured. No publication was attempted."
-            )
+            if self.config.private_dashboard_url:
+                self.say(
+                    "Open your private progress dashboard. Telegram verifies your identity; "
+                    "only your own learning is shown.",
+                    buttons=[
+                        [
+                            {
+                                "text": "Open my private dashboard",
+                                "web_app": {"url": self.config.private_dashboard_url},
+                            }
+                        ]
+                    ],
+                )
+            else:
+                self.say(
+                    "The private dashboard is not configured yet. Use /stats, /tasks and /curriculum "
+                    "for your own progress. Guest data is never sent to the public dashboard."
+                )
         elif cmd == "status":
             self.say(json.dumps(self.repo.status(), indent=2))
 

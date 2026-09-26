@@ -68,6 +68,9 @@ def authorized_update(update, owner: int | None = None):
 def create_app(runtime=None):
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 128 * 1024
+    from skillcoach.dashboard import register_dashboard
+
+    register_dashboard(app, lambda: runtime or Runtime.from_env(webhook=True))
 
     @app.get("/")
     def health():

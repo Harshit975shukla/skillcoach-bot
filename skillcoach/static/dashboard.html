@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Your learning · SkillCoach</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+  <script src="/static/dashboard.js" defer></script>
+</head>
+<body>
+  <!-- Private, task-first Telegram companion. Inherits native system typography and light/dark
+       expectations. The next learning action leads; compact progress follows. No public member
+       directory, invented achievement, marketing hero or personal data before authentication. -->
+  <main class="workspace">
+    <header class="header">
+      <a class="brand" href="#today" aria-label="SkillCoach learning overview">SkillCoach</a>
+      <button type="button" id="refresh">Refresh</button>
+    </header>
+    <div id="notice" class="notice" role="status" aria-live="polite">Verifying your Telegram access…</div>
+    <div id="content" hidden>
+      <section class="introduction" aria-labelledby="learner-name">
+        <h1 id="learner-name">Your learning</h1>
+        <p id="target-role"></p>
+        <p class="privacy">Private to you. Not published to the public dashboard.</p>
+      </section>
+      <nav class="sections" aria-label="Learning sections">
+        <a href="#today">Practice</a>
+        <a href="#plan">Weekly plan</a>
+        <a href="#progress">Progress</a>
+      </nav>
+      <section id="today" aria-labelledby="tasks-heading">
+        <div class="section-heading"><h2 id="tasks-heading">Your next practice</h2><span id="task-count"></span></div>
+        <p id="setup-note" class="guidance" hidden>Start with <code>/setup</code> in the bot. Your lessons and plan will use your own profile.</p>
+        <p class="section-description">Open tasks, ordered by assigned date. Complete them in the bot using the task ID.</p>
+        <ol id="tasks" class="task-list"></ol>
+      </section>
+      <section id="plan" aria-labelledby="plan-heading">
+        <h2 id="plan-heading">Your weekly plan</h2>
+        <p class="section-description">Personalized from your profile and learning evidence. Dates use Asia/Kolkata.</p>
+        <ol id="plan-days" class="plan-list"></ol>
+      </section>
+      <section id="progress" aria-labelledby="progress-heading">
+        <h2 id="progress-heading">Progress, not guesses</h2>
+        <dl class="metrics">
+          <div><dt>Tasks completed</dt><dd id="done"></dd></div>
+          <div><dt>Practice streak</dt><dd id="streak"></dd></div>
+          <div><dt>Logged practice</dt><dd id="minutes"></dd></div>
+          <div><dt>Interviews graded</dt><dd id="graded"></dd></div>
+        </dl>
+        <p class="section-description">Receiving a lesson does not count as mastery. Minutes reflect what you logged.</p>
+        <h3>Skill practice</h3>
+        <ul id="skills" class="skill-list"></ul>
+        <h3>Recent interview feedback</h3>
+        <ul id="interviews" class="interview-list"></ul>
+      </section>
+      <footer>
+        <p id="preferences"></p>
+        <p id="updated"></p>
+        <p>To keep this view private, it expires after five minutes. Reopen it from <code>/dashboard</code>.</p>
+      </footer>
+    </div>
+  </main>
+</body>
+</html>

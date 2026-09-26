@@ -25,6 +25,7 @@ TABLES = (
     "telegram_receipts",
     "access_audit",
     "ai_usage",
+    "dashboard_sessions",
 )
 log = logging.getLogger(__name__)
 

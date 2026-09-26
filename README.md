@@ -73,6 +73,19 @@ The authenticated `GET /health/ready` endpoint checks private storage without ex
 
 ## Learning and commands
 
+`/dashboard` opens a read-only private Telegram Mini App when `PRIVATE_DASHBOARD_URL` is configured
+to this deployment's `/app` route. The shared URL contains no learner identifier and returns no
+personal data by itself. `/app/data` verifies Telegram's HMAC-signed `initData`, a five-minute age,
+the authenticated numeric user ID and current active membership. An authentication receipt binds
+each launch to the membership generation, so revoking and then reapproving a learner does not
+reactivate their old dashboard launch. The owner sees only their own learning in this view.
+
+Private responses use `Cache-Control: no-store`; the frontend keeps no localStorage copy, clears
+on expiry/backgrounding, and rechecks active views periodically. It renders all user/AI strings as
+text, never as HTML. Revocation blocks the next request; already downloaded content cannot be
+remotely recalled. No administration actions are exposed in the Mini App. The separate public
+dashboard remains anonymous and owner-controlled.
+
 Help is generated from `skillcoach/commands.py`. `/profile` displays the private profile or enters setup; `/profile setup` replaces it only after successful validation.
 
 | Commands | Behavior |

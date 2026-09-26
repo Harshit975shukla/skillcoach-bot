@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "test:diagrams": "node tests/parse-diagrams.mjs",
-    "test:render": "node tests/render-diagrams.mjs"
+    "test:render": "node tests/render-diagrams.mjs",
+    "test:dashboard": "node tests/dashboard-browser.mjs"
   },
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "11.12.0",

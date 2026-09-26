@@ -28,7 +28,7 @@ COMMANDS = {
     "retry": "Retry failed operations and deliveries without regrading",
     "media": "<video|static>; animated video is the default",
     "publish": "Queue an anonymous dashboard summary",
-    "dashboard": "Configured public dashboard link",
+    "dashboard": "Open your authenticated private learner dashboard",
     "status": "Private pending/retry queue counts",
 }
 
