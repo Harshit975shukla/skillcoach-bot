@@ -479,7 +479,7 @@ class Service:
                 {
                     "kind": "media",
                     "mode": self.state.media,
-                    "voice": self.state.voice,
+                    "voice": self.state.voice and self.config.narration_enabled,
                     "code": code,
                     "caption": f"Concept {index + 1}: {concept.name}",
                     "storyboard": board.model_dump(mode="json"),
@@ -509,7 +509,7 @@ class Service:
         architecture_message = {
             "kind": "media",
             "mode": self.state.media,
-            "voice": self.state.voice,
+            "voice": self.state.voice and self.config.narration_enabled,
             "code": architecture(topic),
             "caption": "Full architecture: " + lesson.title,
         }
@@ -758,10 +758,19 @@ class Service:
                 self.say(f"Media preference saved: {arg}. Full lessons are unchanged.")
         elif cmd == "voice":
             if arg not in ("on", "off"):
-                self.say(f"Narration is {'on' if self.state.voice else 'off'}. Use /voice on or /voice off.")
+                enabled = self.state.voice and self.config.narration_enabled
+                self.say(
+                    f"Narration is {'on' if enabled else 'off'}. Captions and explanatory motion remain "
+                    "available. A replacement voice must be approved before narration is enabled."
+                )
+            elif arg == "on" and not self.config.narration_enabled:
+                self.say(
+                    "Narration is currently unavailable while a better voice is evaluated. "
+                    "Videos remain captioned and animated; no robotic fallback will be substituted."
+                )
             else:
                 self.state.voice = arg == "on"
-                self.say("Offline synthetic narration " + arg + ". Captions remain available in every video.")
+                self.say("Narration " + arg + ". Captions and explanatory motion remain available.")
         elif cmd == "topics":
             from skillcoach.catalog import catalog_text
 

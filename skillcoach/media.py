@@ -140,7 +140,7 @@ def deliver_storyboard(telegram, body, budget, *, before_send, cached=None):
     )
     caption += (
         "\nSynthetic offline narration + captions."
-        if body.get("voice", True) and body["mode"] == "video"
+        if body.get("voice", False) and body["mode"] == "video"
         else "\nCaptioned walkthrough."
     )
     if cached:
@@ -157,7 +157,7 @@ def deliver_storyboard(telegram, body, budget, *, before_send, cached=None):
             story,
             Path(tmp),
             budget,
-            voice=body.get("voice", True),
+            voice=body.get("voice", False),
             static=body["mode"] == "static",
             reviewed=body.get("shared_reviewed", False),
         )

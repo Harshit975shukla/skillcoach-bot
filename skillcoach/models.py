@@ -183,7 +183,7 @@ class State(Model):
     active_interview: str | None = None
     paused: bool = False
     media: Literal["video", "static"] = "video"
-    voice: bool = True
+    voice: bool = False
     preference: str = ""
     plans: dict[str, WeekPlan] = Field(default_factory=dict)
     lessons: dict[str, dict] = Field(default_factory=dict)

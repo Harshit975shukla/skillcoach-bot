@@ -47,7 +47,7 @@ def verify_init_data(raw: str, bot_token: str, now: int) -> tuple[int, int]:
         ) from None
 
 
-def learner_view(repo, actor: int, issued: int, now, auth_hash: str):
+def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narration_enabled=False):
     with repo.connection() as conn:
         row = conn.execute(
             "SELECT l.id,l.status,l.generation,l.updated_at,c.body FROM learners l "
@@ -90,7 +90,12 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str):
             "setup_complete": profile is not None,
         },
         "stats": stats(state, now),
-        "preferences": {"paused": state.paused, "media": state.media, "voice": state.voice},
+        "preferences": {
+            "paused": state.paused,
+            "media": state.media,
+            "voice": state.voice and narration_enabled,
+            "narration_available": narration_enabled,
+        },
         "tasks": [
             {
                 "id": t.id,
@@ -143,7 +148,16 @@ def register_dashboard(app, runtime_factory):
                 body["init_data"], runtime.config.telegram_token, int(runtime.clock().timestamp())
             )
             digest = hashlib.sha256(body["init_data"].encode()).hexdigest()
-            return jsonify(learner_view(runtime.repo, actor, issued, runtime.clock(), digest))
+            return jsonify(
+                learner_view(
+                    runtime.repo,
+                    actor,
+                    issued,
+                    runtime.clock(),
+                    digest,
+                    narration_enabled=runtime.config.narration_enabled,
+                )
+            )
         except DashboardDenied as exc:
             return jsonify(error=str(exc)), 403
         except (ConfigurationError, ValidationError, *STORAGE_ERRORS):

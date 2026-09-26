@@ -56,7 +56,7 @@ def render_frame(
     font_set,
     *,
     reviewed=False,
-    narrated=True,
+    narrated=False,
 ):
     image = Image.new("RGB", (WIDTH, HEIGHT), "#101B2A")
     draw = ImageDraw.Draw(image)
@@ -168,7 +168,7 @@ def render_frame(
     return image
 
 
-def prepare_audio(story: Storyboard, folder: Path, budget: Budget, *, voice=True):
+def prepare_audio(story: Storyboard, folder: Path, budget: Budget, *, voice=False):
     narrator = shutil.which("espeak-ng") if voice else None
     if voice and not narrator:
         raise ExternalError("offline_narrator_missing_use_voice_off_or_install_espeak_ng", retryable=False)
@@ -219,7 +219,7 @@ def prepare_audio(story: Storyboard, folder: Path, budget: Budget, *, voice=True
 
 
 def render_storyboard(
-    story: Storyboard, folder: Path, budget: Budget, *, voice=True, static=False, reviewed=False
+    story: Storyboard, folder: Path, budget: Budget, *, voice=False, static=False, reviewed=False
 ):
     font_set = fonts()
     poster = folder / "storyboard.png"

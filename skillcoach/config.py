@@ -25,6 +25,7 @@ class Config:
     daily_ai_operations: int = 40
     bot_username: str = ""
     private_dashboard_url: str = ""
+    narration_enabled: bool = False
 
     @classmethod
     def from_env(cls, *, webhook: bool = False) -> "Config":
@@ -48,6 +49,9 @@ class Config:
         ai_limit = os.getenv("DAILY_AI_OPERATIONS", "40")
         username = os.getenv("TELEGRAM_BOT_USERNAME", "")
         private_dashboard = os.getenv("PRIVATE_DASHBOARD_URL", "")
+        narration = os.getenv("NARRATION_ENABLED", "false").lower()
+        if narration not in ("true", "false"):
+            raise ConfigurationError("NARRATION_ENABLED must be true or false.")
         if private_dashboard:
             from urllib.parse import urlsplit
 
@@ -83,4 +87,5 @@ class Config:
             int(ai_limit),
             username,
             private_dashboard,
+            narration == "true",
         )

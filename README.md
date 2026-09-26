@@ -153,13 +153,25 @@ turns between those steps, and `/cancel` cancels the learner's unfinished prepar
 lesson/tasks commit only when preparation is complete. Static mode skips storyboard/narration AI
 generation and uses the existing diagram path.
 
-`/voice on` enables **offline synthetic narration**, on by default for the new video renderer;
-`/voice off` keeps captions and motion. `/media static` remains an optional, captioned first-scene
-walkthrough. Stock eSpeak NG `en-us` at 150 words/minute provides the fee-free baseline; it is
-understandable synthesized speech, not a claim of natural human narration. Every scene is timed from
-its actual WAV duration plus a short pause, and the final MP4 includes synchronized AAC audio.
-Missing narration/render dependencies cause visible recoverable failures, not a silent “narrated”
-video. Worker setup installs `espeak-ng` and readable system fonts only when media work is ready.
+**Caption-only animation is now the safe default.** The original eSpeak voice was rejected for listening
+quality. `NARRATION_ENABLED=false` keeps it unavailable; `/voice on` clearly explains that no approved
+replacement is ready instead of silently reverting to the robotic voice. `/voice off` records the
+learner's preference while keeping captions and motion. Existing explicit preferences are preserved
+in storage, but cannot enable an unapproved narrator. No neural voice is downloaded or enabled
+automatically. Approve the exact engine/model licence and a listening sample before enabling a
+replacement; a syntactically valid audio file is not evidence of acceptable voice quality.
+
+Pending media applies the current preference before selecting the cache/render variant and checks
+again immediately before upload when narration was selected. A voice-off change during rendering
+leaves that delivery pending for a silent rerender; already in-flight Telegram uploads cannot be
+recalled. Narrated and silent cache keys are separate, so an old narrated file ID cannot satisfy a
+silent request. `/media static` remains an optional, captioned first-scene walkthrough.
+
+The explicit legacy renderer remains testable but is not an automatic fallback. Its spoken mode
+times scenes from actual WAV lengths and encodes AAC; silent mode contains **no audio stream**.
+Production worker verification checks that silent default using `ffprobe` and a full decode.
+Readable fonts and FFmpeg are installed for video; eSpeak is installed only if narration has been
+deliberately enabled by the operator.
 
 MP4s/WAVs/frames exist in temporary worker storage during rendering. After successful Telegram upload,
 the bot saves the Telegram media `file_id` and versioned rendering metadata in private PostgreSQL.

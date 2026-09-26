@@ -89,7 +89,7 @@ class Runtime:
             item = self.repo.next_delivery(token, media=media)
             if item is None:
                 return False
-            body = item["body"]
+            body = dict(item["body"])
             scoped = self.repo.for_learner(item.get("learner_id", "owner"))
             member = scoped.member()
             if member["generation"] != item.get("access_generation", 1) or (
@@ -98,6 +98,10 @@ class Runtime:
                 scoped.delivery_result(item["id"], token, "suppressed")
                 return True
             _, state = scoped.read()
+            if body["kind"] == "media" and "storyboard" in body:
+                body["voice"] = bool(
+                    body.get("voice", False) and state.voice and self.config.narration_enabled
+                )
             if (
                 body.get("scheduled")
                 and (
@@ -111,6 +115,8 @@ class Runtime:
 
             def authorize_send():
                 scoped.ensure_delivery_authorized(item["id"], token)
+                if body.get("voice") and not scoped.read()[1].voice:
+                    raise DeliveryDeferred()
                 require_send_budget()
 
             try:
@@ -124,7 +130,7 @@ class Runtime:
                         key = asset_key(
                             Storyboard.model_validate(body["storyboard"]),
                             scoped.learner_id,
-                            voice=body.get("voice", True) and body["mode"] == "video",
+                            voice=body.get("voice", False) and body["mode"] == "video",
                             shared_reviewed=body.get("shared_reviewed", False),
                         )
                         key += ":" + body["mode"]
