@@ -60,6 +60,7 @@ code { font-family: ui-monospace, "Cascadia Mono", monospace; font-size: .875em;
 .plan-list li { display: grid; grid-template-columns: 104px 1fr; gap: 20px; padding: 15px 0; border-bottom: 1px solid var(--line); }
 .plan-date { color: var(--muted); font-size: .9rem; }
 .plan-topic { font-weight: 550; overflow-wrap: anywhere; }
+.plan-list .plan-detail { grid-column: 1 / -1; overflow-wrap: anywhere; color: var(--muted); font-size: .94rem; }
 .metrics { display: grid; grid-template-columns: repeat(4, 1fr); margin: 20px 0 12px; gap: 20px; }
 .metrics dt { color: var(--muted); font-size: .875rem; }
 .metrics dd { margin: 6px 0 0; font-size: 1.35rem; font-weight: 650; }

@@ -424,6 +424,18 @@ class Learning:
             self.s.say("Notifications are paused. Use /unpause, then approve the plan explicitly.")
             return
         active = approved_plan(self.s.state)
+        if (
+            active
+            and all(d.lesson_key for d in active.sessions)
+            and not all(
+                self.s.state.lessons.get(d.lesson_key, {}).get("delivered_at") for d in active.sessions
+            )
+        ):
+            self.s.say(
+                "Your current week's final lesson is still being delivered. The new proposal is saved, "
+                "but cannot replace it yet. Use /retry for failed delivery, then approve this proposal again."
+            )
+            return
         if active and plan.replaces_plan_id == active.id:
             changed = any(
                 day.lesson_key

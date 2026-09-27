@@ -86,6 +86,28 @@ try {
     assert.match(await page.$eval("#notice", e => e.textContent), /Open this private dashboard/);
     await page.close();
   }
+  const stale = await browser.newPage();
+  await stale.setRequestInterception(true);
+  stale.on("request", request => {
+    if (request.url().startsWith("https://telegram.org/")) {
+      request.respond({status: 200, contentType: "text/javascript", body:
+        "window.Telegram={WebApp:{initData:'synthetic',colorScheme:'light',ready(){},expand(){},onEvent(){}}};"});
+    } else if (request.url().startsWith(origin)) request.continue();
+    else request.abort();
+  });
+  await stale.goto(origin + "/app");
+  await stale.waitForFunction(() => !document.getElementById("content").hidden);
+  await stale.evaluate(() => {
+    window.fetch = () => new Promise(resolve => { window.delayedRefresh = resolve; });
+    document.getElementById("refresh").click();
+    Object.defineProperty(document, "hidden", {configurable: true, value: true});
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await stale.evaluate(fixture => window.delayedRefresh({ok: true, json: async () => fixture}), fixture);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(await stale.$eval("#content", e => e.hidden), true);
+  assert.equal(await stale.$eval("#plan-rationale", e => e.textContent), "");
+  await stale.close();
   console.log("Private dashboard mobile/desktop, text escaping, revocation clearing and direct-open checks passed.");
 } finally {
   await browser.close();

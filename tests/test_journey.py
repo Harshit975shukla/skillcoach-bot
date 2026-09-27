@@ -526,3 +526,27 @@ def test_old_understanding_button_maps_only_to_exact_carried_lesson(harness):
     assert h.repo.state.journey.plans[proposed].sessions[1].understood_at is None
     callback(h, "understand:another-learner:0")
     assert h.repo.state.tasks == before_tasks and h.repo.answer_keys == before_answers
+
+
+def test_next_week_approval_waits_for_all_prior_lesson_delivery_markers(harness):
+    h = harness
+    h.repo.state.journey = shared_journey(h.clock.now)
+    active = h.repo.state.journey.plans["plan-test"]
+    for i, day in enumerate(active.sessions):
+        day.lesson_key = f"lesson:{i}"
+        h.repo.state.lessons[day.lesson_key] = {
+            "topic": TOPICS[day.topic_id][1],
+            "date": day.date.isoformat(),
+            "delivered_at": h.clock.now.isoformat() if i < 4 else None,
+        }
+    callback(h, "plan:plan-test:edit")
+    h.ai.responses.append(proposal())
+    command(h, "Prepare my next study week.")
+    candidate = h.repo.state.journey.proposed_id
+    assert not any(d.lesson_key for d in h.repo.state.journey.plans[candidate].sessions)
+    callback(h, f"plan:{candidate}:approve")
+    assert h.repo.state.journey.active_id == "plan-test"
+    assert "still being delivered" in h.telegram.messages[-1][0]
+    h.repo.state.lessons["lesson:4"]["delivered_at"] = h.clock.now.isoformat()
+    callback(h, f"plan:{candidate}:approve")
+    assert h.repo.state.journey.active_id == candidate

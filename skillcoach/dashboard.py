@@ -130,6 +130,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
         "learning": {
             "stage": journey.stage if journey else "legacy",
             "shared": bool(journey and journey.consent_at),
+            "active_plan_id": journey.active_id if journey else None,
             "plan": {
                 "id": learning_plan.id,
                 "version": learning_plan.version,

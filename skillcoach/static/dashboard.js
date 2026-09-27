@@ -62,7 +62,8 @@
     for (const day of proposed ? proposed.sessions : data.plan) {
       const item = node("li");
       item.append(node("span", day.date, "plan-date"), node("span", day.topic, "plan-topic"));
-      if (day.objective) item.append(node("p", day.objective), node("p", day.practice));
+      if (day.objective) item.append(node("p", "Objective: " + day.objective, "plan-detail"),
+                                    node("p", "Practice: " + day.practice, "plan-detail"));
       $("plan-days").append(item);
     }
     if (!proposed && !data.plan.length) empty("plan-days", "No weekly plan yet. Complete /onboard and approve your proposal.");
@@ -84,7 +85,8 @@
       $("interviews").append(item);
     }
     if (!data.recent_interviews.length) empty("interviews", "No graded interviews yet. Try /interview in the bot.");
-    $("preferences").textContent = `Scheduled coaching ${data.preferences.paused ? "paused" : "active"} · Media: ${data.preferences.media} · Voice: ${data.preferences.voice ? "on" : "off"}`;
+    const awaiting = data.learning && data.learning.stage !== "legacy" && !data.learning.active_plan_id;
+    $("preferences").textContent = `Scheduled coaching ${data.preferences.paused ? "paused" : awaiting ? "waiting for plan approval" : "active"} · Media: ${data.preferences.media} · Voice: ${data.preferences.voice ? "on" : "off"}`;
     $("updated").textContent = `Updated ${new Date(data.generated_at).toLocaleString()}`;
     $("notice").hidden = true;
     $("content").hidden = false;
