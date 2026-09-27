@@ -172,7 +172,7 @@ class Service:
         )
 
     def start_assessment(self, kind: str, day: date, topic: str):
-        if self.state.focus in ("draft", "interview", "onboarding"):
+        if self.state.focus in ("draft", "interview", "onboarding", "document"):
             from skillcoach.clients import ExternalError
 
             raise ExternalError("interactive_flow_in_progress")

@@ -134,6 +134,25 @@ def test_stale_document_confirmation_preserves_newer_profile(harness):
     assert "changed" in h.telegram.messages[-1][0]
 
 
+def test_scheduled_assessment_cannot_replace_document_input_focus(harness):
+    h = harness
+    active(h)
+    plan = h.repo.state.journey.plans["plan-test"]
+    plan.sessions[0].lesson_key = "delivered"
+    h.repo.state.lessons["delivered"] = {
+        "topic": "Cloud",
+        "date": h.clock.now.date().isoformat(),
+        "delivered_at": h.clock.now.isoformat(),
+    }
+    command(h, "/updateresume")
+    draft = h.repo.state.document_draft.model_copy(deep=True)
+    h.repo.enqueue("weekly", {"type": "schedule", "kind": "weekly", "date": h.clock.now.date().isoformat()})
+    h.runtime.recover(media=False)
+    assert h.repo.jobs["weekly"]["status"] == "failed"
+    assert h.repo.state.focus == "document" and h.repo.state.document_draft == draft
+    assert not h.ai.calls and not h.repo.state.assessments
+
+
 @pytest.mark.postgres
 def test_expired_lesson_recovery_reopens_only_unsent_parts_with_same_tasks(pg_repo, config):
     from test_multiuser import Bot
