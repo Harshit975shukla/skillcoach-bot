@@ -61,3 +61,6 @@ textarea { min-height: 100px; resize: vertical; }
   .audit-list li { grid-template-columns: 1fr; gap: 3px; }
   .login-panel { padding-top: 28px; }
 }
+[id="learning-plans"] > li,
+[id="learning-plans"] .task-list li { display: block; }
+[id="learning-plans"] .task-list li > p { margin-top: 8px; }
