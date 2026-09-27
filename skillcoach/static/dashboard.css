@@ -68,7 +68,27 @@ code { font-family: ui-monospace, "Cascadia Mono", monospace; font-size: .875em;
 #document-preview { margin-top: 20px; padding: 18px; background: var(--soft); }
 #document-preview button { margin-top: 12px; }
 #document-status { overflow-wrap: anywhere; }
-.sections { overflow-x: auto; }
+.sections { flex-wrap: wrap; }
+#lab-count { white-space: nowrap; color: var(--muted); font-size: .875rem; }
+.lab-state { display: inline-block; margin-top: 8px; padding: 2px 9px; border-radius: 5px; font-size: .82rem;
+  font-weight: 650; background: var(--soft); color: var(--ink); }
+.lab-state.blocking { color: var(--danger); }
+.lab-reason { margin-top: 10px; overflow-wrap: anywhere; max-width: 70ch; }
+.lab-token { margin-top: 12px; overflow-wrap: anywhere; }
+.lab-token code { padding: 5px 8px; background: var(--soft); border-radius: 5px; user-select: all; }
+.lab-steps { list-style: decimal; padding-left: 1.4em; max-width: 70ch; }
+.lab-steps li, .lab-cleanup li { padding: 4px 0; border: 0; overflow-wrap: anywhere; }
+.lab-cleanup { list-style: disc; padding-left: 1.4em; max-width: 70ch; }
+.lab-list .lab-subhead { margin: 12px 0 4px; font-weight: 650; font-size: .94rem; }
+.lab-refs a { overflow-wrap: anywhere; font-size: .9rem; }
+.lab-form { margin-top: 16px; display: grid; grid-template-columns: 1fr auto; gap: 8px 10px; align-items: end; max-width: 70ch; }
+.lab-form label { grid-column: 1 / -1; font-weight: 650; font-size: .94rem; }
+.lab-form input { width: 100%; min-width: 0; font: inherit; min-height: 44px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line); padding: 10px; border-radius: 6px; }
+.lab-form input:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+#lab-status { overflow-wrap: anywhere; }
+#lab-status:empty { display: none; }
+@media (max-width: 520px) { .lab-form { grid-template-columns: 1fr; } }
 .metrics { display: grid; grid-template-columns: repeat(4, 1fr); margin: 20px 0 12px; gap: 20px; }
 .metrics dt { color: var(--muted); font-size: .875rem; }
 .metrics dd { margin: 6px 0 0; font-size: 1.35rem; font-weight: 650; }
@@ -84,7 +104,7 @@ footer p + p { margin-top: 7px; }
 @media (max-width: 520px) {
   .workspace { padding: 0 18px 30px; }
   .header { min-height: 72px; }
-  .sections { justify-content: space-between; }
+  .sections { gap: 0 2px; }
   .sections a { padding: 10px 8px; font-size: .94rem; }
   .metrics { grid-template-columns: repeat(2, 1fr); gap: 20px 15px; }
   .plan-list li { grid-template-columns: 85px 1fr; gap: 13px; }

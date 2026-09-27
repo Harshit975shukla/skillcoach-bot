@@ -39,7 +39,9 @@ def approved_plan(state):
     return j.plans.get(j.active_id) if j and j.active_id else None
 
 
-def safe_learning_view(state, now):
+def safe_learning_view(state, now, *, labs_enabled=True):
+    from skillcoach.lab_flow import admin_counts
+
     j = state.journey
     if not j or not j.consent_at:
         return {"shared": False, "status": "Not shared; learner setup/consent required.", "sessions": []}
@@ -84,6 +86,7 @@ def safe_learning_view(state, now):
             {d for d in state.activity if today - timedelta(days=today.weekday()) <= d <= today}
         ),
         "streak": streak(state.activity, today),
+        "labs": admin_counts(state, labs_enabled),
         "assessments": [
             {
                 "date": a.date.isoformat(),
@@ -288,12 +291,42 @@ class Learning:
             [("I don't know yet", "unknown")],
         )
 
+    def lab_gate(self):
+        """Hold the next-week proposal while required labs from the finished week are unverified."""
+        from skillcoach.lab_flow import blocking, gate_text
+
+        pending = blocking(self.s.state, self.s.config)
+        if not pending:
+            self.j.lab_gate_since = None
+            return False
+        self.j.stage = "active"
+        if self.s.state.focus == "onboarding":
+            self.s.state.focus = None
+        if self.j.lab_gate_since is None:
+            self.j.lab_gate_since = self.s.now
+        self.s.say(gate_text(pending))
+        return True
+
+    def next_week_blocked(self):
+        """True (after telling the learner) when a finished week still has required labs pending."""
+        from skillcoach.lab_flow import blocking, gate_text
+
+        active = approved_plan(self.s.state)
+        if not active or not all(d.lesson_key for d in active.sessions):
+            return False
+        pending = blocking(self.s.state, self.s.config)
+        if pending:
+            self.s.say(gate_text(pending))
+        return bool(pending)
+
     def propose(self):
         from skillcoach.service import stable_id
 
         if self.j.stage != "planning":
             return
         active = approved_plan(self.s.state)
+        if active and all(d.lesson_key for d in active.sessions) and self.lab_gate():
+            return
         locked = {i: d for i, d in enumerate(active.sessions) if d.lesson_key} if active else {}
         if len(locked) == 5:
             locked = {}
@@ -349,6 +382,7 @@ class Learning:
             sessions=sessions,
             rationale=result.rationale,
             replaces_plan_id=active.id if active and not all(d.lesson_key for d in active.sessions) else None,
+            labs_enabled=self.s.config.labs_enabled,
         )
         self.j.proposed_id, self.j.stage = ident, "ready"
         self.show_plan()
@@ -367,6 +401,15 @@ class Learning:
             f"Pacing target: {plan.minutes} minutes per session. Full lessons remain available.",
             "Day 1 is a learning session, not a weekday. Scheduled dates below use Asia/Kolkata.",
         ]
+        if plan.labs_enabled and self.s.config.labs_enabled:
+            from skillcoach.labs import required_quota
+
+            count = required_quota(plan.minutes)
+            lines.append(
+                f"Hands-on labs: {count} required lab{'s' if count > 1 else ''} this week when a lesson has one. "
+                "Each has a free in-app scenario route. Quizzes never wait for labs, but next week's plan is "
+                "prepared only after this week's required labs are verified (/labs)."
+            )
         for i, day in enumerate(plan.sessions):
             due = (
                 plan.start_now_at
@@ -423,6 +466,8 @@ class Learning:
             if j.stage not in ("ready", "active"):
                 self.s.say("A revision is already in progress. Finish the latest prompt or /cancel.")
                 return
+            if self.next_week_blocked():
+                return
             j.stage = "revision"
             self.s.state.focus = "onboarding"
             self.prompt(
@@ -455,6 +500,8 @@ class Learning:
                 "Your current week's final lesson is still being delivered. The new proposal is saved, "
                 "but cannot replace it yet. Use /recoverlesson to recover unsent parts, then approve this proposal again."
             )
+            return
+        if self.next_week_blocked():
             return
         if active and plan.replaces_plan_id == active.id:
             changed = any(
@@ -598,6 +645,11 @@ class Learning:
             return False
         if not self.j.active_id:
             return True
+        if self.j.lab_gate_since:
+            from skillcoach.lab_flow import LabFlow
+
+            # Any scheduled touch releases a gate whose blocker disappeared (e.g. labs kill switch).
+            LabFlow(self.s).resume_planning()
         kind, day = self.s.payload["kind"], self.s.now.date()
         plan = approved_plan(self.s.state)
         if kind == "lesson":
@@ -618,6 +670,8 @@ class Learning:
             if self.j.stage == "active" and all(
                 self.s.state.lessons.get(d.lesson_key, {}).get("delivered_at") for d in plan.sessions
             ):
+                if self.lab_gate():
+                    return True
                 self.j.stage = "planning"
                 self.j.revision_request = (
                     "Propose the next study week from recent practice and diagnostic evidence."

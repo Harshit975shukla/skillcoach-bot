@@ -263,6 +263,8 @@ def test_authored_models_and_no_import_configuration():
         importlib.import_module(module)
     for name in COMMANDS:
         assert f"/{name} - " in help_text()
+    # Help must stay one Telegram message chunk for the owner.
+    assert len(help_text()) <= 3480
 
 
 def test_production_schema_is_private_and_identifiers_are_validated():

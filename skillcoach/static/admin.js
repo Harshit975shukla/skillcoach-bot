@@ -177,6 +177,10 @@
         detail.append(node("p", `${learning.status} · ${learning.sessions_practiced}/5 sessions with all tasks completed · ${learning.streak} day streak`, "detail"));
         detail.append(node("p", learning.basis, "detail"));
         detail.append(node("p", `Active days this week: ${learning.active_days_this_week} · Last practice: ${learning.last_practice || "Not yet"}`, "detail"));
+        if (learning.labs) {
+          const labs = learning.labs;
+          detail.append(node("p", `Labs: ${labs.verified} verified · ${labs.pending} pending · ${labs.required} required${labs.gate_blocked ? " · next week waits for required labs" : ""}`, "detail"));
+        }
         const days = node("ol", undefined, "task-list");
         for (const day of learning.sessions) {
           const entry = node("li");

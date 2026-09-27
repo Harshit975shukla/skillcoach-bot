@@ -28,6 +28,7 @@
       </section>
       <nav class="sections" aria-label="Learning sections">
         <a href="#today">Practice</a>
+        <a href="#labs">Labs</a>
         <a href="#plan">Weekly plan</a>
         <a href="#progress">Progress</a>
         <a href="#documents">Documents</a>
@@ -38,6 +39,18 @@
           Answer five diagnostic questions, then review and approve your plan before Day 1.</p>
         <p class="section-description">Open tasks, ordered by assigned date. Complete them in the bot using the task ID.</p>
         <ol id="tasks" class="task-list"></ol>
+      </section>
+      <section id="labs" aria-labelledby="labs-heading">
+        <div class="section-heading"><h2 id="labs-heading">Hands-on labs</h2><span id="lab-count"></span></div>
+        <p id="lab-gate" class="guidance" hidden></p>
+        <p class="section-description">Quizzes arrive whether or not you finish a lab. Verify required labs before
+          Sunday's review so next week's plan can be prepared. Every lab has a free in-app scenario in the bot; code labs
+          run free on GitHub, and your own AWS account is optional.</p>
+        <p id="lab-status" role="status" aria-live="polite"></p>
+        <ol id="lab-items" class="task-list lab-list"></ol>
+        <h3 id="lab-catalog-heading">More labs you can start</h3>
+        <ul id="lab-catalog" class="skill-list"></ul>
+        <p id="lab-cost" class="section-description"></p>
       </section>
       <section id="plan" aria-labelledby="plan-heading">
         <h2 id="plan-heading">Your weekly plan</h2>

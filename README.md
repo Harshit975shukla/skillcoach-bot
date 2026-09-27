@@ -315,10 +315,41 @@ Help is generated from `skillcoach/commands.py`. `/profile` displays the private
 | `/pause`, `/unpause`, `/cancel`, `/retry`, `/status` | Notification, flow and recovery controls |
 | `/media video`, `/media static` | Animated video default; static is opt-in |
 | `/publish`, `/dashboard` | Anonymous summary export and configured dashboard link |
+| `/labs`, `/lab <id>` | Your labs, what is pending, and the steps for each free or optional route |
+| `/submitlab <id> <link>`, `/labcleanup <id> <link>` | Verify a code or AWS lab link; confirm that AWS resources were deleted |
+| `/labcarry` | Once every 28 days, move this week's unverified required labs into next week |
 
 Plans use the actual target role, level, gaps, prior topics, task evidence and recent incorrect answers. Delivered/prepared lessons are not treated as mastery. Only completed, correctly dated weekly assessments enter a weekly score report. Missing or unfinished attempts remain unavailable. Practice on one date contributes only one streak day; a missed day resets the streak.
 
 Resume/JD alignment scores are explicitly provisional document-based estimates. Diagnostic scores are limited evidence, not a guarantee of job readiness. Private resume/JD/answer text is sent to your configured AI provider when you invoke those features; configure an acceptable provider/data-retention policy before use.
+
+## Hands-on labs
+
+Approved lessons on eight AWS topics come with a hands-on lab. The labs cover S3 presigned access, Lambda Function URLs, IAM policy evaluation, API Gateway health routes, CloudFront private origins, DynamoDB conditional writes, SQS idempotent consumers and VPC subnet routing.
+
+Each lab carries a per-learner token and offers up to three routes:
+
+| Route | Cost | How it is verified |
+|---|---|---|
+| In-app scenario | Free, no account | Four decisions with explanations inside the bot. You pass with 3 of 4, and you get 3 attempts per day. |
+| Code lab | Free on a personal GitHub account | You create a public repository from the template repo [`skillcoach-labs`](https://github.com/Harshit975shukla/skillcoach-labs) and edit only the starter file. You can work in Codespaces or locally. The tests use `moto` fakes, not real AWS. SkillCoach verifies the lab when three things hold: the `lab-<id>` Actions job passed on the default-branch head, the protected tests, workflow and requirements match pinned Git blob hashes, and your token file is present. |
+| Your own AWS account | **Optional and may cost money** | You submit the S3 presigned, Lambda, API Gateway or CloudFront HTTPS link. SkillCoach checks three things: the host is a public AWS endpoint, there is no redirect, and the response contains your token. `/labcleanup` then confirms that the same link no longer serves the token. |
+
+**When required labs are due.** Pace sets the number: 15–30 minute plans require 1 lab a week, and 45–60 minute plans require 2. Further labs are optional.
+
+**What waits for labs, and what doesn't.** Quizzes, lessons and weekly assessments are sent whether or not labs are done. On Friday, the quiz message also reminds you about pending required labs. At Sunday's review, next week's plan is **not** prepared while a required lab from the fully delivered week is unverified. The plan is prepared automatically once that lab is verified, or after `/labcarry`. `/labcarry` works once every 28 days, and a lab can be carried only once.
+
+**Grandfathered plans.** Plans approved before labs existed keep `labs_enabled=false` and never receive a lab or wait for one.
+
+**Where to track labs.** Pending labs, tokens, steps and official references appear in `/labs` and in the dashboard's Labs section. The dashboard also accepts a link.
+
+**Kill switch.** `LABS_ENABLED=false` stops new assignments, checks and the review gate. Lessons and quizzes continue. A gate that is already waiting releases at the next scheduled lesson, quiz or review job. Set the same value in the Vercel environment and the GitHub Actions `LABS_ENABLED` repository variable, because the webhook and the scheduled worker read their own copies.
+
+**Limits and privacy.** There are 12 link checks per learner per day, and only one lab check can be queued at a time. Checks are idempotent by request ID: a retried job reuses its cached result and never runs the check again. Submitted links are removed from job payloads and command text once the job finishes. An AWS-verified lab keeps only a keyed digest of the link so that cleanup can be confirmed. The owner console shows only counts: verified, pending, required, and whether the gate is blocking.
+
+This is a **practice-integrity check, not proctoring**. A passing check shows that the artifact behaves as specified and is linked to the learner's token. It does not prove who did the work. Never share AWS keys, passwords or console screenshots. SkillCoach never asks for them.
+
+`LABS_GITHUB_TOKEN` is optional. Use it only to raise GitHub's unauthenticated API rate limit, with a fine-grained token that has **no repository permissions** (public read only). Never reuse `GH_PAT`. Maintainer references for the code labs live in `tests/lab_reference/`. CI runs every lab twice: against the starter, which must fail, and against the reference, which must pass the exact expected test count.
 
 ## Full lessons and media
 
@@ -400,7 +431,7 @@ Python **3.12** is pinned consistently. Install only in your isolated checkout, 
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e ".[test]"
+.\.venv\Scripts\python.exe -m pip install -e ".[test,labs]"
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m compileall -q skillcoach api
@@ -435,6 +466,8 @@ See `.env.example`; environment variables are loaded at operation startup, not n
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | Optional fallback; model default `gemini-2.5-flash`; verify current account/model availability |
 | `GITHUB_TOKEN` | Optional dashboard publishing PAT; Actions maps **`secrets.GH_PAT`** to this variable |
 | `DASHBOARD_REPO`, `DASHBOARD_PATH`, `DASHBOARD_URL` | Configured destination; no hard-coded personal repository or identity |
+| `LABS_ENABLED`, `LABS_TEMPLATE_REPO` | Hands-on labs kill switch (default `true`) and the public `owner/repository` code-lab template |
+| `LABS_GITHUB_TOKEN` | Optional secret: a fine-grained token with no repository permissions, used only for rate limits; never `GH_PAT` |
 
 At least one AI provider is needed for generated coaching. Model quotas/free tiers are not promised. GitHub `DASHBOARD_*` and model settings are repository variables; database/Telegram/AI/PAT values are secrets. No secrets are needed for offline tests.
 

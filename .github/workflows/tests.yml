@@ -31,7 +31,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: python -m pip install -e '.[test]'
+      - run: python -m pip install -e '.[test,labs]'
       - run: python -m ruff check .
       - run: python -m pytest -q
       - run: npm ci

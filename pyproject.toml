@@ -5,6 +5,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "Flask==3.1.2",
     "requests==2.32.5",
+    # read1(decode_content=False) in lab checks requires urllib3 2.x.
+    "urllib3==2.8.0",
     "psycopg[binary]==3.2.10",
     "pydantic==2.12.3",
     "tzdata==2025.2",
@@ -14,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest==8.4.2", "ruff==0.13.2"]
+labs = ["boto3==1.43.103", "moto[s3,dynamodb,sqs]==5.2.3"]
 
 [build-system]
 requires = ["setuptools>=75"]

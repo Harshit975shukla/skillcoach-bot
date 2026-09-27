@@ -19,7 +19,9 @@ class DeliveryDeferred(Exception):
 
 
 class Runtime:
-    def __init__(self, config, repository=None, ai=None, telegram=None, publisher=None, clock=now_ist):
+    def __init__(
+        self, config, repository=None, ai=None, telegram=None, publisher=None, clock=now_ist, labs=None
+    ):
         self.config = config
         self.repo = repository or Repository(config.database_url)
         self.repo.owner_id = config.owner_id
@@ -27,6 +29,7 @@ class Runtime:
         self.telegram = telegram or Telegram(config)
         self.publisher = publisher or Publisher(config)
         self.clock = clock
+        self.labs = labs
 
     @classmethod
     def from_env(cls, *, webhook=False):
@@ -54,7 +57,9 @@ class Runtime:
                 return False
             scoped = self.repo.for_learner(job.get("learner_id", "owner"))
             revision, state = scoped.read()
-            result = Service(scoped, self.ai, self.config, self.clock).apply(job, state, token, budget)
+            result = Service(scoped, self.ai, self.config, self.clock, labs=self.labs).apply(
+                job, state, token, budget
+            )
             scoped.finish(job["id"], token, revision, *result)
             return True
         except WorkDeferred:

@@ -180,10 +180,38 @@ class WeekPlan(Model):
         return self
 
 
+class LabAssignment(Model):
+    id: str
+    lab_id: str
+    lesson_key: str | None = None
+    plan_id: str | None = None
+    required: bool = False
+    token: str
+    assigned_date: date
+    status: Literal["pending", "needs_fix", "verified"] = "pending"
+    route: Literal["aws", "code", "scenario"] | None = None
+    result_code: str | None = None
+    checks: list[Short] = Field(default_factory=list, max_length=12)
+    verified_at: datetime | None = None
+    carried_at: datetime | None = None
+    cleanup: Literal["not_needed", "reminder", "confirmed"] = "not_needed"
+    url_digest: str | None = None
+
+
+class LabAttempt(Model):
+    id: str
+    assignment_id: str
+    date: date
+    order: list[list[int]] = Field(min_length=4, max_length=4)
+    answers: list[bool] = Field(default_factory=list, max_length=4)
+    status: Literal["active", "passed", "failed", "expired", "cancelled"] = "active"
+    completed_at: datetime | None = None
+
+
 class State(Model):
     profile: Profile | None = None
     draft: Draft | None = None
-    focus: Literal["draft", "assessment", "interview", "onboarding", "document"] | None = None
+    focus: Literal["draft", "assessment", "interview", "onboarding", "document", "lab"] | None = None
     active_assessment: str | None = None
     active_interview: str | None = None
     paused: bool = False
@@ -201,8 +229,17 @@ class State(Model):
     legacy_archive: dict = Field(default_factory=dict)
     journey: Journey | None = None
     document_draft: DocumentDraft | None = None
+    labs: dict[str, LabAssignment] = Field(default_factory=dict)
+    lab_attempts: dict[str, LabAttempt] = Field(default_factory=dict)
+    active_lab: str | None = None
+    lab_checks: list[datetime] = Field(default_factory=list)
+    lab_carry_at: datetime | None = None
 
     def target(self) -> dict | None:
+        if self.focus == "lab" and self.active_lab:
+            item = self.lab_attempts.get(self.active_lab)
+            if item and item.status == "active" and len(item.answers) < 4:
+                return {"kind": "lab", "session": item.id, "question": str(len(item.answers))}
         if self.focus == "document" and self.document_draft:
             return {
                 "kind": "document",

@@ -7,6 +7,7 @@
   let authenticated = false;
   let epoch = 0;
   let documentCsrf = "", uploadId = null, uploadPreview = null, uploadBusy = false, uploadController;
+  let labBusy = false, labController, labRequests = {};
   const node = (tag, value, className) => {
     const element = document.createElement(tag);
     if (value !== undefined) element.textContent = String(value);
@@ -17,7 +18,9 @@
     epoch += 1;
     if (controller) controller.abort();
     if (uploadController) uploadController.abort();
+    if (labController) labController.abort();
     documentCsrf = ""; uploadId = null; uploadPreview = null; uploadBusy = false;
+    labBusy = false; labRequests = {};
     $("document-file").value = ""; $("document-preview").hidden = true;
     for (const id of ["document-file", "document-kind", "document-confirm", "document-cancel", "document-choice"]) $(id).disabled = false;
     $("document-status").textContent = ""; $("document-preview-summary").textContent = "";
@@ -25,9 +28,11 @@
     $("content").hidden = true;
     for (const id of ["learner-name", "target-role", "tasks", "plan-days", "skills", "interviews",
                       "done", "streak", "minutes", "graded", "preferences", "updated", "task-count",
-                      "plan-status", "plan-rationale"]) {
+                      "plan-status", "plan-rationale", "lab-items", "lab-catalog", "lab-count", "lab-status",
+                      "lab-cost", "lab-gate"]) {
       $(id).replaceChildren();
     }
+    $("lab-gate").hidden = true;
     $("plan-bot-link").hidden = true; $("plan-bot-link").removeAttribute("href");
     $("notice").textContent = message;
     $("notice").classList.toggle("error", error);
@@ -35,6 +40,109 @@
     clearTimeout(expiryTimer);
   }
   function empty(id, message) { $(id).append(node("li", message, "empty")); }
+  const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+  function labRoute(lab, route) {
+    const details = node("details");
+    details.append(node("summary", route.label));
+    if (route.route === "scenario") {
+      details.append(node("p", "Runs inside the bot: four decisions with explanations. Pass with 3 of 4. Free, no cloud account.", "task-detail"));
+      const command = node("span", undefined, "task-command");
+      command.append(node("code", `/lab ${lab.lab_id}`));
+      details.append(command);
+      return details;
+    }
+    const steps = node("ol", undefined, "lab-steps");
+    for (const step of route.steps) steps.append(node("li", step));
+    details.append(steps);
+    if (route.cleanup.length) {
+      details.append(node("p", "Cleanup — right after verification", "lab-subhead"));
+      const cleanup = node("ul", undefined, "lab-cleanup");
+      for (const step of route.cleanup) cleanup.append(node("li", step));
+      details.append(cleanup);
+    }
+    details.append(node("p", "Submit: " + route.submit, "task-detail"));
+    return details;
+  }
+  function renderLabs(labs) {
+    for (const id of ["lab-items", "lab-catalog"]) $(id).replaceChildren();
+    $("lab-gate").hidden = true; $("lab-cost").textContent = ""; $("lab-count").textContent = "";
+    if (!labs || !labs.enabled) {
+      empty("lab-items", labs ? "Hands-on labs are turned off right now. Lessons and quizzes continue."
+                              : "Labs appear after your learning profile is set up.");
+      $("lab-catalog-heading").hidden = true;
+      return;
+    }
+    $("lab-catalog-heading").hidden = false;
+    const pending = labs.items.filter(lab => lab.status !== "verified");
+    $("lab-count").textContent = `${pending.length} pending`;
+    const required = labs.gate.required_pending;
+    if (required) {
+      $("lab-gate").hidden = false;
+      $("lab-gate").textContent = labs.gate.blocked
+        ? `Next week's plan is waiting for ${plural(required, "required lab")}. Verify below or in the bot and it is prepared automatically.`
+          + (labs.carry_available ? " Once every 28 days you can send /labcarry in the bot to move them into next week instead." : "")
+        : `${plural(required, "required lab")} to verify before Sunday's review. Quizzes do not wait for labs.`;
+    }
+    labs.items.forEach((lab, index) => {
+      const item = node("li");
+      item.append(node("span", lab.title, "task-title"));
+      item.append(node("p", `~${lab.minutes} min · ${lab.required ? "Required" : "Optional"}${lab.carried ? " · carried over" : ""} · assigned ${lab.assigned_date}`, "task-meta"));
+      const state = lab.status === "verified" ? `Verified${lab.verified_route ? " · " + lab.verified_route : ""}`
+        : lab.blocking ? "Needed before next week's plan" : lab.status === "needs_fix" ? "Needs a fix" : "Not verified yet";
+      item.append(node("span", state, "lab-state" + (lab.blocking ? " blocking" : "")));
+      item.append(node("p", lab.goal, "lab-reason"));
+      if (lab.reason) item.append(node("p", "Last check: " + lab.reason, "lab-reason"));
+      if (lab.status === "verified") {
+        if (lab.cleanup === "reminder") item.append(node("p", `Delete the AWS resources to avoid charges, then send /labcleanup ${lab.lab_id} <your verified link> in the bot.`, "lab-reason"));
+        if (lab.cleanup === "confirmed") item.append(node("p", "AWS cleanup confirmed.", "lab-reason"));
+        $("lab-items").append(item);
+        return;
+      }
+      if (lab.token) {
+        const token = node("p", "Your lab token ", "lab-token");
+        token.append(node("code", lab.token));
+        item.append(token);
+      }
+      for (const route of lab.routes) item.append(labRoute(lab, route));
+      const refs = lab.references.filter(url => /^https:\/\/[A-Za-z0-9.-]+\//.test(url));
+      if (refs.length) {
+        const details = node("details"), list = node("ul", undefined, "lab-refs");
+        details.append(node("summary", "Official references"));
+        for (const url of refs) {
+          const link = node("a", url); link.href = url; link.rel = "noopener noreferrer"; link.target = "_blank";
+          const entry = node("li"); entry.append(link); list.append(entry);
+        }
+        details.append(list); item.append(details);
+      }
+      if (lab.routes.some(route => route.accepts_link)) {
+        const form = node("form", undefined, "lab-form"), label = node("label", "Repository or AWS lab link");
+        const input = node("input"), button = node("button", "Check link");
+        input.type = "url"; input.required = true; input.maxLength = 2048; input.autocomplete = "off";
+        input.inputMode = "url"; input.spellcheck = false; input.id = `lab-link-${index}`; input.className = "lab-input";
+        input.placeholder = "https://";
+        label.htmlFor = input.id; button.type = "submit"; button.className = "lab-button";
+        form.append(label, input, button);
+        form.addEventListener("submit", event => { event.preventDefault(); submitLab(lab.id, input); });
+        item.append(form);
+      }
+      $("lab-items").append(item);
+    });
+    if (!labs.items.length) empty("lab-items", "No labs yet. Approved lessons add labs here; the bot also lists them with /labs.");
+    const assigned = new Set(labs.items.map(lab => lab.lab_id));
+    for (const lab of labs.catalog.filter(entry => !assigned.has(entry.lab_id))) {
+      const item = node("li");
+      item.append(node("span", `${lab.title} · ~${lab.minutes} min`));
+      const command = node("span"); command.append(node("code", `/lab ${lab.lab_id}`));
+      item.append(command);
+      $("lab-catalog").append(item);
+    }
+    if (!$("lab-catalog").children.length) empty("lab-catalog", "Every lab in the catalog is already on your list.");
+    $("lab-cost").textContent = labs.cost_note;
+    setLabControls(labBusy);
+  }
+  function setLabControls(disabled) {
+    for (const element of document.querySelectorAll(".lab-input, .lab-button")) element.disabled = disabled || !documentCsrf;
+  }
   function render(data) {
     $("learner-name").textContent = data.profile.name;
     $("target-role").textContent = data.profile.target_role || "A plan built around your goals starts with /setup.";
@@ -58,6 +166,7 @@
     if (!data.tasks.length) empty("tasks", "No open tasks. Your next lesson will add practice here.");
     const proposed = data.learning && data.learning.plan;
     documentCsrf = data.document_csrf || "";
+    renderLabs(data.labs);
     $("document-preview-button").disabled = !documentCsrf || !data.documents || !data.documents.can_update;
     if (!uploadBusy && !uploadPreview) {
       $("document-status").textContent = data.documents
@@ -109,7 +218,7 @@
                              Math.max(0, data.auth_expires_at * 1000 - Date.now()));
   }
   async function refresh() {
-    if (uploadBusy) return;
+    if (uploadBusy || labBusy) return;
     if (!app || !app.initData) {
       clearPrivate("Open this private dashboard using /dashboard in the Telegram bot. A shared URL alone cannot grant access.");
       $("refresh").disabled = true;
@@ -143,9 +252,9 @@
     }
   }
   $("refresh").addEventListener("click", refresh);
-  async function uploadRequest(path, body, json = false) {
+  async function privateRequest(path, body, json, slot) {
     const requestEpoch = epoch, token = new AbortController();
-    uploadController = token;
+    if (slot === "lab") labController = token; else uploadController = token;
     const options = {method: "POST", cache: "no-store", credentials: "omit", signal: token.signal,
       headers: {"X-Telegram-Init-Data": app.initData, "X-CSRF-Token": documentCsrf}, body};
     if (json) { options.headers["Content-Type"] = "application/json"; options.body = JSON.stringify(body); }
@@ -153,10 +262,39 @@
     const data = await response.json();
     if (requestEpoch !== epoch || token.signal.aborted) return null;
     if (!response.ok) {
-      if (response.status === 403) clearPrivate("Session expired. Reopen /dashboard to update your documents.");
-      throw new Error(data.error || "Upload failed. Retry the same request.");
+      if (response.status === 403) clearPrivate("Session expired. Reopen /dashboard from the bot to continue.");
+      throw new Error(data.error || "Request failed. Retry the same request.");
     }
     return data;
+  }
+  const uploadRequest = (path, body, json = false) => privateRequest(path, body, json, "upload");
+  async function submitLab(assignmentId, input) {
+    if (labBusy || uploadBusy || !documentCsrf) return;
+    const url = input.value.trim();
+    if (!/^https:\/\/\S{1,2040}$/.test(url)) {
+      $("lab-status").textContent = "Paste one complete https:// link: your GitHub repository or the AWS lab URL."; return;
+    }
+    const previous = labRequests[assignmentId];
+    const requestId = previous && previous.url === url ? previous.id : crypto.randomUUID();
+    labRequests[assignmentId] = {id: requestId, url};
+    const requestEpoch = epoch;
+    let submitted = false;
+    labBusy = true; setLabControls(true);
+    $("lab-status").textContent = "Checking your lab link. This can take a few seconds…";
+    try {
+      const result = await privateRequest("/app/labs/submit", {request_id: requestId, assignment_id: assignmentId, url}, true, "lab");
+      if (!result) return;
+      delete labRequests[assignmentId];
+      submitted = true;
+      $("lab-status").textContent = result.duplicate
+        ? "That check was already submitted. The bot sends its result in Telegram."
+        : "Check submitted. The bot sends the result in Telegram, and this page updates.";
+    } catch (error) {
+      if (requestEpoch === epoch) $("lab-status").textContent = (error.message || "Connection interrupted.") + " Check link again retries the same request.";
+    } finally {
+      if (requestEpoch === epoch) { labBusy = false; setLabControls(false); }
+    }
+    if (submitted && requestEpoch === epoch) refresh();
   }
   function invalidateUpload() {
     uploadId = null; uploadPreview = null; $("document-preview").hidden = true;

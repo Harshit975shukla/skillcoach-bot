@@ -242,7 +242,9 @@ class Repository:
                 # Do not jump ahead of another learner or turn a webhook into a media worker.
                 return None
             if document_job is not None and (
-                row is None or row["id"] != document_job or row["payload"].get("type") != "document"
+                row is None
+                or row["id"] != document_job
+                or row["payload"].get("type") not in ("document", "lab")
             ):
                 return None
             if row:
@@ -413,6 +415,15 @@ class Repository:
                     (self.learner_id,),
                 )
             conn.execute("UPDATE jobs SET status='done', error_code=NULL WHERE id=%s", (job,))
+            # Lab evidence links are needed only while a check is queued; finished payloads never keep them.
+            conn.execute(
+                "UPDATE jobs SET payload=CASE WHEN payload->>'type'='lab' THEN payload-'url' "
+                r"ELSE jsonb_set(payload,'{text}',to_jsonb(regexp_replace(payload->>'text','^\s*(\S+).*$','\1'))) "
+                "END WHERE learner_id=%s AND (status IN ('done','cancelled') OR (status='failed' AND attempts>=5)) "
+                "AND ((payload->>'type'='lab' AND payload ? 'url') OR (payload->>'type'='telegram' "
+                r"AND payload->>'text' ~* '^\s*/(submitlab|labcleanup)(@[a-z0-9_]+)?\s'))",
+                (self.learner_id,),
+            )
 
     def defer(self, job: str, token: str):
         with self.connection() as conn:

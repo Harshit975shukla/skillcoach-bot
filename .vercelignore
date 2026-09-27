@@ -8,6 +8,7 @@ __pycache__
 .pytest_cache
 .ruff_cache
 tests
+labs_template
 .github
 package.json
 package-lock.json

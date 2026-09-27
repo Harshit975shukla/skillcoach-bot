@@ -36,6 +36,7 @@ const fixture = {
 fixture.learners[0].learning = {
   shared: true, status: "active", plan_id: "synthetic-plan", version: 1, minutes: 30, sessions_practiced: 0,
   basis: "Initial diagnostic and selected goal.", active_days_this_week: 1, streak: 1, last_practice: "2026-09-26",
+  labs: {required: 1, verified: 0, pending: 1, gate_blocked: true},
   sessions: [{day: 1, topic: "AWS EC2", reason: "Build foundational practice.", date: "2026-09-28",
     delivered: false, tasks_done: 0, tasks_total: 0, learner_understood: false}],
   assessments: [{date: "2026-09-26", kind: "daily", correct: 3, total: 5}],
@@ -121,6 +122,8 @@ try {
     await page.waitForFunction(() => !document.getElementById("console").hidden);
     assert.equal(await page.$$eval("#members tr", e => e.length), 3);
     assert.equal(await page.$$eval("#members img", e => e.length), 0);
+    assert.ok(await page.evaluate(() => document.body.textContent.includes(
+      "Labs: 0 verified · 1 pending · 1 required · next week waits for required labs")));
     assert.equal(await page.evaluate(() => window.pwned), undefined);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     if (process.env.ADMIN_SCREENSHOT_DIR) {

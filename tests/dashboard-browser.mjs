@@ -6,7 +6,9 @@ import { join } from "node:path";
 import puppeteer from "puppeteer";
 
 let denied = false;
-let uploadPreviews = 0, uploadConfirms = 0;
+let uploadPreviews = 0, uploadConfirms = 0, dataRequests = 0, labFailOnce = false;
+const labSubmits = [];
+const LAB_TOKEN = "SC-TEST-TOKN";
 const fixture = {
   profile: {name: "Synthetic learner", target_role: "Platform engineer", level: "intermediate", setup_complete: true},
   stats: {done: 4, pending: 2, total: 6, streak: 2, minutes_practiced: 65, answers_graded: 1},
@@ -29,8 +31,55 @@ const fixture = {
   learning: {stage: "ready", shared: true, plan: {id: "private-plan", version: 1, approved: false, minutes: 30,
     rationale: "Your initial diagnostic supports practice on the fundamentals.",
     sessions: [{day: 1, date: "2026-09-28", topic: "AWS EC2", objective: "Explain health checks", practice: "Draw the flow"}]}},
+  labs: {
+    enabled: true, template_repo: "synthetic/skillcoach-labs",
+    cost_note: "Scenario and code labs are free. Your own AWS account is optional and may cost money.",
+    gate: {blocked: true, waiting_since: "2026-10-04T10:00:00+05:30", required_pending: 1},
+    carry_available: true,
+    items: [
+      {id: "lab-synthetic-1", lab_id: "s3-private-presigned", title: "Private S3 object with a presigned link",
+        goal: "Serve a private object only through a short-lived presigned URL.", minutes: 30, required: true,
+        blocking: true, carried: false, status: "needs_fix", reason: "The link did not return your token.",
+        token: LAB_TOKEN, assigned_date: "2026-09-28", verified_at: null, verified_route: null, cleanup: null,
+        routes: [
+          {route: "scenario", label: "In-app scenario", steps: [], cleanup: [], submit: "", accepts_link: false},
+          {route: "code", label: "Code lab (GitHub)", steps: ["Create a repository from the template."], cleanup: [],
+            submit: "/submitlab s3-private-presigned https://github.com/<you>/<repository>", accepts_link: true},
+          {route: "aws", label: "Your own AWS account", steps: ["Create a private bucket."],
+            cleanup: ["Delete the object and bucket."], submit: "/submitlab s3-private-presigned <presigned link>",
+            accepts_link: true},
+        ],
+        references: ["https://docs.aws.amazon.com/AmazonS3/latest/userguide/ShareObjectPreSignedURL.html",
+                     "javascript:window.pwnedLab=true"]},
+      {id: "lab-synthetic-2", lab_id: "iam-least-privilege", title: "<img src=x onerror='window.pwnedLab=true'>",
+        goal: "Scope a policy to one action.", minutes: 25, required: false, blocking: false, carried: false,
+        status: "verified", reason: null, token: null, assigned_date: "2026-09-21",
+        verified_at: "2026-09-22T10:00:00+05:30", verified_route: "Code lab (GitHub)", cleanup: null, routes: [],
+        references: []},
+    ],
+    catalog: [
+      {lab_id: "s3-private-presigned", title: "Private S3 object", minutes: 30, routes: ["scenario", "code", "aws"]},
+      {lab_id: "iam-least-privilege", title: "IAM least privilege", minutes: 25, routes: ["scenario", "code"]},
+      {lab_id: "vpc-subnet-routing", title: "VPC subnet routing", minutes: 30, routes: ["scenario", "code"]},
+    ],
+  },
 };
 const server = createServer(async (request, response) => {
+  if (request.url === "/app/labs/submit") {
+    assert.equal(request.method, "POST");
+    assert.equal(request.headers["x-csrf-token"], "synthetic-csrf");
+    assert.equal(request.headers["x-telegram-init-data"], "synthetic-signed-launch");
+    assert.equal(request.headers.cookie, undefined);
+    let raw = ""; for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    assert.deepEqual(Object.keys(body).sort(), ["assignment_id", "request_id", "url"]);
+    assert.match(body.request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    labSubmits.push(body);
+    const fail = labFailOnce; labFailOnce = false;
+    response.writeHead(fail ? 503 : 200, {"Content-Type": "application/json", "Cache-Control": "no-store"});
+    response.end(JSON.stringify(fail ? {error: "The check could not start right now."} : {queued: true, duplicate: false}));
+    return;
+  }
   if (request.url.startsWith("/app/documents/")) {
     assert.equal(request.headers["x-csrf-token"], "synthetic-csrf");
     assert.equal(request.headers["x-telegram-init-data"], "synthetic-signed-launch");
@@ -50,6 +99,7 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (request.url === "/app/data") {
+    dataRequests++;
     response.writeHead(denied ? 403 : 200, {"Content-Type": "application/json", "Cache-Control": "no-store"});
     response.end(JSON.stringify(denied ? {error: "Access was revoked. Reopen from Telegram."} : fixture));
     return;
@@ -141,6 +191,84 @@ try {
       assert.equal(await page.$eval("#document-kind", e => e.disabled), false);
       assert.equal(await page.$eval("#document-confirm", e => e.disabled), false);
     }
+    // Labs: pending lab, gate, escaping, safe references and catalog.
+    assert.equal(await page.$$eval("#lab-items > li", e => e.length), 2);
+    assert.equal(await page.$eval("#lab-count", e => e.textContent), "1 pending");
+    assert.equal(await page.$eval("#lab-gate", e => e.hidden), false);
+    assert.match(await page.$eval("#lab-gate", e => e.textContent), /waiting for 1 required lab.*\/labcarry/);
+    assert.equal(await page.$eval("#lab-items .lab-token code", e => e.textContent), LAB_TOKEN);
+    assert.equal(await page.$$eval("#lab-items .lab-token", e => e.length), 1);
+    assert.match(await page.$eval("#lab-items .lab-state.blocking", e => e.textContent), /Needed before next week/);
+    assert.equal(await page.$$eval("#lab-items > li:nth-child(2) .task-title *", e => e.length), 0);
+    assert.deepEqual(await page.$$eval("#lab-items .lab-refs a", e => e.map(a => a.href)),
+                     ["https://docs.aws.amazon.com/AmazonS3/latest/userguide/ShareObjectPreSignedURL.html"]);
+    assert.deepEqual(await page.$$eval("#lab-catalog li code", e => e.map(c => c.textContent)), ["/lab vpc-subnet-routing"]);
+    assert.match(await page.$eval("#lab-cost", e => e.textContent), /may cost money/);
+    assert.equal(await page.$$eval(".lab-input", e => e.length), 1);
+    assert.equal(await page.evaluate(() => window.pwnedLab), undefined);
+    const submitsBefore = labSubmits.length;
+    await page.$eval(".lab-input", e => { e.value = "http://example.com/not-https"; });
+    await page.click(".lab-button");
+    assert.match(await page.$eval("#lab-status", e => e.textContent), /https:\/\//);
+    assert.equal(labSubmits.length, submitsBefore);
+    // A failed check keeps the request ID so retrying the same link cannot queue a second job.
+    const labLink = "https://github.com/synthetic-learner/labs";
+    labFailOnce = true;
+    await page.$eval(".lab-input", (e, link) => { e.value = link; }, labLink);
+    await page.click(".lab-button");
+    await page.waitForFunction(() => document.getElementById("lab-status").textContent.includes("retries the same request"));
+    assert.equal(await page.$eval(".lab-button", e => e.disabled), false);
+    const beforeData = dataRequests;
+    await page.click(".lab-button");
+    await page.waitForFunction(() => document.getElementById("lab-status").textContent.includes("Check submitted"));
+    assert.equal(labSubmits.length, submitsBefore + 2);
+    const [failed, retried] = labSubmits.slice(-2);
+    assert.equal(retried.request_id, failed.request_id);
+    assert.deepEqual(retried, {request_id: failed.request_id, assignment_id: "lab-synthetic-1", url: labLink});
+    for (let wait = 0; dataRequests === beforeData && wait < 100; wait++) await new Promise(r => setTimeout(r, 20));
+    assert.ok(dataRequests > beforeData, "a successful lab submit refreshes the dashboard");
+    await page.waitForFunction(() => !document.querySelector(".lab-button").disabled);
+    // While a check is in flight, controls lock, a double click sends once and refresh waits.
+    await page.$eval(".lab-input", (e, link) => { e.value = link + "-2"; }, labLink);
+    await page.evaluate(() => {
+      const original = window.fetch;
+      window.labCalls = 0;
+      window.fetch = (url, options) => {
+        if (url === "/app/labs/submit") {
+          window.labCalls++;
+          window.fetch = original;
+          return new Promise(resolve => { window.pendingLab = resolve; });
+        }
+        return original(url, options);
+      };
+      const button = document.querySelector(".lab-button");
+      button.click(); button.click();
+    });
+    await page.waitForFunction(() => typeof window.pendingLab === "function");
+    assert.equal(await page.evaluate(() => window.labCalls), 1);
+    assert.equal(await page.$eval(".lab-button", e => e.disabled), true);
+    const busyData = dataRequests;
+    await page.$eval("#refresh", e => e.click());
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(dataRequests, busyData);
+    // Hiding the page clears every lab detail; a late response cannot repopulate private state.
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", {configurable: true, value: true});
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.pendingLab({ok: true, json: async () => ({queued: true, duplicate: false})});
+      delete window.pendingLab;
+    });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(await page.$$eval("#lab-items > li", e => e.length), 0);
+    assert.equal(await page.$eval("#lab-status", e => e.textContent), "");
+    assert.equal(await page.evaluate(token => document.body.textContent.includes(token), LAB_TOKEN), false);
+    await page.evaluate(() => {
+      Object.defineProperty(document, "hidden", {configurable: true, value: false});
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await page.waitForFunction(() => !document.getElementById("content").hidden);
+    assert.equal(await page.$eval(".lab-button", e => e.disabled), false);
+    assert.equal(await page.$eval(".lab-input", e => e.value), "");
     fixture.profile.name = "<img src=x onerror='window.pwned=true'>";
     await page.click("#refresh");
     await page.waitForFunction(() => document.getElementById("learner-name").textContent.startsWith("<img"));
@@ -150,6 +278,7 @@ try {
     await page.click("#refresh");
     await page.waitForFunction(() => document.getElementById("content").hidden);
     assert.equal(await page.$$eval("#tasks li", e => e.length), 0);
+    assert.equal(await page.$$eval("#lab-items > li", e => e.length), 0);
     assert.equal(await page.$eval("#plan-rationale", e => e.textContent), "");
     assert.match(await page.$eval("#notice", e => e.textContent), /revoked/);
     denied = false;
@@ -181,7 +310,7 @@ try {
   assert.equal(await stale.$eval("#content", e => e.hidden), true);
   assert.equal(await stale.$eval("#plan-rationale", e => e.textContent), "");
   await stale.close();
-  console.log("Private dashboard mobile/desktop, text escaping, revocation clearing and direct-open checks passed.");
+  console.log("Private dashboard mobile/desktop, labs, text escaping, revocation clearing and direct-open checks passed.");
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

@@ -27,6 +27,9 @@ class Config:
     private_dashboard_url: str = ""
     narration_enabled: bool = False
     access_requests_enabled: bool = False
+    labs_enabled: bool = True
+    labs_template_repo: str = "Harshit975shukla/skillcoach-labs"
+    labs_github_token: str = ""
 
     @classmethod
     def from_env(cls, *, webhook: bool = False) -> "Config":
@@ -52,6 +55,12 @@ class Config:
         private_dashboard = os.getenv("PRIVATE_DASHBOARD_URL", "")
         narration = os.getenv("NARRATION_ENABLED", "false").lower()
         requests_enabled = os.getenv("ACCESS_REQUESTS_ENABLED", "false").lower()
+        labs = os.getenv("LABS_ENABLED", "true").lower()
+        labs_repo = os.getenv("LABS_TEMPLATE_REPO", "Harshit975shukla/skillcoach-labs")
+        if labs not in ("true", "false"):
+            raise ConfigurationError("LABS_ENABLED must be true or false.")
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,39}/[A-Za-z0-9_.-]{1,100}", labs_repo):
+            raise ConfigurationError("LABS_TEMPLATE_REPO must be owner/repository.")
         if requests_enabled not in ("true", "false"):
             raise ConfigurationError("ACCESS_REQUESTS_ENABLED must be true or false.")
         if narration not in ("true", "false"):
@@ -93,4 +102,7 @@ class Config:
             private_dashboard,
             narration == "true",
             requests_enabled == "true",
+            labs == "true",
+            labs_repo,
+            os.getenv("LABS_GITHUB_TOKEN", ""),
         )

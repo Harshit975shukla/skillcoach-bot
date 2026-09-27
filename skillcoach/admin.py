@@ -48,6 +48,10 @@ OWNER_COMMANDS = {
         "updateresume",
         "updatejd",
         "recoverlesson",
+        "lab",
+        "submitlab",
+        "labcleanup",
+        "labcarry",
     }
 }
 ACTIONS = {
@@ -496,7 +500,7 @@ def admin_overview(runtime):
             state = State.model_validate(row["body"])
             from skillcoach.journey import safe_learning_view
 
-            learning = safe_learning_view(state, now)
+            learning = safe_learning_view(state, now, labs_enabled=runtime.config.labs_enabled)
             tasks = list(state.tasks.values())
             progress = {
                 "assigned": len(tasks),

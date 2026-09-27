@@ -1,5 +1,6 @@
 import copy
 import os
+import re
 from contextlib import nullcontext
 from datetime import datetime
 from types import SimpleNamespace
@@ -23,6 +24,8 @@ def block_external_http(monkeypatch):
         raise AssertionError("Tests must not use live HTTP APIs")
 
     monkeypatch.setattr("requests.Session.request", forbidden)
+    # The transport choke point also covers sessions that bypass Session.request (lab checks).
+    monkeypatch.setattr("requests.adapters.HTTPAdapter.send", forbidden)
 
 
 @pytest.fixture
@@ -156,7 +159,7 @@ class MemoryRepository:
         controls = [j for j in pending if j["payload"].get("text") in ("/pause", "/cancel", "/retry")]
         job = next(iter(controls or pending), None)
         if document_job is not None and (
-            not job or job["id"] != document_job or job["payload"].get("type") != "document"
+            not job or job["id"] != document_job or job["payload"].get("type") not in ("document", "lab")
         ):
             return None
         if proposal_for is not None and (
@@ -211,6 +214,16 @@ class MemoryRepository:
                 ):
                     row["status"] = "suppressed"
         self.jobs[job]["status"] = "done"
+        for row in self.jobs.values():
+            payload = row["payload"]
+            if row["status"] not in ("done", "cancelled"):
+                continue
+            if payload.get("type") == "lab":
+                payload.pop("url", None)
+            elif payload.get("type") == "telegram" and re.match(
+                r"\s*/(submitlab|labcleanup)(@[a-z0-9_]+)?\s", payload.get("text", ""), re.I
+            ):
+                payload["text"] = payload["text"].split()[0]
 
     def fail(self, job, token, code):
         self.jobs[job]["status"] = "failed"

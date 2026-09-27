@@ -47,8 +47,9 @@ def topic_key(topic: str) -> str:
 
 
 class Service:
-    def __init__(self, repository, ai, config, clock):
+    def __init__(self, repository, ai, config, clock, labs=None):
         self.repo, self.ai, self.config, self.clock = repository, ai, config, clock
+        self.labs = labs
 
     def apply(self, job: dict, state: State, token: str, budget: Budget):
         self.job, self.state, self.token, self.budget = job, state, token, budget
@@ -68,6 +69,10 @@ class Service:
             from skillcoach.documents import Documents
 
             Documents(self).job()
+        elif self.payload["type"] == "lab":
+            from skillcoach.lab_flow import LabFlow
+
+            LabFlow(self).job()
         elif self.payload["type"] == "import":
             from skillcoach.migration import import_snapshot
 
@@ -172,6 +177,13 @@ class Service:
         )
 
     def start_assessment(self, kind: str, day: date, topic: str):
+        if self.state.focus == "lab":
+            from skillcoach.lab_flow import LabFlow
+
+            # Quizzes are never blocked by labs; the ungraded scenario can simply be restarted.
+            LabFlow(self).interrupt(
+                "Your lab scenario was paused for this quiz. Nothing was lost: restart it any time from /labs."
+            )
         if self.state.focus in ("draft", "interview", "onboarding", "document"):
             from skillcoach.clients import ExternalError
 
@@ -584,6 +596,9 @@ class Service:
             + "\nReviewed: "
             + lesson.reviewed_at
         )
+        from skillcoach.lab_flow import LabFlow
+
+        LabFlow(self).assign(topic, key, day, session, study_plan)
         self.say(
             "HYPOTHETICAL INTERVIEW PRACTICE\nQ: Explain a design using "
             + topic
@@ -641,6 +656,9 @@ class Service:
                     "No lesson was prepared for today; no unrelated quiz was invented. Use /learn <topic>."
                 )
             else:
+                from skillcoach.lab_flow import LabFlow
+
+                LabFlow(self).quiz_reminder(day)
                 self.start_assessment("daily", day, ", ".join(topics))
         elif kind == "weekly":
             topics = [
@@ -700,6 +718,20 @@ class Service:
                 learning.callback(callback)
             elif callback == "onboard:start":
                 learning.begin()
+            elif pieces[0] == "lab" and len(pieces) == 3:
+                from skillcoach.lab_flow import LabFlow
+
+                LabFlow(self).route_details(pieces[1], pieces[2])
+            elif (
+                pieces[0] == "ls"
+                and len(pieces) == 4
+                and pieces[2].isdecimal()
+                and pieces[3].isdecimal()
+                and len(pieces[2]) == len(pieces[3]) == 1
+            ):
+                from skillcoach.lab_flow import LabFlow
+
+                LabFlow(self).answer(pieces[1], int(pieces[2]), int(pieces[3]))
             elif len(pieces) == 4 and pieces[0] == "q":
                 self.answer_assessment(
                     pieces[3],
@@ -726,6 +758,10 @@ class Service:
                 self.setup_input(text)
             elif self.state.focus == "interview":
                 self.answer_interview(text)
+            elif self.state.focus == "lab":
+                from skillcoach.lab_flow import LabFlow
+
+                LabFlow(self).text(text)
             else:
                 self.say("Use the question buttons or /q A (B/C/D) for assessments.")
             return
@@ -743,6 +779,10 @@ class Service:
                 self.say(help_text(admin=self.repo.is_owner))
         elif cmd == "onboard":
             learning.begin()
+        elif cmd in ("labs", "lab", "submitlab", "labcleanup", "labcarry"):
+            from skillcoach.lab_flow import LabFlow
+
+            LabFlow(self).command(cmd, arg)
         elif cmd in ("updateresume", "updatejd"):
             documents.begin("resume" if cmd == "updateresume" else "jd")
         elif cmd == "recoverlesson":
@@ -842,6 +882,9 @@ class Service:
                     session.status = "cancelled"
             if self.state.active_interview:
                 self.state.interviews[self.state.active_interview].status = "cancelled"
+            from skillcoach.lab_flow import LabFlow
+
+            LabFlow(self).interrupt(None)
             self.state.active_assessment = self.state.active_interview = self.state.focus = None
             self.control = "cancel"
             self.say(
@@ -859,6 +902,10 @@ class Service:
                 if self.state.paused
                 else "Future scheduled coaching enabled. Missed notifications are not replayed."
             )
+            if not self.state.paused:
+                from skillcoach.lab_flow import LabFlow
+
+                LabFlow(self).resume_planning()
         elif cmd == "media":
             if arg not in ("video", "static"):
                 self.say(f"Current media: {self.state.media}. Use /media video or /media static.")

@@ -1,0 +1,138 @@
+name: SkillCoach labs
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skillcoach-labs-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lab-s3-private-presigned:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - if: hashFiles('.skillcoach/s3-private-presigned.token') == ''
+        run: echo "No .skillcoach/s3-private-presigned.token file, so this lab is not being attempted."
+      - if: hashFiles('.skillcoach/s3-private-presigned.token') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - if: hashFiles('.skillcoach/s3-private-presigned.token') != ''
+        run: python -m pip install -r requirements-lab.txt
+      - if: hashFiles('.skillcoach/s3-private-presigned.token') != ''
+        run: |
+          rm -f .skillcoach-report.xml
+          python -I -m pytest -c pytest.ini --noconftest --junitxml=.skillcoach-report.xml labs/s3-private-presigned
+          python -I .github/check_report.py .skillcoach-report.xml 12
+  lab-lambda-function-url:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - if: hashFiles('.skillcoach/lambda-function-url.token') == ''
+        run: echo "No .skillcoach/lambda-function-url.token file, so this lab is not being attempted."
+      - if: hashFiles('.skillcoach/lambda-function-url.token') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - if: hashFiles('.skillcoach/lambda-function-url.token') != ''
+        run: python -m pip install -r requirements-lab.txt
+      - if: hashFiles('.skillcoach/lambda-function-url.token') != ''
+        run: |
+          rm -f .skillcoach-report.xml
+          python -I -m pytest -c pytest.ini --noconftest --junitxml=.skillcoach-report.xml labs/lambda-function-url
+          python -I .github/check_report.py .skillcoach-report.xml 8
+  lab-iam-least-privilege:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - if: hashFiles('.skillcoach/iam-least-privilege.token') == ''
+        run: echo "No .skillcoach/iam-least-privilege.token file, so this lab is not being attempted."
+      - if: hashFiles('.skillcoach/iam-least-privilege.token') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - if: hashFiles('.skillcoach/iam-least-privilege.token') != ''
+        run: python -m pip install -r requirements-lab.txt
+      - if: hashFiles('.skillcoach/iam-least-privilege.token') != ''
+        run: |
+          rm -f .skillcoach-report.xml
+          python -I -m pytest -c pytest.ini --noconftest --junitxml=.skillcoach-report.xml labs/iam-least-privilege
+          python -I .github/check_report.py .skillcoach-report.xml 10
+  lab-dynamodb-idempotent-write:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - if: hashFiles('.skillcoach/dynamodb-idempotent-write.token') == ''
+        run: echo "No .skillcoach/dynamodb-idempotent-write.token file, so this lab is not being attempted."
+      - if: hashFiles('.skillcoach/dynamodb-idempotent-write.token') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - if: hashFiles('.skillcoach/dynamodb-idempotent-write.token') != ''
+        run: python -m pip install -r requirements-lab.txt
+      - if: hashFiles('.skillcoach/dynamodb-idempotent-write.token') != ''
+        run: |
+          rm -f .skillcoach-report.xml
+          python -I -m pytest -c pytest.ini --noconftest --junitxml=.skillcoach-report.xml labs/dynamodb-idempotent-write
+          python -I .github/check_report.py .skillcoach-report.xml 8
+  lab-sqs-idempotent-consumer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - if: hashFiles('.skillcoach/sqs-idempotent-consumer.token') == ''
+        run: echo "No .skillcoach/sqs-idempotent-consumer.token file, so this lab is not being attempted."
+      - if: hashFiles('.skillcoach/sqs-idempotent-consumer.token') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - if: hashFiles('.skillcoach/sqs-idempotent-consumer.token') != ''
+        run: python -m pip install -r requirements-lab.txt
+      - if: hashFiles('.skillcoach/sqs-idempotent-consumer.token') != ''
+        run: |
+          rm -f .skillcoach-report.xml
+          python -I -m pytest -c pytest.ini --noconftest --junitxml=.skillcoach-report.xml labs/sqs-idempotent-consumer
+          python -I .github/check_report.py .skillcoach-report.xml 3
+  lab-vpc-subnet-routing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - if: hashFiles('.skillcoach/vpc-subnet-routing.token') == ''
+        run: echo "No .skillcoach/vpc-subnet-routing.token file, so this lab is not being attempted."
+      - if: hashFiles('.skillcoach/vpc-subnet-routing.token') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - if: hashFiles('.skillcoach/vpc-subnet-routing.token') != ''
+        run: python -m pip install -r requirements-lab.txt
+      - if: hashFiles('.skillcoach/vpc-subnet-routing.token') != ''
+        run: |
+          rm -f .skillcoach-report.xml
+          python -I -m pytest -c pytest.ini --noconftest --junitxml=.skillcoach-report.xml labs/vpc-subnet-routing
+          python -I .github/check_report.py .skillcoach-report.xml 10

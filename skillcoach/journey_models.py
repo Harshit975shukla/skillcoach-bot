@@ -51,6 +51,7 @@ class LearningPlan(PlanDraft):
     timezone: str
     start_now_at: datetime | None = None
     replaces_plan_id: str | None = None
+    labs_enabled: bool = False
 
 
 class Suggestion(Model):
@@ -96,6 +97,7 @@ class Journey(Model):
     active_id: str | None = None
     suggestion: Suggestion | None = None
     version: int = 0
+    lab_gate_since: datetime | None = None
 
     def target(self):
         stage = self.stage

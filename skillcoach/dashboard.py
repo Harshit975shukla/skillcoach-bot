@@ -8,6 +8,7 @@ import re
 from urllib.parse import parse_qsl
 
 from skillcoach.export import skill_summary, stats
+from skillcoach.lab_flow import lab_view
 from skillcoach.models import State
 from skillcoach.timeutil import IST, monday
 
@@ -53,7 +54,7 @@ def verify_init_data(raw: str, bot_token: str, now: int) -> tuple[int, int]:
         ) from None
 
 
-def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narration_enabled=False):
+def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narration_enabled=False, config=None):
     with repo.connection() as conn:
         row = conn.execute(
             "SELECT l.id,l.status,l.generation,l.updated_at,c.body FROM learners l "
@@ -162,6 +163,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
             if learning_plan
             else None,
         },
+        "labs": lab_view(state, config, now) if config is not None else None,
     }
 
 
@@ -195,6 +197,7 @@ def register_dashboard(app, runtime_factory):
                     runtime.clock(),
                     digest,
                     narration_enabled=runtime.config.narration_enabled,
+                    config=runtime.config,
                 )
             data["bot_url"] = (
                 f"https://t.me/{runtime.config.bot_username}" if runtime.config.bot_username else None
@@ -294,6 +297,40 @@ def register_dashboard(app, runtime_factory):
         except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
             return jsonify(
                 error="Confirmation temporarily unavailable. Retry the same confirmation to check its result."
+            ), 503
+
+    @app.post("/app/labs/submit")
+    def submit_lab():
+        from skillcoach.admin_auth import AdminDenied
+        from skillcoach.clients import Budget, ExternalError
+        from skillcoach.lab_flow import LabSubmitError, queue_submission
+
+        budget = Budget(20)
+        try:
+            runtime = runtime_factory()
+            with runtime.repo.session():
+                identity = document_identity(runtime)
+                body = request.get_json(silent=True)
+                if not isinstance(body, dict) or set(body) != {"request_id", "assignment_id", "url"}:
+                    raise LabSubmitError("Unexpected lab submission fields.")
+                if any(not isinstance(value, str) for value in body.values()):
+                    raise LabSubmitError("Invalid lab submission.")
+                result = queue_submission(
+                    runtime, identity, body["request_id"], body["assignment_id"], body["url"].strip()
+                )
+                if not result["duplicate"] and budget.remaining() >= 8:
+                    runtime.process_one(budget, document_job=f"labsubmit:{identity[0]}:{body['request_id']}")
+                    for _ in range(3):
+                        if not runtime.deliver_one(budget, media=False):
+                            break
+            return jsonify(result)
+        except (AdminDenied, DashboardDenied) as exc:
+            return jsonify(error=str(exc)), 403
+        except LabSubmitError as exc:
+            return jsonify(error=str(exc)), 409
+        except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
+            return jsonify(
+                error="Lab check temporarily unavailable. Retry the same submission to see its result."
             ), 503
 
     @app.after_request
