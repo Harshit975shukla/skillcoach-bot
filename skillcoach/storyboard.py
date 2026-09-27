@@ -157,6 +157,53 @@ class Storyboard(Model):
         return self
 
 
+class ActorState(Model):
+    actor: Identifier
+    state: Literal["healthy", "unhealthy", "starting", "waiting", "complete"]
+
+
+def response_schema():
+    """Strict provider wire schema: arrays replace open-ended state dictionaries."""
+    schema = Storyboard.model_json_schema()
+    schema["$defs"]["ActorState"] = ActorState.model_json_schema()
+    schema["$defs"]["Scene"]["properties"]["states"] = {
+        "type": "array",
+        "maxItems": 6,
+        "items": {"$ref": "#/$defs/ActorState"},
+        "description": "State changes for existing actors only. Each actor may appear at most once.",
+    }
+
+    def require_properties(value):
+        if isinstance(value, dict):
+            value.pop("default", None)
+            if value.get("type") == "object":
+                value["required"] = list(value.get("properties", {}))
+                value["additionalProperties"] = False
+            for child in value.values():
+                require_properties(child)
+        elif isinstance(value, list):
+            for child in value:
+                require_properties(child)
+
+    require_properties(schema)
+    return schema
+
+
+def canonical_response(text):
+    """Validate state entries before converting to the existing persisted storyboard format."""
+    body = json.loads(text)
+    if not isinstance(body, dict) or not isinstance(body.get("scenes"), list):
+        raise ValueError("Invalid storyboard response envelope")
+    for scene in body["scenes"]:
+        if not isinstance(scene, dict) or not isinstance(scene.get("states"), list):
+            raise ValueError("Storyboard response states must be an array")
+        entries = [ActorState.model_validate(value) for value in scene["states"]]
+        if len(entries) > 6 or len({entry.actor for entry in entries}) != len(entries):
+            raise ValueError("Storyboard state entries must reference unique actors")
+        scene["states"] = {entry.actor: entry.state for entry in entries}
+    return json.dumps(body)
+
+
 def asset_key(storyboard: Storyboard, learner_id: str, *, voice: bool, shared_reviewed=False):
     data = {
         "storyboard": storyboard.model_dump(),

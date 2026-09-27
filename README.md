@@ -212,6 +212,13 @@ Registry (`registry.terraform.io`) for provider documentation. Lookalike domains
 URLs remain rejected. Fixing a failed storyboard resumes its existing job from the validated lesson
 checkpoint; it does not regenerate that lesson, regrade quizzes or substitute a generic video.
 An unavailable fallback remains an explicit provider error, not a successful recovery.
+On Groq's GPT-OSS 120B/20B, storyboard generation uses strict structured output rather than
+prompt-only JSON. The wire format uses a bounded array of actor/state entries instead of a dynamic
+dictionary, so every object has explicit required properties and rejects additional fields.
+Entries are validated and converted back to the existing persisted format; all local graph,
+reference, identifier, text-length and narration checks still run. This does not claim factual
+accuracy or semantic validity merely because the provider returned schema-valid JSON. Other
+models/providers retain the original validated contract; no additional repair call is introduced.
 
 **Telegram is not exactly-once transport.** If a send succeeds but recording its receipt fails, recovery may send it again. Pause/cancel cannot retract a message already sent or in flight. Domain answers/task progress remain idempotent. `/pause` atomically suppresses queued scheduled deliveries and cancels queued scheduled jobs; `/unpause` enables future runs without resurrecting old messages. Manual coaching remains usable.
 

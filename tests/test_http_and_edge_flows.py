@@ -90,6 +90,8 @@ def test_terraform_storyboard_uses_valid_primary_without_unavailable_fallback(co
 
     story = reviewed_architecture("EC2").model_dump()
     story["references"] = ["https://registry.terraform.io/providers/hashicorp/aws/latest/docs"]
+    for scene in story["scenes"]:
+        scene["states"] = [{"actor": actor, "state": state} for actor, state in scene["states"].items()]
     session = Session(
         [
             Response(
@@ -165,6 +167,8 @@ def test_storyboard_semantic_failure_logs_only_safe_category(config, caplog):
 
     raw = reviewed_architecture("EC2").model_dump()
     raw["references"] = ["https://private-value.invalid/private-path"]
+    for scene in raw["scenes"]:
+        scene["states"] = [{"actor": actor, "state": state} for actor, state in scene["states"].items()]
     session = Session([Response(200, {"choices": [{"message": {"content": json.dumps(raw)}}]})])
     with pytest.raises(ExternalError, match="ai_unavailable_or_invalid"):
         AI(replace(config, groq_key="private-key"), HTTP(session)).structured(

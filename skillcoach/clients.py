@@ -78,7 +78,7 @@ class AI:
         self.config = config
         self.http = http or HTTP()
 
-    def ask_groq(self, prompt: str, budget: Budget) -> str:
+    def ask_groq(self, prompt: str, budget: Budget, *, schema=None) -> str:
         _, data = self.http.call(
             "POST",
             "https://api.groq.com/openai/v1/chat/completions",
@@ -95,6 +95,20 @@ class AI:
                     {"role": "user", "content": prompt},
                 ],
                 "max_tokens": 6000,
+                **(
+                    {
+                        "response_format": {
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": "storyboard",
+                                "strict": True,
+                                "schema": schema,
+                            },
+                        }
+                    }
+                    if schema is not None
+                    else {}
+                ),
             },
         )
         try:
@@ -134,7 +148,11 @@ class AI:
         return text
 
     def structured(self, prompt, model, budget: Budget, validate=None):
-        prompt += "\nReturn ONLY JSON matching this schema:\n" + json.dumps(model.model_json_schema())
+        from skillcoach.storyboard import Storyboard, canonical_response, response_schema
+
+        standard_prompt = (
+            prompt + "\nReturn ONLY JSON matching this schema:\n" + json.dumps(model.model_json_schema())
+        )
         for enabled, call, provider in (
             (self.config.groq_key, self.ask_groq, "groq"),
             (self.config.gemini_key, self.ask_gemini, "gemini"),
@@ -142,7 +160,20 @@ class AI:
             if not enabled:
                 continue
             try:
-                text = call(prompt, budget).strip()
+                if (
+                    provider == "groq"
+                    and model is Storyboard
+                    and self.config.groq_model
+                    in (
+                        "openai/gpt-oss-120b",
+                        "openai/gpt-oss-20b",
+                    )
+                ):
+                    schema = response_schema()
+                    wire_prompt = prompt + "\nReturn ONLY JSON matching this schema:\n" + json.dumps(schema)
+                    text = canonical_response(call(wire_prompt, budget, schema=schema))
+                else:
+                    text = call(standard_prompt, budget).strip()
                 if text.startswith("```") and text.endswith("```"):
                     text = text.split("\n", 1)[1].rsplit("```", 1)[0]
                 result = model.model_validate_json(text)
