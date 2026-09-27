@@ -266,9 +266,11 @@ def register_dashboard(app, runtime_factory):
     @app.post("/app/documents/confirm")
     def confirm_document():
         from skillcoach.admin_auth import AdminDenied
+        from skillcoach.clients import Budget, ExternalError
         from skillcoach.document_upload import confirm
         from skillcoach.documents import DocumentError
 
+        budget = Budget(20)
         try:
             runtime = runtime_factory()
             with runtime.repo.session():
@@ -279,12 +281,17 @@ def register_dashboard(app, runtime_factory):
                 if any(not isinstance(value, str) for value in body.values()):
                     raise DocumentError("Invalid document confirmation.")
                 result = confirm(runtime, identity, body["request_id"], body["confirmation"], body["choice"])
+                if result.get("queued") and not result.get("duplicate") and budget.remaining() >= 8:
+                    runtime.process_one(budget, document_job=f"document:{identity[0]}:{body['request_id']}")
+                    for _ in range(3):
+                        if not runtime.deliver_one(budget, media=False):
+                            break
             return jsonify(result)
         except (AdminDenied, DashboardDenied) as exc:
             return jsonify(error=str(exc)), 403
         except DocumentError as exc:
             return jsonify(error=str(exc)), 409
-        except (ConfigurationError, ValidationError, *STORAGE_ERRORS):
+        except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
             return jsonify(
                 error="Confirmation temporarily unavailable. Retry the same confirmation to check its result."
             ), 503

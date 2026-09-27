@@ -32,7 +32,9 @@ class Runtime:
     def from_env(cls, *, webhook=False):
         return cls(Config.from_env(webhook=webhook))
 
-    def process_one(self, budget: Budget, *, proposal_for: str | None = None) -> bool:
+    def process_one(
+        self, budget: Budget, *, proposal_for: str | None = None, document_job: str | None = None
+    ) -> bool:
         token = self.repo.acquire("domain", 60)
         if not token:
             return False
@@ -40,9 +42,13 @@ class Runtime:
         scoped = self.repo
         try:
             job = (
-                self.repo.next_job(token, proposal_for=proposal_for)
-                if proposal_for is not None
-                else self.repo.next_job(token)
+                self.repo.next_job(token, document_job=document_job)
+                if document_job is not None
+                else (
+                    self.repo.next_job(token, proposal_for=proposal_for)
+                    if proposal_for is not None
+                    else self.repo.next_job(token)
+                )
             )
             if job is None:
                 return False

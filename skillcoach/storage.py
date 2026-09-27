@@ -217,7 +217,9 @@ class Repository:
         if not row:
             raise LostLease("Worker lease expired; transaction not applied.")
 
-    def next_job(self, token: str, *, proposal_for: str | None = None) -> dict | None:
+    def next_job(
+        self, token: str, *, proposal_for: str | None = None, document_job: str | None = None
+    ) -> dict | None:
         with self.connection() as conn:
             self._fence(conn, "domain", token)
             conn.execute(
@@ -238,6 +240,10 @@ class Repository:
                 or row["payload"].get("action") != "propose"
             ):
                 # Do not jump ahead of another learner or turn a webhook into a media worker.
+                return None
+            if document_job is not None and (
+                row is None or row["id"] != document_job or row["payload"].get("type") != "document"
+            ):
                 return None
             if row:
                 conn.execute(

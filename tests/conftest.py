@@ -151,10 +151,14 @@ class MemoryRepository:
     def release(self, name, token):
         self.leases.pop(name, None)
 
-    def next_job(self, token, *, proposal_for=None):
+    def next_job(self, token, *, proposal_for=None, document_job=None):
         pending = [j for j in self.jobs.values() if j["status"] == "pending"]
         controls = [j for j in pending if j["payload"].get("text") in ("/pause", "/cancel", "/retry")]
         job = next(iter(controls or pending), None)
+        if document_job is not None and (
+            not job or job["id"] != document_job or job["payload"].get("type") != "document"
+        ):
+            return None
         if proposal_for is not None and (
             not job
             or job["id"] != proposal_for + ":next"

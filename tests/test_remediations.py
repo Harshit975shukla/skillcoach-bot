@@ -10,7 +10,7 @@ from test_flows import PROFILE, READINESS, RESUME, command
 from test_journey import callback, core_guide, proposal, shared_journey
 
 from skillcoach.documents import DocumentError
-from skillcoach.models import Profile, Readiness
+from skillcoach.models import Profile, Readiness, Task
 from skillcoach.timeutil import IST
 from skillcoach.web import create_app
 
@@ -149,6 +149,27 @@ def test_expired_lesson_recovery_reopens_only_unsent_parts_with_same_tasks(pg_re
 
     def seed(state):
         state.journey = journey
+        state.profile = Profile(**PROFILE)
+        state.tasks["prepared"] = Task(
+            id="prepared",
+            origin="lesson:4:0",
+            title="Prepared task",
+            detail="Original required work",
+            skill="Cloud",
+            assigned_date=old,
+            estimated_minutes=15,
+        )
+        state.tasks["completed"] = Task(
+            id="completed",
+            origin="lesson:3:0",
+            title="Completed task",
+            detail="Already completed work",
+            skill="Cloud",
+            assigned_date=old,
+            status="done",
+            completed_at=now - timedelta(hours=1),
+            actual_minutes=12,
+        )
         for i in range(5):
             state.lessons[f"lesson:{i}"] = {
                 "date": old.isoformat(),
@@ -175,10 +196,22 @@ def test_expired_lesson_recovery_reopens_only_unsent_parts_with_same_tasks(pg_re
         pg_repo.release("domain", token)
     with pg_repo.connection() as conn:
         conn.execute(
+            "INSERT INTO answer_keys(learner_id,session_id,question_id,job_id) VALUES (%s,'prior','q1',%s)",
+            (a.learner_id, key),
+        )
+        conn.execute(
             "UPDATE outbox SET status='sent',delivered_at=now(),attempts=1 WHERE id=%s", (key + ":0",)
         )
     bot.runtime.recover(media=False)  # The final old-date item is suppressed.
     before_b = b.read()
+    protected = a.read()[1].model_copy(deep=True)
+    with a.connection() as conn:
+        answers_before = conn.execute(
+            "SELECT * FROM answer_keys WHERE learner_id=%s", (a.learner_id,)
+        ).fetchall()
+        tasks_before = conn.execute(
+            "SELECT * FROM task_keys WHERE learner_id=%s ORDER BY id", (a.learner_id,)
+        ).fetchall()
     bot.input(101, "/pause")
     bot.input(101, "/recoverlesson")
     with pg_repo.connection() as conn:
@@ -195,6 +228,19 @@ def test_expired_lesson_recovery_reopens_only_unsent_parts_with_same_tasks(pg_re
         last = conn.execute("SELECT status,attempts FROM outbox WHERE id=%s", (key + ":1",)).fetchone()
         assert first == last == {"status": "sent", "attempts": 1}
     assert a.read()[1].lessons["lesson:4"]["delivered_at"]
+    assert a.read()[1].tasks == protected.tasks
+    assert a.read()[1].profile == protected.profile
+    with a.connection() as conn:
+        assert (
+            conn.execute("SELECT * FROM answer_keys WHERE learner_id=%s", (a.learner_id,)).fetchall()
+            == answers_before
+        )
+        assert (
+            conn.execute(
+                "SELECT * FROM task_keys WHERE learner_id=%s ORDER BY id", (a.learner_id,)
+            ).fetchall()
+            == tasks_before
+        )
     assert b.read() == before_b
     bot.input(101, callback="plan:plan-test:edit")
     bot.runtime.ai.responses.append(proposal())
@@ -298,7 +344,7 @@ def upload_api(pg_repo, config):
     return bot, scoped, client, headers
 
 
-def upload(client, headers, raw=None, ident=None):
+def upload(client, headers, raw=None, ident=None, name="resume.txt"):
     return client.post(
         "/app/documents/preview",
         base_url="https://localhost",
@@ -306,7 +352,7 @@ def upload(client, headers, raw=None, ident=None):
         data={
             "request_id": ident or str(uuid4()),
             "kind": "resume",
-            "file": (io.BytesIO(raw or RESUME.encode()), "resume.txt"),
+            "file": (io.BytesIO(raw or RESUME.encode()), name),
         },
     )
 
@@ -334,6 +380,7 @@ def test_upload_confirmation_replay_private_storage_and_other_learner_isolation(
     assert upload(client, headers, ident=ident).json == first.json
     assert upload(client, headers, raw=(RESUME + "different").encode(), ident=ident).status_code == 409
     assert confirm_upload(client, headers, first.json).json["queued"]
+    assert scoped.read()[1].profile.resume_text == RESUME.strip()  # No cron required when fair turn is ready.
     assert confirm_upload(client, headers, first.json).json["duplicate"]
     bot.runtime.recover(media=False)
     result = scoped.read()[1]
@@ -437,6 +484,26 @@ def test_document_confirm_concurrency_creates_one_job(upload_api):
             conn.execute("SELECT count(*) AS n FROM jobs WHERE payload->>'type'='document'").fetchone()["n"]
             == 1
         )
+
+
+@pytest.mark.postgres
+def test_authenticated_pdf_multipart_preview_cancel_and_invalid_files(upload_api):
+    from pypdf import PdfWriter
+
+    bot, scoped, client, headers = upload_api
+    before = scoped.read()
+    value = upload(client, headers, raw=pdf_bytes(), name="resume.pdf")
+    assert value.status_code == 200
+    assert confirm_upload(client, headers, value.json, "cancel").json["cancelled"]
+    writer = PdfWriter()
+    for _ in range(16):
+        writer.add_blank_page(500, 500)
+    oversized = io.BytesIO()
+    writer.write(oversized)
+    for data in (b"%PDF-broken", pdf_bytes(encrypted=True), pdf_bytes(text=""), oversized.getvalue()):
+        result = upload(client, headers, raw=data, name="resume.pdf")
+        assert result.status_code == 409 and "error" in result.json
+    assert scoped.read() == before
 
 
 @pytest.mark.postgres

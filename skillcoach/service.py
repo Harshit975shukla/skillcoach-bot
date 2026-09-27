@@ -569,6 +569,11 @@ class Service:
                 + "\n".join(f"{i}. {step}" for i, step in enumerate(task.steps, 1))
                 + f"\n/complete {ident} [actual_minutes]"
             )
+        if session is not None:
+            self.say(
+                "OPTIONAL EXTENSION PRACTICE (outside today's core time target; not counted as required tasks)\n\n"
+                + "\n\n".join(t.name + "\n" + t.goal + "\n" + "\n".join(t.steps) for t in lesson.tasks)
+            )
         self.say(
             "CLEANUP\n"
             + "\n".join(lesson.cleanup)
