@@ -30,6 +30,7 @@
         <a href="#today">Practice</a>
         <a href="#plan">Weekly plan</a>
         <a href="#progress">Progress</a>
+        <a href="#documents">Documents</a>
       </nav>
       <section id="today" aria-labelledby="tasks-heading">
         <div class="section-heading"><h2 id="tasks-heading">Your next practice</h2><span id="task-count"></span></div>
@@ -59,6 +60,32 @@
         <ul id="skills" class="skill-list"></ul>
         <h3>Recent interview feedback</h3>
         <ul id="interviews" class="interview-list"></ul>
+      </section>
+      <section id="documents" aria-labelledby="documents-heading">
+        <h2 id="documents-heading">Your private documents</h2>
+        <p class="section-description">Add or replace a resume or job description after setup. Your current plan stays
+          unchanged unless you request and approve a revised proposal. Completed lessons, tasks and grades are never reset.
+          Text is stored privately and used by the configured AI providers when you request feedback or planning; the admin cannot read it.</p>
+        <p id="document-status" role="status" aria-live="polite"></p>
+        <form id="document-form">
+          <label for="document-kind">Document type</label>
+          <select id="document-kind"><option value="resume">Resume</option><option value="jd">Job description</option></select>
+          <label for="document-file">Text PDF or UTF-8 TXT</label>
+          <input id="document-file" type="file" accept=".pdf,.txt" required aria-describedby="document-limits">
+          <p id="document-limits" class="section-description">Maximum 256 KB, 15 PDF pages and 16000 text characters.
+            Encrypted/scanned PDFs, images and DOCX are not supported. Files are parsed locally; no external OCR.</p>
+          <button id="document-preview-button" type="submit">Review upload</button>
+        </form>
+        <div id="document-preview" hidden>
+          <p id="document-preview-summary"></p>
+          <label for="document-choice">After saving</label>
+          <select id="document-choice">
+            <option value="keep">Keep my current plan</option>
+            <option value="revise">Propose changes to future sessions</option>
+          </select>
+          <button id="document-confirm" type="button">Confirm save</button>
+          <button id="document-cancel" type="button">Cancel upload</button>
+        </div>
       </section>
       <footer>
         <p id="preferences"></p>

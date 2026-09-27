@@ -57,6 +57,14 @@ class Draft(Model):
     answers: list[str] = Field(default_factory=list)
 
 
+class DocumentDraft(Model):
+    id: str
+    kind: Literal["resume", "jd"]
+    base_profile_hash: str
+    expires_at: datetime
+    text: str = ""
+
+
 class Question(Model):
     question: Text
     options: dict[Choice, Short]
@@ -175,7 +183,7 @@ class WeekPlan(Model):
 class State(Model):
     profile: Profile | None = None
     draft: Draft | None = None
-    focus: Literal["draft", "assessment", "interview", "onboarding"] | None = None
+    focus: Literal["draft", "assessment", "interview", "onboarding", "document"] | None = None
     active_assessment: str | None = None
     active_interview: str | None = None
     paused: bool = False
@@ -192,8 +200,15 @@ class State(Model):
     imports: list[str] = Field(default_factory=list)
     legacy_archive: dict = Field(default_factory=dict)
     journey: Journey | None = None
+    document_draft: DocumentDraft | None = None
 
     def target(self) -> dict | None:
+        if self.focus == "document" and self.document_draft:
+            return {
+                "kind": "document",
+                "session": self.document_draft.id,
+                "question": self.document_draft.kind,
+            }
         if self.focus == "onboarding" and self.journey:
             return self.journey.target()
         if self.focus == "draft" and self.draft:

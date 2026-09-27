@@ -61,6 +61,14 @@ code { font-family: ui-monospace, "Cascadia Mono", monospace; font-size: .875em;
 .plan-date { color: var(--muted); font-size: .9rem; }
 .plan-topic { font-weight: 550; overflow-wrap: anywhere; }
 .plan-list .plan-detail { grid-column: 1 / -1; overflow-wrap: anywhere; color: var(--muted); font-size: .94rem; }
+#documents label { display: block; margin: 15px 0 6px; font-weight: 650; }
+#documents select, #documents input { max-width: 100%; width: 100%; font: inherit; min-height: 44px;
+  color: var(--ink); background: var(--surface); border: 1px solid var(--line); padding: 10px; border-radius: 6px; }
+#documents input:focus-visible, #documents select:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+#document-preview { margin-top: 20px; padding: 18px; background: var(--soft); }
+#document-preview button { margin-top: 12px; }
+#document-status { overflow-wrap: anywhere; }
+.sections { overflow-x: auto; }
 .metrics { display: grid; grid-template-columns: repeat(4, 1fr); margin: 20px 0 12px; gap: 20px; }
 .metrics dt { color: var(--muted); font-size: .875rem; }
 .metrics dd { margin: 6px 0 0; font-size: 1.35rem; font-weight: 650; }

@@ -68,6 +68,16 @@ def authorized_update(update, owner: int | None = None):
 def create_app(runtime=None):
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 128 * 1024
+
+    @app.before_request
+    def upload_limit():
+        if request.path == "/app/documents/preview":
+            request.max_content_length = 280 * 1024
+
+    @app.errorhandler(413)
+    def content_too_large(error):
+        return jsonify(error="Request is too large. Document files must be at most 256 KB."), 413
+
     from skillcoach.admin import register_admin
     from skillcoach.dashboard import register_dashboard
 

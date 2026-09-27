@@ -1,5 +1,50 @@
 # SkillCoach Bot
 
+## Safe learning updates and missed lessons
+
+`/recoverlesson` (or the specific unfinished-day button in `/plan`) explicitly resumes only unsent
+parts of an existing approved lesson. It does not regenerate content or create tasks again, never
+reopens confirmed sent items, respects pause/access generation, and refreshes the intended delivery
+date for those unsent parts. Use `/unpause` first if paused. Next-week approval still requires the
+actual final delivery marker; expired/suppressed content is not silently treated as delivered.
+
+Plan revisions preserve the latest validated profile and reassessment, including its provenance and
+documents. Only first onboarding approval initializes the profile from the initial diagnostic.
+Guided diagnostic completion counts as one practice day, without invented minutes or task completion.
+Migration 007 repairs prior completed diagnostics only with all five answer receipts, a matching saved
+rating, and an identifiable successful completion notice bounding the completion to the same IST date
+as the final submitted answer. Failure notices do not count; ambiguous cross-date histories are left alone.
+
+Approved session objectives, practice and level now produce a separate bounded core study section:
+15/30/45/60-minute targets allocate 5/10/15/20 minutes to reading/video review and respectively
+one/two/three/four required exercises totaling the remaining time. Estimates are validated, not logged
+as actual practice. The full reference and all videos remain available for optional deeper study.
+Changing pace never rewrites already prepared or completed tasks.
+
+### Private resume and job-description updates
+
+Use `/updateresume` or `/updatejd`, paste text, then explicitly confirm **Keep current plan** or
+**Propose future changes**. To switch from a Telegram paste prompt to upload, `/cancel` the prompt
+before opening `/dashboard`. The personal dashboard supports UTF-8 TXT and text-based PDF uploads:
+256 KB maximum, 15 PDF pages, 16000 extracted characters. Resume text must have at least 80 characters
+and job descriptions at least 50. Encrypted/scanned PDFs, images, DOCX and non-UTF-8 text fail explicitly.
+PDFs are processed locally in a short-lived bounded process (8-second wall limit; Linux CPU/address-space
+limits), without external OCR or persisted original files. Parser failures do not replace saved documents.
+
+Dashboard uploads require fresh verified Telegram launch data/current membership, same-origin POST,
+CSRF, and a five-minute preview bound to the document/session/profile/access generation. Confirmation
+is transactional and idempotent. Replays cannot create another update; changes during parsing or before
+processing cannot overwrite a newer profile. Preview text is cleared after confirmation/cancellation
+or expiry cleanup; raw filenames and document content are never returned to admin views or logged.
+The original valid profile remains until a confirmed update is processed. **No reset-all option exists.**
+Future-session changes produce another learner-approved proposal while the current plan continues.
+Changing a document invalidates stale resume/JD alignment, not newer tested diagnostic scores.
+
+This release needs private migrations 007 and 008 and restricted-role grants before new routes are
+used. Back up both learners, quiesce old writers, apply the reviewed upgrade, then promote the matching
+code and restore scheduling. The intentional state difference is only proven diagnostic activity;
+all existing plans, tasks, documents, grades and answer receipts must remain unchanged.
+
 An owner-approved Telegram interview coach: **full lessons and animated videos by default**, personalized plans, tracked practice tasks, five-question daily quizzes, ten-question weekly assessments, and question-first interviews. Vercel handles authenticated webhooks; GitHub Actions owns scheduled coaching and recovery. Private PostgreSQL is the only authoritative state store.
 
 ## Request access, guided setup and learner-owned plans

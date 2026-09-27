@@ -31,6 +31,7 @@ TABLES = (
     "admin_sessions",
     "admin_requests",
     "admin_audit",
+    "learner_document_requests",
 )
 log = logging.getLogger(__name__)
 
@@ -198,11 +199,12 @@ def upgrade_existing(admin_url: str):
         ).fetchone()
         if not role or role["marker"] != ROLE_MARKER:
             raise ValueError("The existing runtime role is not recognized; no automatic grant changes.")
+        expected = expected_activity_repair(conn, owner)
     before = hashlib.sha256(json.dumps(owner, sort_keys=True, default=str).encode()).hexdigest()
     admin.migrate()
     with admin.connection() as conn:
         after = conn.execute("SELECT body,revision,displayed_target FROM coach_state WHERE id=1").fetchone()
-        if hashlib.sha256(json.dumps(after, sort_keys=True, default=str).encode()).hexdigest() != before:
+        if after != expected:
             raise ValueError(
                 "Owner state changed during upgrade; keep writers stopped and inspect the backup."
             )
@@ -218,8 +220,47 @@ def upgrade_existing(admin_url: str):
             )
         )
     return {
-        "owner_state_preserved": True,
+        "owner_state_preserved": after == owner,
+        "only_evidence_based_activity_correction": after != owner,
         "owner_state_sha256": before,
         "runtime_password_changed": False,
         "schema": admin.schema,
     }
+
+
+def expected_activity_repair(conn, owner):
+    """Predict only migration 007's proven activity correction, never allow arbitrary state changes."""
+    import copy
+
+    expected = copy.deepcopy(owner)
+    journey = owner["body"].get("journey")
+    if (
+        not journey
+        or journey.get("diagnostic_practice_date")
+        or conn.execute("SELECT 1 FROM schema_migrations WHERE version=7").fetchone()
+    ):
+        return expected
+    row = conn.execute(
+        "SELECT min(o.delivered_at AT TIME ZONE 'Asia/Kolkata')::date AS delivered, "
+        "min(j.created_at AT TIME ZONE 'Asia/Kolkata')::date AS submitted "
+        "FROM coach_state c JOIN answer_keys a ON a.learner_id=c.learner_id "
+        "AND a.session_id=c.body->'journey'->>'id' AND a.question_id='diagnostic-4' "
+        "JOIN jobs j ON j.id=a.job_id AND j.status='done' "
+        "JOIN ai_results r ON r.job_id=j.id AND r.operation='journey-rating' "
+        "JOIN outbox o ON o.job_id=j.id AND o.status='sent' AND o.delivered_at IS NOT NULL "
+        "AND o.body->>'kind'='text' AND o.body->>'text' LIKE 'Your five diagnostic answers are saved.%' "
+        "AND NOT coalesce((o.body->>'recovery_notice')::boolean,false) "
+        "WHERE c.id=1 AND jsonb_array_length(c.body->'journey'->'diagnostic_answers')=5 "
+        "AND c.body->'journey'->'diagnostic_rating'=r.body "
+        "AND (SELECT count(*) FROM answer_keys k WHERE k.learner_id=c.learner_id "
+        "AND k.session_id=a.session_id AND k.question_id IN "
+        "('diagnostic-0','diagnostic-1','diagnostic-2','diagnostic-3','diagnostic-4'))=5"
+    ).fetchone()
+    if row and row["delivered"] and row["delivered"] == row["submitted"]:
+        day = row["delivered"].isoformat()
+        expected["body"]["journey"]["diagnostic_practice_date"] = day
+        dates = expected["body"].setdefault("activity", [])
+        if day not in dates:
+            dates.append(day)
+        expected["revision"] += 1
+    return expected

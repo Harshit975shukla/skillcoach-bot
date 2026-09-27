@@ -14,6 +14,12 @@ from skillcoach.timeutil import IST, monday
 MAX_AUTH_AGE = 300
 
 
+def learner_csrf(auth_hash, config):
+    return hmac.new(
+        config.webhook_secret.encode(), ("learner-documents:" + auth_hash).encode(), hashlib.sha256
+    ).hexdigest()
+
+
 class DashboardDenied(ValueError):
     pass
 
@@ -127,6 +133,11 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
         "generated_at": now.isoformat(),
         "auth_expires_at": issued + MAX_AUTH_AGE,
         "private": True,
+        "documents": {
+            "resume_saved": bool(profile and profile.resume_text),
+            "jd_saved": bool(profile and profile.jd_text),
+            "can_update": profile is not None and state.focus is None,
+        },
         "learning": {
             "stage": journey.stage if journey else "legacy",
             "shared": bool(journey and journey.consent_at),
@@ -188,11 +199,95 @@ def register_dashboard(app, runtime_factory):
             data["bot_url"] = (
                 f"https://t.me/{runtime.config.bot_username}" if runtime.config.bot_username else None
             )
+            data["document_csrf"] = learner_csrf(digest, runtime.config)
             return jsonify(data)
         except DashboardDenied as exc:
             return jsonify(error=str(exc)), 403
         except (ConfigurationError, ValidationError, *STORAGE_ERRORS):
             return jsonify(error="Private progress is temporarily unavailable. Try Refresh shortly."), 503
+
+    def document_identity(runtime):
+        from skillcoach.admin_auth import same_origin
+
+        same_origin(request)
+        if request.args:
+            raise DashboardDenied("Document requests cannot contain URL parameters.")
+        raw = request.headers.get("X-Telegram-Init-Data", "")
+        actor, issued = verify_init_data(raw, runtime.config.telegram_token, int(runtime.clock().timestamp()))
+        digest = hashlib.sha256(raw.encode()).hexdigest()
+        if not hmac.compare_digest(
+            request.headers.get("X-CSRF-Token", ""), learner_csrf(digest, runtime.config)
+        ):
+            raise DashboardDenied("Refresh your personal dashboard before uploading.")
+        # This also binds old launch data to the membership generation across revocation.
+        learner_view(runtime.repo, actor, issued, runtime.clock(), digest)
+        with runtime.repo.connection() as conn:
+            row = conn.execute(
+                "SELECT learner_id,access_generation FROM dashboard_sessions WHERE auth_hash=%s", (digest,)
+            ).fetchone()
+        return row["learner_id"], row["access_generation"], digest
+
+    @app.post("/app/documents/preview")
+    def preview_document():
+        from skillcoach.admin_auth import AdminDenied
+        from skillcoach.document_upload import preview
+        from skillcoach.documents import MAX_FILE, DocumentError
+
+        try:
+            runtime = runtime_factory()
+            with runtime.repo.session():
+                identity = document_identity(runtime)
+                if set(request.form) != {"request_id", "kind"} or set(request.files) != {"file"}:
+                    raise DocumentError("Choose one PDF/TXT file and its document type.")
+                if (
+                    any(len(request.form.getlist(key)) != 1 for key in request.form)
+                    or len(request.files.getlist("file")) != 1
+                ):
+                    raise DocumentError("Duplicate upload fields are not supported.")
+                file = request.files["file"]
+                result = preview(
+                    runtime,
+                    identity,
+                    request.form["request_id"],
+                    request.form["kind"],
+                    file.stream.read(MAX_FILE + 1),
+                    file.filename or "",
+                )
+            return jsonify(result)
+        except (AdminDenied, DashboardDenied) as exc:
+            return jsonify(error=str(exc)), 403
+        except DocumentError as exc:
+            return jsonify(error=str(exc)), 409
+        except (ConfigurationError, ValidationError, *STORAGE_ERRORS):
+            return jsonify(
+                error="Upload temporarily unavailable. Retry with the same request, not a duplicate confirmation."
+            ), 503
+
+    @app.post("/app/documents/confirm")
+    def confirm_document():
+        from skillcoach.admin_auth import AdminDenied
+        from skillcoach.document_upload import confirm
+        from skillcoach.documents import DocumentError
+
+        try:
+            runtime = runtime_factory()
+            with runtime.repo.session():
+                identity = document_identity(runtime)
+                body = request.get_json(silent=True)
+                if not isinstance(body, dict) or set(body) != {"request_id", "confirmation", "choice"}:
+                    raise DocumentError("Unexpected confirmation fields.")
+                if any(not isinstance(value, str) for value in body.values()):
+                    raise DocumentError("Invalid document confirmation.")
+                result = confirm(runtime, identity, body["request_id"], body["confirmation"], body["choice"])
+            return jsonify(result)
+        except (AdminDenied, DashboardDenied) as exc:
+            return jsonify(error=str(exc)), 403
+        except DocumentError as exc:
+            return jsonify(error=str(exc)), 409
+        except (ConfigurationError, ValidationError, *STORAGE_ERRORS):
+            return jsonify(
+                error="Confirmation temporarily unavailable. Retry the same confirmation to check its result."
+            ), 503
 
     @app.after_request
     def private_headers(response):

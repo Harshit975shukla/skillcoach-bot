@@ -320,13 +320,57 @@ class Repository:
                     (f"{job}:{index}", job, Jsonb(body), self.learner_id, authorized["access_generation"]),
                 )
             if isinstance(control, dict):
-                if control.get("type") != "journey" or control.get("action") not in ("propose", "lesson"):
+                if control.get("type") == "recover_lesson":
+                    from skillcoach.journey import approved_plan
+
+                    plan = approved_plan(state)
+                    if (
+                        state.paused
+                        or not plan
+                        or plan.id != control["plan_id"]
+                        or not any(d.lesson_key == control["lesson_key"] for d in plan.sessions)
+                    ):
+                        raise ValueError("Lesson recovery no longer authorized")
+                    conn.execute(
+                        "UPDATE outbox o SET status='pending',attempts=0,error_code=NULL,available_at=now(), "
+                        "body=o.body || jsonb_build_object('scheduled_date',%s::text,'journey_plan_id',%s::text,"
+                        "'journey_lesson_key',%s::text) "
+                        "FROM jobs j WHERE j.id=o.job_id AND j.status='done' AND j.learner_id=%s "
+                        "AND j.access_generation=%s AND o.learner_id=j.learner_id "
+                        "AND o.access_generation=j.access_generation AND o.status IN ('suppressed','failed') "
+                        "AND NOT coalesce((o.body->>'recovery_notice')::boolean,false) "
+                        "AND o.body->>'kind' IN ('text','media') AND NOT o.body ? 'target' "
+                        "AND EXISTS(SELECT 1 FROM outbox last WHERE last.job_id=j.id "
+                        "AND last.learner_id=j.learner_id AND last.body->>'lesson_key'=%s)",
+                        (
+                            control["date"],
+                            plan.id,
+                            control["lesson_key"],
+                            self.learner_id,
+                            authorized["access_generation"],
+                            control["lesson_key"],
+                        ),
+                    )
+                    # Pending parts may also have passed their old scheduled date.
+                    conn.execute(
+                        "UPDATE outbox SET body=body || jsonb_build_object('scheduled_date',%s::text) "
+                        "WHERE learner_id=%s AND access_generation=%s AND status='pending' "
+                        "AND body->>'journey_lesson_key'=%s",
+                        (
+                            control["date"],
+                            self.learner_id,
+                            authorized["access_generation"],
+                            control["lesson_key"],
+                        ),
+                    )
+                elif control.get("type") != "journey" or control.get("action") not in ("propose", "lesson"):
                     raise ValueError("Unsupported transactional follow-up")
-                conn.execute(
-                    "INSERT INTO jobs(id,payload,learner_id,access_generation) VALUES (%s,%s,%s,%s) "
-                    "ON CONFLICT DO NOTHING",
-                    (job + ":next", Jsonb(control), self.learner_id, authorized["access_generation"]),
-                )
+                else:
+                    conn.execute(
+                        "INSERT INTO jobs(id,payload,learner_id,access_generation) VALUES (%s,%s,%s,%s) "
+                        "ON CONFLICT DO NOTHING",
+                        (job + ":next", Jsonb(control), self.learner_id, authorized["access_generation"]),
+                    )
             elif control == "retry":
                 conn.execute(
                     "UPDATE jobs SET status='pending', attempts=0, available_at=now() "

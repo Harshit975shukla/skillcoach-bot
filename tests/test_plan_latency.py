@@ -6,7 +6,7 @@ import pytest
 from conftest import FakeAI, FakePublisher, FakeTelegram
 from psycopg.pq import TransactionStatus
 from test_flows import READINESS, command
-from test_journey import proposal, setup, shared_journey
+from test_journey import core_guide, proposal, setup, shared_journey
 
 from skillcoach.clients import Budget, ExternalError
 from skillcoach.runtime import Runtime
@@ -273,10 +273,11 @@ def test_day_one_preflight_and_single_recovery_run_send_full_lesson(pg_repo, con
 
     monkeypatch.setattr("skillcoach.runtime.deliver_storyboard", render)
     runtime = Runtime(config, pg_repo, FakeAI(), FakeTelegram(), FakePublisher(), lambda: now)
+    runtime.ai.responses.append(core_guide())
     runtime.recover(media=pg_repo.needs_media())
     assert len(videos) == 5 and all(not b["voice"] for b in videos)
     state = pg_repo.read()[1]
-    assert len(state.tasks) == 3
+    assert len(state.tasks) == 2
     assert all(lesson["delivered_at"] for lesson in state.lessons.values())
     with pg_repo.connection() as conn:
         assert conn.execute("SELECT status FROM jobs WHERE id='day-one'").fetchone()["status"] == "done"

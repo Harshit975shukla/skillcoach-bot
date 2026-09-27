@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdtemp, writeFile, rm, rmdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import puppeteer from "puppeteer";
 
 let denied = false;
+let uploadPreviews = 0, uploadConfirms = 0;
 const fixture = {
   profile: {name: "Synthetic learner", target_role: "Platform engineer", level: "intermediate", setup_complete: true},
   stats: {done: 4, pending: 2, total: 6, streak: 2, minutes_practiced: 65, answers_graded: 1},
@@ -22,11 +24,31 @@ const fixture = {
                        feedback: "Separate instance status from application health."}],
   generated_at: new Date().toISOString(), auth_expires_at: Math.floor(Date.now() / 1000) + 300, private: true,
   bot_url: "https://t.me/SkillCoachTestBot",
+  document_csrf: "synthetic-csrf",
+  documents: {resume_saved: false, jd_saved: false, can_update: true},
   learning: {stage: "ready", shared: true, plan: {id: "private-plan", version: 1, approved: false, minutes: 30,
     rationale: "Your initial diagnostic supports practice on the fundamentals.",
     sessions: [{day: 1, date: "2026-09-28", topic: "AWS EC2", objective: "Explain health checks", practice: "Draw the flow"}]}},
 };
 const server = createServer(async (request, response) => {
+  if (request.url.startsWith("/app/documents/")) {
+    assert.equal(request.headers["x-csrf-token"], "synthetic-csrf");
+    assert.equal(request.headers["x-telegram-init-data"], "synthetic-signed-launch");
+    assert.equal(request.headers.cookie, undefined);
+    let raw = ""; for await (const chunk of request) raw += chunk;
+    response.writeHead(200, {"Content-Type": "application/json", "Cache-Control": "no-store"});
+    if (request.url.endsWith("/preview")) {
+      uploadPreviews++;
+      response.end(JSON.stringify({request_id: "synthetic-id", confirmation: "synthetic-token",
+        characters: 150, kind: "resume", can_revise: true, status: "ready"}));
+    } else {
+      uploadConfirms++;
+      const body = JSON.parse(raw);
+      assert.equal(body.confirmation, "synthetic-token");
+      response.end(JSON.stringify({queued: body.choice !== "cancel", cancelled: body.choice === "cancel"}));
+    }
+    return;
+  }
   if (request.url === "/app/data") {
     response.writeHead(denied ? 403 : 200, {"Content-Type": "application/json", "Cache-Control": "no-store"});
     response.end(JSON.stringify(denied ? {error: "Access was revoked. Reopen from Telegram."} : fixture));
@@ -45,6 +67,9 @@ const browser = await puppeteer.launch({
   executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   headless: true, args: process.platform === "linux" ? ["--no-sandbox"] : [],
 });
+const uploadFolder = await mkdtemp(join(tmpdir(), "skillcoach-upload-test-"));
+const uploadPath = join(uploadFolder, "synthetic-resume.txt");
+await writeFile(uploadPath, "Synthetic experience, projects and skills. ".repeat(5));
 try {
   for (const [label, width] of [["mobile", 390], ["desktop", 1100]]) {
     const page = await browser.newPage();
@@ -67,6 +92,54 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     if (process.env.DASHBOARD_SCREENSHOT_DIR) {
       await page.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, `dashboard-${label}.png`), fullPage: true});
+    }
+    await (await page.$("#document-file")).uploadFile(uploadPath);
+    await page.click("#document-preview-button");
+    await page.waitForFunction(() => !document.getElementById("document-preview").hidden);
+    assert.equal(await page.$eval("#document-choice", e => e.value), "keep");
+    const beforeConfirm = uploadConfirms;
+    await page.$eval("#document-confirm", e => { e.click(); e.click(); });
+    await page.waitForFunction(() => document.getElementById("document-status").textContent.includes("queued"));
+    assert.equal(uploadConfirms, beforeConfirm + 1);
+    assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+    for (const step of ["preview", "confirm"]) {
+      await (await page.$("#document-file")).uploadFile(uploadPath);
+      if (step === "confirm") {
+        await page.click("#document-preview-button");
+        await page.waitForFunction(() => !document.getElementById("document-preview").hidden);
+      }
+      await page.evaluate(step => {
+        const original = window.fetch;
+        window.fetch = (url, options) => {
+          if (url === "/app/documents/" + step) {
+            window.fetch = original;
+            return new Promise(resolve => { window.pendingUpload = resolve; });
+          }
+          return original(url, options);
+        };
+        document.getElementById(step === "preview" ? "document-preview-button" : "document-confirm").click();
+      }, step);
+      await page.waitForFunction(() => typeof window.pendingUpload === "function");
+      // Normal refresh must not invalidate an active upload or strand disabled controls.
+      await page.$eval("#refresh", e => e.click());
+      await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", {configurable: true, value: true});
+        document.dispatchEvent(new Event("visibilitychange"));
+        window.pendingUpload({ok: true, json: async () => ({request_id: "stale", confirmation: "stale",
+          characters: 999, can_revise: true, queued: true})});
+        delete window.pendingUpload;
+      });
+      await new Promise(resolve => setTimeout(resolve, 30));
+      assert.equal(await page.$eval("#document-preview", e => e.hidden), true);
+      assert.equal(await page.$eval("#document-preview-summary", e => e.textContent), "");
+      await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", {configurable: true, value: false});
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await page.waitForFunction(() => !document.getElementById("content").hidden);
+      assert.equal(await page.$eval("#document-file", e => e.disabled), false);
+      assert.equal(await page.$eval("#document-kind", e => e.disabled), false);
+      assert.equal(await page.$eval("#document-confirm", e => e.disabled), false);
     }
     fixture.profile.name = "<img src=x onerror='window.pwned=true'>";
     await page.click("#refresh");
@@ -112,4 +185,6 @@ try {
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));
+  await rm(uploadPath);
+  await rmdir(uploadFolder);
 }

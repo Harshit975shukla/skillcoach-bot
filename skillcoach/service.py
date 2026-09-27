@@ -64,6 +64,10 @@ class Service:
             from skillcoach.journey import Learning
 
             Learning(self).run_job()
+        elif self.payload["type"] == "document":
+            from skillcoach.documents import Documents
+
+            Documents(self).job()
         elif self.payload["type"] == "import":
             from skillcoach.migration import import_snapshot
 
@@ -413,7 +417,7 @@ class Service:
             + "\n\nUse /interview next for another round.",
         )
 
-    def lesson(self, topic: str, day: date):
+    def lesson(self, topic: str, day: date, *, session=None, study_plan=None):
         from lesson_content import get_concept_diagrams, get_lesson
         from skillcoach.catalog import find_topic
         from skillcoach.lessons import architecture
@@ -447,6 +451,22 @@ class Service:
                 Lesson,
             )
         )
+        tasks = lesson.tasks
+        if session is not None and study_plan is not None:
+            from skillcoach.pacing import build_session
+
+            guide, reading = build_session(self, lesson, session, study_plan)
+            tasks = guide.tasks
+            self.say(
+                f"YOUR {study_plan.minutes}-MINUTE CORE SESSION ({study_plan.level})\n"
+                f"Approved objective: {session.objective}\nApproved practice: {session.practice}\n"
+                f"Read/review: {reading} minutes; required exercises: {study_plan.minutes - reading} minutes.\n"
+                "These are estimates, not recorded practice time.\n\n" + guide.explanation
+            )
+            self.say(
+                "FULL REFERENCE AND VIDEOS\nThe complete lesson follows for reference and optional deeper study. "
+                "Focus first on the core session and the required tasks matched to your time budget."
+            )
         self.say(f"{lesson.title}\n{day.isoformat()}\n\nWHY\n{lesson.why}\n\nWHAT\n{lesson.what}")
         diagrams = get_concept_diagrams(topic)
         for index, concept in enumerate(lesson.concepts):
@@ -525,14 +545,21 @@ class Service:
             architecture_message["caption"] += " (study-workflow diagram)"
         self.messages.append(architecture_message)
         self.say("SAFE LAB PREREQUISITES AND COST\n" + lesson.safety)
-        for index, task in enumerate(lesson.tasks):
+        for index, task in enumerate(tasks):
             origin = f"{key}:{index}"
             ident = stable_id("task:" + origin)
             self.state.tasks[ident] = Task(
                 id=ident,
                 origin=origin,
                 title=task.name,
-                detail=task.goal + "\n" + "\n".join(task.steps),
+                detail=(
+                    f"Approved objective: {session.objective}\nApproved practice: {session.practice}\n"
+                    if session is not None
+                    else ""
+                )
+                + task.goal
+                + "\n"
+                + "\n".join(task.steps),
                 skill=topic_key(topic),
                 assigned_date=day,
                 estimated_minutes=task.minutes,
@@ -653,14 +680,18 @@ class Service:
             body["scheduled_date"] = day.isoformat()
 
     def telegram(self):
+        from skillcoach.documents import Documents
         from skillcoach.journey import Learning
 
         learning = Learning(self)
+        documents = Documents(self)
         text = self.payload.get("text", "").strip()
         callback = self.payload.get("callback")
         if callback:
             pieces = callback.split(":")
-            if pieces[0] in ("j", "plan", "understand", "helpplan", "suggestion"):
+            if pieces[0] == "doc" and len(pieces) == 3:
+                documents.confirm(pieces[1], pieces[2])
+            elif pieces[0] in ("j", "plan", "understand", "helpplan", "suggestion", "recover"):
                 learning.callback(callback)
             elif callback == "onboard:start":
                 learning.begin()
@@ -682,6 +713,8 @@ class Service:
                 self.say(
                     "There is no matching active question for that message. Use /help or the newest prompt."
                 )
+            elif self.state.focus == "document":
+                documents.input(text)
             elif self.state.focus == "onboarding":
                 learning.input(text, target)
             elif self.state.focus == "draft":
@@ -705,6 +738,13 @@ class Service:
                 self.say(help_text(admin=self.repo.is_owner))
         elif cmd == "onboard":
             learning.begin()
+        elif cmd in ("updateresume", "updatejd"):
+            documents.begin("resume" if cmd == "updateresume" else "jd")
+        elif cmd == "recoverlesson":
+            if arg:
+                self.say("Use /recoverlesson without arguments, or the specific recovery button in /plan.")
+            else:
+                learning.recover_lesson()
         elif cmd == "plan":
             if arg:
                 self.say("Use /plan without arguments, then choose an action on the current version.")
@@ -782,6 +822,8 @@ class Service:
         elif cmd == "q":
             self.answer_assessment(arg, self.payload.get("target"))
         elif cmd == "cancel":
+            if self.state.document_draft:
+                self.state.document_draft = None
             if self.state.journey:
                 journey = self.state.journey
                 if journey.active_id:
@@ -906,7 +948,9 @@ class Service:
             self.interview("your target role and recent gaps" if arg in ("", "next") else arg)
         elif cmd == "resume":
             if not self.state.profile or not self.state.profile.resume_text:
-                self.say("No resume stored. Use /setup to supply your actual resume.")
+                self.say(
+                    "No resume stored. Use /updateresume or upload it in /dashboard after profile setup."
+                )
             else:
                 result = self.structured(
                     "resume-feedback",

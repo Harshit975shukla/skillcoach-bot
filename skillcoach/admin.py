@@ -45,6 +45,9 @@ OWNER_COMMANDS = {
         "pace",
         "level",
         "request",
+        "updateresume",
+        "updatejd",
+        "recoverlesson",
     }
 }
 ACTIONS = {
@@ -185,7 +188,9 @@ def _validate_action(conn, action, target, arguments, config, now):
                     "Choose the learner's current shared approved plan, without a pending revision."
                 )
             if state.paused:
-                raise AdminConflict("This learner paused coaching. Do not send a plan suggestion while paused.")
+                raise AdminConflict(
+                    "This learner paused coaching. Do not send a plan suggestion while paused."
+                )
             if args["topic_id"] not in TOPICS:
                 raise AdminDenied("Choose an exact topic ID from the catalog.")
             if state.journey.suggestion and state.journey.suggestion.status == "pending":

@@ -36,6 +36,23 @@ def proposal():
     }
 
 
+def core_guide(minutes=30):
+    count = {15: 1, 30: 2, 45: 3, 60: 4}[minutes]
+    budget = minutes - {15: 5, 30: 10, 45: 15, 60: 20}[minutes]
+    return {
+        "explanation": f"Core study for {minutes} minutes: explain and apply the approved concept.",
+        "tasks": [
+            {
+                "name": f"Core exercise {i}",
+                "goal": "Apply the approved practice",
+                "steps": [f"Draw and explain scenario {i}; compare alternatives."],
+                "minutes": budget // count,
+            }
+            for i in range(count)
+        ],
+    }
+
+
 def callback(h, data, *, drain=True):
     key = f"callback:{len(h.repo.jobs) + 1}"
     h.repo.enqueue(key, {"type": "telegram", "callback": data})
@@ -150,8 +167,9 @@ def test_start_now_and_weekday_schedule_do_not_duplicate_day_one(harness):
     h.clock.now = datetime(2026, 9, 28, 8, tzinfo=IST)
     setup(h)
     ident = finish_setup(h)
+    h.ai.responses.append(core_guide())
     callback(h, f"plan:{ident}:now")
-    assert len(h.repo.state.lessons) == 1 and len(h.repo.state.tasks) == 3
+    assert len(h.repo.state.lessons) == 1 and len(h.repo.state.tasks) == 2
     before = h.repo.state.model_copy(deep=True)
     h.clock.now = datetime(2026, 9, 28, 9, tzinfo=IST)
     h.repo.enqueue("scheduled", {"type": "schedule", "kind": "lesson", "date": "2026-09-28"})
@@ -416,11 +434,12 @@ def test_real_new_learner_flow_concurrent_approval_and_completed_history(pg_repo
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert list(pool.map(approve, range(2))) == ["queued", "queued"]
+    bot.runtime.ai.responses.append(core_guide(15))
     bot.runtime.recover(media=False)
     state = scoped.read()[1]
     assert state.profile.years_experience == 0 and state.profile.skills == []
     assert state.profile.resume_text == state.profile.jd_text == ""
-    assert len(state.lessons) == 1 and len(state.tasks) == 3
+    assert len(state.lessons) == 1 and len(state.tasks) == 1
     with pg_repo.connection() as conn:
         assert (
             conn.execute(
@@ -443,6 +462,7 @@ def test_revision_preserves_prepared_sessions_and_requires_real_delivery_for_und
     h.clock.now = datetime(2026, 9, 28, 8, tzinfo=IST)
     setup(h)
     first = finish_setup(h)
+    h.ai.responses.append(core_guide())
     callback(h, f"plan:{first}:now")
     prepared = h.repo.state.journey.plans[first].sessions[0].model_copy(deep=True)
     tasks = h.repo.state.tasks.copy()
@@ -490,6 +510,7 @@ def test_existing_approved_plan_keeps_running_and_stale_revision_is_reconciled(h
     assert h.repo.state.journey.plans[candidate].replaces_plan_id == first
     h.clock.now = datetime(2026, 9, 28, 9, tzinfo=IST)
     h.repo.enqueue("day1", {"type": "schedule", "kind": "lesson", "date": "2026-09-28"})
+    h.ai.responses.append(core_guide())
     h.runtime.recover(media=False)
     assert len(h.repo.state.lessons) == 1
     assert h.repo.state.journey.active_id == first and h.repo.state.journey.proposed_id == candidate
@@ -500,7 +521,7 @@ def test_existing_approved_plan_keeps_running_and_stale_revision_is_reconciled(h
     assert j.plans[j.proposed_id].sessions[0] == prepared
     callback(h, f"plan:{j.proposed_id}:approve")
     assert h.repo.state.journey.active_id != first
-    assert len(h.repo.state.lessons) == 1 and len(h.repo.state.tasks) == 3
+    assert len(h.repo.state.lessons) == 1 and len(h.repo.state.tasks) == 2
 
 
 def test_old_understanding_button_maps_only_to_exact_carried_lesson(harness):
@@ -508,6 +529,7 @@ def test_old_understanding_button_maps_only_to_exact_carried_lesson(harness):
     h.clock.now = datetime(2026, 9, 28, 8, tzinfo=IST)
     setup(h)
     first = finish_setup(h)
+    h.ai.responses.append(core_guide())
     callback(h, f"plan:{first}:now")
     key = h.repo.state.journey.plans[first].sessions[0].lesson_key
     # Fake confirmed transport, without changing tasks or answers.

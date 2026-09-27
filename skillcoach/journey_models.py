@@ -89,6 +89,7 @@ class Journey(Model):
     diagnostic_questions: list[dict] = Field(default_factory=list)
     diagnostic_answers: list[str] = Field(default_factory=list)
     diagnostic_rating: dict | None = None
+    diagnostic_practice_date: Date | None = None
     revision_request: str = ""
     plans: dict[str, LearningPlan] = Field(default_factory=dict)
     proposed_id: str | None = None
