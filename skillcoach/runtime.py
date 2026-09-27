@@ -32,14 +32,18 @@ class Runtime:
     def from_env(cls, *, webhook=False):
         return cls(Config.from_env(webhook=webhook))
 
-    def process_one(self, budget: Budget) -> bool:
+    def process_one(self, budget: Budget, *, proposal_for: str | None = None) -> bool:
         token = self.repo.acquire("domain", 60)
         if not token:
             return False
         job = None
         scoped = self.repo
         try:
-            job = self.repo.next_job(token)
+            job = (
+                self.repo.next_job(token, proposal_for=proposal_for)
+                if proposal_for is not None
+                else self.repo.next_job(token)
+            )
             if job is None:
                 return False
             scoped = self.repo.for_learner(job.get("learner_id", "owner"))
@@ -67,6 +71,19 @@ class Runtime:
             return job is not None
         finally:
             self.repo.release("domain", token)
+
+    def followup_proposal(self, update_id: int, budget: Budget):
+        try:
+            if budget.remaining() < 12:
+                return
+        except ExternalError as exc:
+            if exc.code == "request_budget_exhausted":
+                return
+            raise
+        if self.process_one(budget, proposal_for=f"telegram:{update_id}"):
+            for _ in range(3):
+                if not self.deliver_one(budget, media=False):
+                    break
 
     def deliver_one(self, budget: Budget, *, media=False) -> bool:
         def require_send_budget():

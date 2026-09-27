@@ -11,7 +11,14 @@ from pydantic_core import PydanticCustomError
 
 from skillcoach.models import Model
 
-Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,20}$")]
+Identifier = Annotated[
+    str,
+    Field(
+        pattern=r"^[a-z][a-z0-9_]{0,20}$",
+        description="1-21 ASCII characters: begin with a lowercase letter, then lowercase letters, digits or "
+        "underscores only. No spaces, hyphens, uppercase letters or display labels.",
+    ),
+]
 Label = Annotated[str, Field(min_length=1, max_length=48)]
 NARRATOR_VERSION = "espeak-ng-en-us-150-v1"
 RENDERER_VERSION = "scene-renderer-v1"

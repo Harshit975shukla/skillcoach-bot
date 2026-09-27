@@ -30,6 +30,15 @@ flag is enabled use the guided path:
 
 No artificial 10-15 minute wait is imposed. Validated AI results and follow-up jobs are committed
 transactionally; provider failure leaves the flow retryable without regrading saved answers.
+After delivering the immediate answer acknowledgement, a webhook may process one newly committed
+plan-proposal follow-up if at least 12 seconds remain in its original 20-second budget. It reuses
+that request's connection, never skips a different learner's next fair turn, and never runs a
+Day 1 lesson/video in this fast path. If time is short, an older job is next, or the provider fails,
+the proposal remains recoverable normally. This is a best-effort latency improvement, not a promise
+that every plan finishes in the request. GitHub's scheduled recovery can still be delayed.
+Recovery's media preflight recognizes eligible journey Day 1 lesson jobs as well as legacy lessons,
+so an already queued Day 1 installs renderers and can deliver videos in the same worker run.
+Work that becomes eligible after preflight remains safely queued if its tools were not installed.
 The previously validated profile is replaced only when the learner approves the completed
 diagnostic and proposal. `/cancel` keeps it and all completed history. New guided learners remain
 schedule-gated until they approve; cancelling a revision restores the previously approved plan.

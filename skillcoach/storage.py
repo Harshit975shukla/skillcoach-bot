@@ -217,7 +217,7 @@ class Repository:
         if not row:
             raise LostLease("Worker lease expired; transaction not applied.")
 
-    def next_job(self, token: str) -> dict | None:
+    def next_job(self, token: str, *, proposal_for: str | None = None) -> dict | None:
         with self.connection() as conn:
             self._fence(conn, "domain", token)
             conn.execute(
@@ -231,6 +231,14 @@ class Repository:
                 "CASE WHEN j.payload->>'text' IN ('/cancel','/pause','/retry') THEN 0 ELSE 1 END, j.sequence "
                 "LIMIT 1 FOR UPDATE OF l"
             ).fetchone()
+            if proposal_for is not None and (
+                row is None
+                or row["id"] != proposal_for + ":next"
+                or row["payload"].get("type") != "journey"
+                or row["payload"].get("action") != "propose"
+            ):
+                # Do not jump ahead of another learner or turn a webhook into a media worker.
+                return None
             if row:
                 conn.execute(
                     "UPDATE learners SET last_job_at=clock_timestamp() WHERE id=%s", (row["learner_id"],)
@@ -521,10 +529,15 @@ class Repository:
     def needs_media(self) -> bool:
         with self.connection() as conn:
             return conn.execute(
-                "SELECT EXISTS(SELECT 1 FROM outbox WHERE status IN ('pending','failed') "
-                "AND attempts<5 AND body->>'kind'='media') OR EXISTS("
-                "SELECT 1 FROM jobs WHERE status IN ('pending','failed','running') AND attempts<5 AND "
-                "(payload->>'text' LIKE '/learn %' OR payload->>'kind'='lesson')) AS needed"
+                "SELECT EXISTS(SELECT 1 FROM outbox o JOIN learners l ON l.id=o.learner_id "
+                "WHERE o.status IN ('pending','failed') AND o.available_at<=now() "
+                "AND o.attempts<5 AND o.body->>'kind'='media' "
+                "AND l.status='active' AND l.generation=o.access_generation) OR EXISTS("
+                "SELECT 1 FROM jobs j JOIN learners l ON l.id=j.learner_id "
+                "WHERE j.status IN ('pending','failed','running') AND j.available_at<=now() "
+                "AND j.attempts<5 AND l.status='active' AND l.generation=j.access_generation AND "
+                "(j.payload->>'text' LIKE '/learn %' OR j.payload->>'kind'='lesson' OR "
+                "(j.payload->>'type'='journey' AND j.payload->>'action'='lesson'))) AS needed"
             ).fetchone()["needed"]
 
     def media_asset(self, key: str):

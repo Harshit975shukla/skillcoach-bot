@@ -149,6 +149,8 @@ def create_app(runtime=None):
                 for _ in range(3):
                     if not current.deliver_one(budget, media=False):
                         break
+                if admission == "queued":
+                    current.followup_proposal(update["update_id"], budget)
             return jsonify(status="persisted", access=admission, recovery="scheduled-worker-or-retry"), 202
         except ConfigurationError:
             log.error("configuration_unavailable")
