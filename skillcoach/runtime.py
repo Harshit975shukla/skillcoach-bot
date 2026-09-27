@@ -98,6 +98,17 @@ class Runtime:
                 scoped.delivery_result(item["id"], token, "suppressed")
                 return True
             _, state = scoped.read()
+            if body.get("journey_plan_id"):
+                from skillcoach.journey import approved_plan
+
+                active = approved_plan(state)
+                if not active or active.id != body["journey_plan_id"]:
+                    # A revised plan carries already prepared lessons forward; their outbox remains valid.
+                    if not active or body.get("journey_lesson_key") not in {
+                        a.lesson_key for a in active.sessions if a.lesson_key
+                    }:
+                        scoped.delivery_result(item["id"], token, "suppressed")
+                        return True
             if body["kind"] == "media" and "storyboard" in body:
                 body["voice"] = bool(
                     body.get("voice", False) and state.voice and self.config.narration_enabled

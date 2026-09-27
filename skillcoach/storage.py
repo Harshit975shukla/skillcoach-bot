@@ -282,7 +282,7 @@ class Repository:
         state: State,
         messages: list[dict],
         answers: list[tuple[str, str]],
-        control: str | None = None,
+        control: str | dict | None = None,
     ):
         with self.connection() as conn:
             self._fence(conn, "domain", token)
@@ -311,7 +311,15 @@ class Repository:
                     "VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                     (f"{job}:{index}", job, Jsonb(body), self.learner_id, authorized["access_generation"]),
                 )
-            if control == "retry":
+            if isinstance(control, dict):
+                if control.get("type") != "journey" or control.get("action") not in ("propose", "lesson"):
+                    raise ValueError("Unsupported transactional follow-up")
+                conn.execute(
+                    "INSERT INTO jobs(id,payload,learner_id,access_generation) VALUES (%s,%s,%s,%s) "
+                    "ON CONFLICT DO NOTHING",
+                    (job + ":next", Jsonb(control), self.learner_id, authorized["access_generation"]),
+                )
+            elif control == "retry":
                 conn.execute(
                     "UPDATE jobs SET status='pending', attempts=0, available_at=now() "
                     "WHERE status='failed' AND learner_id=%s AND access_generation=%s",

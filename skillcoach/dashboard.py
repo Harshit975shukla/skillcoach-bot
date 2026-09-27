@@ -82,6 +82,10 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
         key=lambda i: i.completed_at,
         reverse=True,
     )
+    from skillcoach.catalog import TOPICS
+
+    journey = state.journey
+    learning_plan = journey.plans.get(journey.proposed_id or journey.active_id) if journey else None
     return {
         "profile": {
             "name": profile.name if profile else "Your learning",
@@ -123,6 +127,29 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
         "generated_at": now.isoformat(),
         "auth_expires_at": issued + MAX_AUTH_AGE,
         "private": True,
+        "learning": {
+            "stage": journey.stage if journey else "legacy",
+            "shared": bool(journey and journey.consent_at),
+            "plan": {
+                "id": learning_plan.id,
+                "version": learning_plan.version,
+                "approved": learning_plan.approved_at is not None,
+                "minutes": learning_plan.minutes,
+                "rationale": learning_plan.rationale,
+                "sessions": [
+                    {
+                        "day": i + 1,
+                        "date": d.date.isoformat() if d.date else None,
+                        "topic": TOPICS[d.topic_id][1],
+                        "objective": d.objective,
+                        "practice": d.practice,
+                    }
+                    for i, d in enumerate(learning_plan.sessions)
+                ],
+            }
+            if learning_plan
+            else None,
+        },
     }
 
 
@@ -148,8 +175,8 @@ def register_dashboard(app, runtime_factory):
                 body["init_data"], runtime.config.telegram_token, int(runtime.clock().timestamp())
             )
             digest = hashlib.sha256(body["init_data"].encode()).hexdigest()
-            return jsonify(
-                learner_view(
+            with runtime.repo.session():
+                data = learner_view(
                     runtime.repo,
                     actor,
                     issued,
@@ -157,7 +184,10 @@ def register_dashboard(app, runtime_factory):
                     digest,
                     narration_enabled=runtime.config.narration_enabled,
                 )
+            data["bot_url"] = (
+                f"https://t.me/{runtime.config.bot_username}" if runtime.config.bot_username else None
             )
+            return jsonify(data)
         except DashboardDenied as exc:
             return jsonify(error=str(exc)), 403
         except (ConfigurationError, ValidationError, *STORAGE_ERRORS):
@@ -165,7 +195,9 @@ def register_dashboard(app, runtime_factory):
 
     @app.after_request
     def private_headers(response):
-        if request.path.startswith(("/app", "/admin", "/static/dashboard", "/static/admin")):
+        if request.path.startswith(
+            ("/app", "/admin", "/join", "/static/join", "/static/dashboard", "/static/admin")
+        ):
             response.headers["Cache-Control"] = "no-store, private"
             response.headers["Pragma"] = "no-cache"
             response.headers["Referrer-Policy"] = "no-referrer"

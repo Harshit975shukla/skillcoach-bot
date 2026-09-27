@@ -24,6 +24,7 @@ from skillcoach.admin_auth import (
     same_origin,
     start_login,
 )
+from skillcoach.catalog import TOPICS
 from skillcoach.commands import COMMANDS
 from skillcoach.models import State
 from skillcoach.timeutil import IST, requested_quiz_payload
@@ -31,7 +32,20 @@ from skillcoach.timeutil import IST, requested_quiz_payload
 OWNER_COMMANDS = {
     key: value
     for key, value in COMMANDS.items()
-    if key not in {"setup", "resume", "assess", "skip", "q", "complete"}
+    if key
+    not in {
+        "setup",
+        "resume",
+        "assess",
+        "skip",
+        "q",
+        "complete",
+        "onboard",
+        "plan",
+        "pace",
+        "level",
+        "request",
+    }
 }
 ACTIONS = {
     "invite": ("Create invitation", {"label"}),
@@ -46,6 +60,7 @@ ACTIONS = {
     "send_lesson": ("Send a full lesson", {"topic"}),
     "schedule_quiz": ("Schedule one lesson-based quiz", {"topic", "at"}),
     "owner_command": ("Run a command in your own bot chat", {"command", "argument"}),
+    "suggest_plan": ("Suggest a plan topic (learner decides)", {"topic_id", "plan_id"}),
 }
 
 
@@ -125,7 +140,9 @@ def _validate_action(conn, action, target, arguments, config, now):
             count = conn.execute("SELECT count(*) AS n FROM learners WHERE status='active'").fetchone()["n"]
             if count >= config.max_learners:
                 raise AdminConflict("The configured learner limit is reached. No paid capacity is enabled.")
-            details.append("Grants private coaching access to this invited learner.")
+            details.append(
+                "Grants private coaching access. Guided learners must still approve their own plan."
+            )
         else:
             warnings.append("Queued coaching is cancelled. Private learning history is retained.")
     elif action == "invite":
@@ -151,6 +168,39 @@ def _validate_action(conn, action, target, arguments, config, now):
     else:
         if member["status"] != "active":
             raise AdminConflict("Only active learners can receive coaching commands.")
+        if action == "suggest_plan":
+            from skillcoach.catalog import TOPICS
+            from skillcoach.journey import approved_plan
+
+            plan = approved_plan(state)
+            if (
+                not state.journey
+                or not state.journey.consent_at
+                or not plan
+                or plan.id != args["plan_id"]
+                or state.journey.proposed_id
+                or state.journey.stage != "active"
+            ):
+                raise AdminConflict(
+                    "Choose the learner's current shared approved plan, without a pending revision."
+                )
+            if state.paused:
+                raise AdminConflict("This learner paused coaching. Do not send a plan suggestion while paused.")
+            if args["topic_id"] not in TOPICS:
+                raise AdminDenied("Choose an exact topic ID from the catalog.")
+            if state.journey.suggestion and state.journey.suggestion.status == "pending":
+                raise AdminConflict("This learner already has a pending plan suggestion.")
+            pending = conn.execute(
+                "SELECT 1 FROM jobs WHERE learner_id=%s AND status IN ('pending','running','failed') "
+                "AND payload->>'action'='suggest'",
+                (target,),
+            ).fetchone()
+            if pending:
+                raise AdminConflict("A suggestion is already queued for this learner.")
+            details.append(TOPICS[args["topic_id"]][1])
+            warnings.append(
+                "The learner may decline. Acceptance prepares a proposal, never changes their plan silently."
+            )
         if action == "owner_command":
             command = args["command"].lstrip("/")
             if command not in OWNER_COMMANDS:
@@ -348,6 +398,27 @@ def execute_action(runtime, session, body):
                     "VALUES (%s,%s,%s,%s,%s)",
                     (key, Jsonb(payload), member["id"], member["generation"], due),
                 )
+            elif row["action"] == "suggest_plan":
+                from skillcoach.service import stable_id
+
+                state = State.model_validate(
+                    conn.execute(
+                        "SELECT body FROM coach_state WHERE learner_id=%s", (member["id"],)
+                    ).fetchone()["body"]
+                )
+                _job(
+                    conn,
+                    key,
+                    member,
+                    {
+                        "type": "journey",
+                        "journey_id": state.journey.id,
+                        "action": "suggest",
+                        "plan_id": args["plan_id"],
+                        "topic_id": args["topic_id"],
+                        "suggestion_id": stable_id(key),
+                    },
+                )
             else:
                 text = {
                     "send_lesson": "/learn " + args.get("topic", ""),
@@ -418,6 +489,9 @@ def admin_overview(runtime):
     for row in rows:
         try:
             state = State.model_validate(row["body"])
+            from skillcoach.journey import safe_learning_view
+
+            learning = safe_learning_view(state, now)
             tasks = list(state.tasks.values())
             progress = {
                 "assigned": len(tasks),
@@ -432,6 +506,7 @@ def admin_overview(runtime):
             }
         except ValidationError:
             progress = None
+            learning = None
         learners.append(
             {
                 "id": row["id"],
@@ -440,6 +515,7 @@ def admin_overview(runtime):
                 "joined_at": row["joined_at"].isoformat(),
                 "last_interaction": row["last_interaction"].isoformat() if row["last_interaction"] else None,
                 "progress": progress,
+                "learning": learning,
                 "ai_operations_today": usage.get(row["id"], 0),
             }
         )
@@ -464,13 +540,16 @@ def admin_overview(runtime):
         "audit": dated(audit),
         "owner_commands": OWNER_COMMANDS,
         "actions": {key: value[0] for key, value in ACTIONS.items()},
+        "topics": {key: value[1] for key, value in TOPICS.items()},
+        "join_url": "/join",
         "limits": {
             "members": runtime.config.max_learners,
             "ai_operations_per_learner": runtime.config.daily_ai_operations,
         },
         "generated_at": now.isoformat(),
-        "privacy": "Only admission metadata and activity counts are shown. Private documents, questions, answers "
-        "and feedback are excluded. Delivered videos are not measured as watched.",
+        "privacy": "With learner consent: approved catalog topics, controlled learning reasons, activity and "
+        "assessment summaries. Private documents, questions, answers, custom topics and raw AI explanations "
+        "are excluded. Delivered videos are not measured as watched or mastered.",
     }
 
 

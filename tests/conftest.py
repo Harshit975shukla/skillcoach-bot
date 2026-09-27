@@ -174,7 +174,9 @@ class MemoryRepository:
         for index, body in enumerate(messages):
             ident = f"{job}:{index}"
             self.outbox.setdefault(ident, {"id": ident, "job_id": job, "body": body, "status": "pending"})
-        if control == "retry":
+        if isinstance(control, dict):
+            self.enqueue(job + ":next", control)
+        elif control == "retry":
             for row in [*self.jobs.values(), *self.outbox.values()]:
                 if row["status"] == "failed":
                     row["status"] = "pending"

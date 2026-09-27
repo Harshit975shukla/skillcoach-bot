@@ -74,6 +74,22 @@ def create_app(runtime=None):
     register_dashboard(app, lambda: runtime or Runtime.from_env(webhook=True))
     register_admin(app, lambda: runtime or Runtime.from_env(webhook=True))
 
+    @app.get("/join")
+    def join_page():
+        return app.send_static_file("join.html")
+
+    @app.get("/join/config")
+    def join_config():
+        from skillcoach.config import Config
+
+        try:
+            config = runtime.config if runtime else Config.from_env(webhook=True)
+            if not config.access_requests_enabled or not config.bot_username:
+                return jsonify(available=False, telegram_url=None)
+            return jsonify(available=True, telegram_url=f"https://t.me/{config.bot_username}?start=request")
+        except ConfigurationError:
+            return jsonify(error="Access requests are temporarily unavailable. Try again later."), 503
+
     @app.get("/")
     def health():
         return jsonify(service="skillcoach", live=True)

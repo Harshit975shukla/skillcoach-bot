@@ -26,6 +26,7 @@ class Config:
     bot_username: str = ""
     private_dashboard_url: str = ""
     narration_enabled: bool = False
+    access_requests_enabled: bool = False
 
     @classmethod
     def from_env(cls, *, webhook: bool = False) -> "Config":
@@ -50,6 +51,9 @@ class Config:
         username = os.getenv("TELEGRAM_BOT_USERNAME", "")
         private_dashboard = os.getenv("PRIVATE_DASHBOARD_URL", "")
         narration = os.getenv("NARRATION_ENABLED", "false").lower()
+        requests_enabled = os.getenv("ACCESS_REQUESTS_ENABLED", "false").lower()
+        if requests_enabled not in ("true", "false"):
+            raise ConfigurationError("ACCESS_REQUESTS_ENABLED must be true or false.")
         if narration not in ("true", "false"):
             raise ConfigurationError("NARRATION_ENABLED must be true or false.")
         if private_dashboard:
@@ -88,4 +92,5 @@ class Config:
             username,
             private_dashboard,
             narration == "true",
+            requests_enabled == "true",
         )

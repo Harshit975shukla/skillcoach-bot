@@ -2,6 +2,11 @@ COMMANDS = {
     "start": "Welcome and help",
     "help": "All supported commands",
     "setup": "Start resume + JD/diagnostic setup; /cancel keeps your existing profile",
+    "onboard": "Guided setup with optional documents, five diagnostic questions and plan approval",
+    "plan": "Review, approve or revise your current learning plan",
+    "pace": "<15|30|45|60> set the time target while revising your plan",
+    "level": "<beginner|intermediate|advanced> set difficulty while revising your plan",
+    "request": "Check your Telegram access status; new requests require public admission to be enabled",
     "profile": "View profile, or /profile setup to replace it",
     "skip": "Skip JD and start five diagnostic questions",
     "assess": "Reassess skills with five diagnostic questions",
@@ -47,6 +52,7 @@ def help_text(*, admin=True):
             f"/{name} - {description}" for name, description in ADMIN_COMMANDS.items()
         )
     return (
-        text + "\n\nPrivacy: the owner sees access status, activity counts and delivery health, "
-        "not your private documents, answers or feedback."
+        text + "\n\nPrivacy: the owner sees access status, activity counts and delivery health. "
+        "After guided-setup consent, they also see approved catalog topics, controlled learning reasons "
+        "and assessment summaries, not private documents, answers or feedback."
     )

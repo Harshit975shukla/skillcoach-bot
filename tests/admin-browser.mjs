@@ -31,7 +31,16 @@ const fixture = {
   limits: {members: 10, ai_operations_per_learner: 40},
   generated_at: new Date().toISOString(),
   privacy: "Only participation and operational summaries are shown. Private documents and answers are excluded.",
+  topics: {"aws-core/ec2": "AWS EC2"},
 };
+fixture.learners[0].learning = {
+  shared: true, status: "active", plan_id: "synthetic-plan", version: 1, minutes: 30, sessions_practiced: 0,
+  basis: "Initial diagnostic and selected goal.", active_days_this_week: 1, streak: 1, last_practice: "2026-09-26",
+  sessions: [{day: 1, topic: "AWS EC2", reason: "Build foundational practice.", date: "2026-09-28",
+    delivered: false, tasks_done: 0, tasks_total: 0, learner_understood: false}],
+  assessments: [{date: "2026-09-26", kind: "daily", correct: 3, total: 5}],
+};
+fixture.actions.suggest_plan = "Suggest a plan topic";
 const session = () => ({authenticated: true, csrf: "synthetic-csrf", expires_at: new Date(Date.now() + 900000).toISOString()});
 const server = createServer(async (request, response) => {
   let raw = "";

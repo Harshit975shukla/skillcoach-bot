@@ -5,6 +5,7 @@
   let expiryTimer;
   let controller;
   let authenticated = false;
+  let epoch = 0;
   const node = (tag, value, className) => {
     const element = document.createElement(tag);
     if (value !== undefined) element.textContent = String(value);
@@ -12,12 +13,16 @@
     return element;
   };
   function clearPrivate(message, error = false) {
+    epoch += 1;
+    if (controller) controller.abort();
     authenticated = false;
     $("content").hidden = true;
     for (const id of ["learner-name", "target-role", "tasks", "plan-days", "skills", "interviews",
-                      "done", "streak", "minutes", "graded", "preferences", "updated", "task-count"]) {
+                      "done", "streak", "minutes", "graded", "preferences", "updated", "task-count",
+                      "plan-status", "plan-rationale"]) {
       $(id).replaceChildren();
     }
+    $("plan-bot-link").hidden = true; $("plan-bot-link").removeAttribute("href");
     $("notice").textContent = message;
     $("notice").classList.toggle("error", error);
     $("notice").hidden = false;
@@ -45,12 +50,22 @@
       $("tasks").append(item);
     }
     if (!data.tasks.length) empty("tasks", "No open tasks. Your next lesson will add practice here.");
-    for (const day of data.plan) {
+    const proposed = data.learning && data.learning.plan;
+    $("plan-status").textContent = proposed
+      ? `${proposed.approved ? "Approved" : "Awaiting your approval"} · version ${proposed.version} · ${proposed.minutes} minutes/session target`
+      : `Setup: ${data.learning ? data.learning.stage : "existing learning"}`;
+    $("plan-rationale").textContent = proposed ? proposed.rationale : "";
+    if (data.bot_url && /^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(data.bot_url)) {
+      $("plan-bot-link").href = data.bot_url + "?start=" + (proposed ? "plan" : "onboard");
+      $("plan-bot-link").hidden = false;
+    }
+    for (const day of proposed ? proposed.sessions : data.plan) {
       const item = node("li");
       item.append(node("span", day.date, "plan-date"), node("span", day.topic, "plan-topic"));
+      if (day.objective) item.append(node("p", day.objective), node("p", day.practice));
       $("plan-days").append(item);
     }
-    if (!data.plan.length) empty("plan-days", "No weekly plan yet. Complete /setup and your scheduled plan will appear here.");
+    if (!proposed && !data.plan.length) empty("plan-days", "No weekly plan yet. Complete /onboard and approve your proposal.");
     $("done").textContent = `${data.stats.done} / ${data.stats.total}`;
     $("streak").textContent = `${data.stats.streak} days`;
     $("minutes").textContent = `${data.stats.minutes_practiced} min`;
@@ -86,25 +101,29 @@
     }
     if (controller) controller.abort();
     controller = new AbortController();
+    const activeController = controller, requestEpoch = ++epoch;
     $("refresh").disabled = true;
     $("refresh").textContent = "Refreshing…";
     try {
       const response = await fetch("/app/data", {
         method: "POST", cache: "no-store", credentials: "omit",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({init_data: app.initData}), signal: controller.signal,
+        body: JSON.stringify({init_data: app.initData}), signal: activeController.signal,
       });
       const data = await response.json();
+      if (requestEpoch !== epoch || activeController.signal.aborted) return;
       if (!response.ok) {
         clearPrivate(data.error || "Access could not be verified. Reopen the dashboard from Telegram.", true);
         return;
       }
       render(data);
     } catch (error) {
-      if (error.name !== "AbortError") clearPrivate("Could not load private progress. Check your connection and tap Refresh.", true);
+      if (requestEpoch === epoch && error.name !== "AbortError") clearPrivate("Could not load private progress. Check your connection and tap Refresh.", true);
     } finally {
-      $("refresh").disabled = false;
-      $("refresh").textContent = "Refresh";
+      if (requestEpoch === epoch || activeController === controller) {
+        $("refresh").disabled = false;
+        $("refresh").textContent = "Refresh";
+      }
     }
   }
   $("refresh").addEventListener("click", refresh);

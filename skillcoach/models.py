@@ -1,17 +1,14 @@
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
-Text = Annotated[str, Field(min_length=1, max_length=16000)]
-Short = Annotated[str, Field(min_length=1, max_length=300)]
+from skillcoach.journey_models import Journey
+from skillcoach.models_base import Model, Short, Text
+
 Percent = Annotated[int, Field(strict=True, ge=0, le=100)]
 Score = Annotated[int, Field(strict=True, ge=0, le=10)]
 Choice = Literal["A", "B", "C", "D"]
-
-
-class Model(BaseModel):
-    model_config = ConfigDict(extra="forbid")
 
 
 class ResumeInfo(Model):
@@ -178,7 +175,7 @@ class WeekPlan(Model):
 class State(Model):
     profile: Profile | None = None
     draft: Draft | None = None
-    focus: Literal["draft", "assessment", "interview"] | None = None
+    focus: Literal["draft", "assessment", "interview", "onboarding"] | None = None
     active_assessment: str | None = None
     active_interview: str | None = None
     paused: bool = False
@@ -194,8 +191,11 @@ class State(Model):
     activity: list[date] = Field(default_factory=list)
     imports: list[str] = Field(default_factory=list)
     legacy_archive: dict = Field(default_factory=dict)
+    journey: Journey | None = None
 
     def target(self) -> dict | None:
+        if self.focus == "onboarding" and self.journey:
+            return self.journey.target()
         if self.focus == "draft" and self.draft:
             return {
                 "kind": self.draft.stage,

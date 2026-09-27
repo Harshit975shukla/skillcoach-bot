@@ -53,13 +53,18 @@
           <h2 id="people-title">Users &amp; access</h2>
           <button id="new-invite" type="button">Create invitation</button>
         </div>
-        <p class="section-description">Opening an invitation requests access. Only your approval enables coaching.</p>
+        <p class="section-description">Share the <a href="/join" target="_blank" rel="noopener noreferrer">public request-access page</a>,
+          or send a private invitation. Only your approval enables coaching. Learners approve their own plan separately.</p>
         <div class="table-scroll" tabindex="0" role="region" aria-label="Learner access and participation">
           <table>
             <thead><tr><th scope="col">Learner</th><th scope="col">Access</th><th scope="col">Participation</th><th scope="col">Last bot interaction</th><th scope="col">Manage</th></tr></thead>
             <tbody id="members"></tbody>
           </table>
         </div>
+        <h3>Learning plans and progress</h3>
+        <p class="section-description">Shared only after guided-setup consent. Catalog topics and controlled learning reasons,
+          not personal documents or raw AI explanations. Task completion, self-reported understanding and assessment results are different evidence.</p>
+        <ul id="learning-plans" class="admin-list"></ul>
         <h3>Recent invitations</h3>
         <ul id="invites" class="admin-list"></ul>
       </section>

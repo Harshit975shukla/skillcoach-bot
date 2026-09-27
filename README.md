@@ -1,6 +1,72 @@
 # SkillCoach Bot
 
-An invite-only Telegram interview coach with one administrator: **full lessons and animated videos by default**, personalized plans, tracked practice tasks, five-question daily quizzes, ten-question weekly assessments, and question-first interviews. Vercel handles authenticated webhooks; GitHub Actions owns scheduled coaching and recovery. Private PostgreSQL is the only authoritative state store.
+An owner-approved Telegram interview coach: **full lessons and animated videos by default**, personalized plans, tracked practice tasks, five-question daily quizzes, ten-question weekly assessments, and question-first interviews. Vercel handles authenticated webhooks; GitHub Actions owns scheduled coaching and recovery. Private PostgreSQL is the only authoritative state store.
+
+## Request access, guided setup and learner-owned plans
+
+Share `/join` on the bot's existing Vercel domain. It is a generic public page, **not the private
+admin portal**. With `ACCESS_REQUESTS_ENABLED=true`, its button opens the configured Telegram bot
+with `start=request`. Tapping Telegram's Start submits a request through the authenticated webhook.
+No typed Telegram ID, unsigned browser parameter or public GET grants access. Pending users cannot
+read learner APIs or run coaching; `/request` reports their own status. Repeated requests do not
+create duplicates or repeat owner notifications. The admin portal lists requests; there is no
+unsolicited owner alert for each public request. Admission is bounded to 100 pending requests and
+30 new public requests per hour; the configured active-learner limit still applies at approval.
+Rejected/revoked users need a fresh owner invitation rather than reactivating themselves.
+
+The owner approves or rejects through `/admin`. An approval queues one welcome message with
+**Set up my learning**. New public requesters and new invitees admitted while the public-request
+flag is enabled use the guided path:
+
+1. `/onboard`: agree to the privacy/AI-processing and admin learning-oversight disclosure.
+2. Supply a goal, actual years of experience, level, daily time target and display timezone.
+3. Optionally paste resume and job-description text, or skip either. Neither document is required.
+4. Answer exactly five diagnostic questions, including an honest **I don't know yet** choice.
+5. Review a five-session study-week proposal: catalog topics, objectives, practice, private rationale
+   and dates. Diagnostic estimates are limited evidence, not certification or job readiness.
+6. Approve the next lesson slot or explicitly start Day 1 now. Change topics freely in a private
+   revision request; `/pace 15|30|45|60` and `/level beginner|intermediate|advanced` adjust the next
+   proposal. The learner reviews the new version before it takes effect.
+
+No artificial 10-15 minute wait is imposed. Validated AI results and follow-up jobs are committed
+transactionally; provider failure leaves the flow retryable without regrading saved answers.
+The previously validated profile is replaced only when the learner approves the completed
+diagnostic and proposal. `/cancel` keeps it and all completed history. New guided learners remain
+schedule-gated until they approve; cancelling a revision restores the previously approved plan.
+An existing approved plan keeps running while a revision is awaiting review; editing is not a pause.
+If an approved session advances meanwhile, approval shows a reconciled proposal for confirmation
+rather than replacing newly prepared work. Use `/pause` to actually stop scheduled coaching.
+
+Plan buttons bind to the exact learner-owned proposal version. Old buttons cannot approve a
+replacement. A passed start date is shown as a fresh dated version before approval. Five sessions
+normally occupy weekday lesson slots and may span calendar weeks; an explicit Start now can begin
+on a weekend. Dates are scheduled in Asia/Kolkata and displayed in the learner's chosen timezone;
+choosing another timezone does **not** change delivery times. Weekday 09:00 lessons/18:00 quizzes,
+Saturday 09:00 assessments and Sunday 10:00 reviews remain canonical. A same-day explicit start and
+scheduled run cannot prepare Day 1 twice. Missed lesson slots resume the next unprepared session,
+not multiple days of catch-up. Full lesson delivery is required before guided quiz generation.
+
+Admin learning oversight is opt-in during guided setup. It uses a separate allowlisted DTO:
+approved **catalog** topic names, controlled reason templates, dates, activity/streak, task counts,
+learner-confirmed understanding and aggregate completed-assessment scores. It never serializes
+custom goals, resume/JD text, private answers, question text, generated objectives/practice text or
+raw AI rationale. Sending a lesson is not watching it; confirming understanding does not complete
+tasks or change grades. An admin topic suggestion is bound to the current plan and remains
+optional: declining changes nothing; accepting generates a proposal that still needs learner
+approval. Prepared lessons and existing tasks are preserved across plan revisions.
+
+**Existing-user compatibility:** absent `journey` state means the previous setup and schedule
+behavior remains intact. No existing profile, plan, quiz answer, task or scheduled job is rewritten
+on deployment. Existing users can opt into `/onboard`; their detailed plan is not newly shared
+without consent. The private `/app` dashboard shows the learner's own proposed/approved plan and
+links back to Telegram for approval; `/admin` remains owner-authenticated.
+
+**Rollout:** this upgrade uses existing private JSONB state and transactional tables; no DDL or
+data migration is required. Back up source/configuration/private state, complete offline and
+disposable-PostgreSQL CI, briefly quiesce old writers for the code cutover, then enable the flag
+consistently in Vercel and Actions. Old binaries do not understand new JSON fields: do not roll
+back to an older binary after guided state has been written without a compatible rollback or a
+reviewed restore that preserves new learner data. Never reset live learning to roll back a UI.
 
 ## Invite-only multi-user upgrade
 

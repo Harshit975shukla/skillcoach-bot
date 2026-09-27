@@ -18,6 +18,57 @@ ORIGIN = "https://localhost"
 pytestmark = pytest.mark.postgres
 
 
+def test_admin_suggestion_is_preview_bound_and_requires_learner_decisions(admin):
+    import json
+
+    from test_journey import TOPIC, proposal, shared_journey
+
+    bot = admin.bot
+    a = bot.join(101)
+    bot.save(a, lambda state: setattr(state, "journey", shared_journey(admin.clock.now)))
+    assert login(admin).status_code == 200
+    args = {"plan_id": "plan-test", "topic_id": TOPIC}
+    pending = preview(admin, "suggest_plan", a.learner_id, args)
+    assert pending.status_code == 200
+    assert confirm(admin, pending.json).status_code == 200
+    assert confirm(admin, pending.json).json["duplicate"]
+    bot.runtime.recover(media=False)
+    before = a.read()[1].journey.plans
+    suggestion = a.read()[1].journey.suggestion
+    assert suggestion.status == "pending"
+    assert bot.input(102, callback=f"suggestion:{suggestion.id}:accept") != "queued"
+    bot.input(101, callback=f"suggestion:{suggestion.id}:decline")
+    assert a.read()[1].journey.plans == before
+    pending = preview(admin, "suggest_plan", a.learner_id, args)
+    assert confirm(admin, pending.json).status_code == 200
+    bot.runtime.recover(media=False)
+    suggestion = a.read()[1].journey.suggestion
+    bot.runtime.ai.responses.append(proposal())
+    bot.input(101, callback=f"suggestion:{suggestion.id}:accept")
+    journey = a.read()[1].journey
+    assert journey.stage == "ready" and journey.active_id == "plan-test"
+    assert journey.proposed_id != "plan-test" and not a.read()[1].lessons
+    view = post(admin, "/admin/data").json
+    shared = next(m["learning"] for m in view["learners"] if m["id"] == a.learner_id)
+    assert shared["plan_id"] == "plan-test"
+    assert "private goal" not in json.dumps(view)
+
+
+def test_suggestion_stale_plan_or_revoked_recipient_fails_confirmation(admin):
+    from test_journey import TOPIC, shared_journey
+
+    scoped = admin.bot.join(101)
+    admin.bot.save(scoped, lambda state: setattr(state, "journey", shared_journey(admin.clock.now)))
+    login(admin)
+    body = preview(admin, "suggest_plan", scoped.learner_id, {"plan_id": "plan-test", "topic_id": TOPIC}).json
+    admin.bot.save(scoped, lambda state: setattr(state.journey, "stage", "revision"))
+    assert confirm(admin, body).status_code == 409
+    admin.bot.save(scoped, lambda state: setattr(state.journey, "stage", "active"))
+    body = preview(admin, "suggest_plan", scoped.learner_id, {"plan_id": "plan-test", "topic_id": TOPIC}).json
+    admin.bot.input(admin.bot.config.owner_id, "/revoke " + scoped.learner_id)
+    assert confirm(admin, body).status_code == 409
+
+
 @pytest.fixture
 def admin(pg_repo, config):
     bot = Bot(pg_repo, config)

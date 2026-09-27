@@ -21,6 +21,10 @@ const fixture = {
   recent_interviews: [{question: "How would you diagnose an unhealthy web target?", score: 7,
                        feedback: "Separate instance status from application health."}],
   generated_at: new Date().toISOString(), auth_expires_at: Math.floor(Date.now() / 1000) + 300, private: true,
+  bot_url: "https://t.me/SkillCoachTestBot",
+  learning: {stage: "ready", shared: true, plan: {id: "private-plan", version: 1, approved: false, minutes: 30,
+    rationale: "Your initial diagnostic supports practice on the fundamentals.",
+    sessions: [{day: 1, date: "2026-09-28", topic: "AWS EC2", objective: "Explain health checks", practice: "Draw the flow"}]}},
 };
 const server = createServer(async (request, response) => {
   if (request.url === "/app/data") {
@@ -57,6 +61,8 @@ try {
     await page.waitForFunction(() => !document.getElementById("content").hidden);
     assert.equal(await page.$eval("#learner-name", e => e.textContent), "Synthetic learner");
     assert.equal(await page.$$eval("#tasks li", e => e.length), 2);
+    assert.match(await page.$eval("#plan-status", e => e.textContent), /Awaiting your approval/);
+    assert.equal(await page.$eval("#plan-bot-link", e => e.href), "https://t.me/SkillCoachTestBot?start=plan");
     assert.equal(await page.evaluate(() => document.body.classList.contains("telegram-light")), true);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     if (process.env.DASHBOARD_SCREENSHOT_DIR) {
@@ -71,6 +77,7 @@ try {
     await page.click("#refresh");
     await page.waitForFunction(() => document.getElementById("content").hidden);
     assert.equal(await page.$$eval("#tasks li", e => e.length), 0);
+    assert.equal(await page.$eval("#plan-rationale", e => e.textContent), "");
     assert.match(await page.$eval("#notice", e => e.textContent), /revoked/);
     denied = false;
     fixture.profile.name = "Synthetic learner";

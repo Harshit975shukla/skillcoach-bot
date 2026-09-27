@@ -38,7 +38,7 @@
     $("console").hidden = true; $("login").hidden = false;
     $("refresh").hidden = true; $("logout").hidden = true;
     $("action-preview").hidden = true; $("action-result").hidden = true;
-    for (const id of ["members", "invites", "jobs", "deliveries", "audit", "result-messages", "action-fields",
+    for (const id of ["members", "invites", "jobs", "deliveries", "audit", "learning-plans", "result-messages", "action-fields",
                       "action-kind", "action-target", "preview-details", "preview-warnings", "summary-line",
                       "privacy-note", "limits", "updated", "session-expiry", "preview-recipient", "preview-title"]) {
       $(id).replaceChildren();
@@ -145,7 +145,7 @@
     const pending = data.learners.filter(member => member.status === "pending").length;
     const failed = data.deliveries.filter(item => item.status === "failed").length;
     $("summary-line").textContent = `${active} active · ${pending} awaiting approval · ${failed} failed deliveries`;
-    for (const id of ["members", "invites", "jobs", "deliveries", "audit"]) $(id).replaceChildren();
+    for (const id of ["members", "invites", "jobs", "deliveries", "audit", "learning-plans"]) $(id).replaceChildren();
     for (const member of data.learners) {
       const row = node("tr");
       const name = node("td");
@@ -168,6 +168,33 @@
       controls.append(group);
       row.append(name, state, progress, node("td", date(member.last_interaction)), controls);
       $("members").append(row);
+      const learning = member.learning;
+      const panel = node("li"), detail = node("div");
+      detail.append(node("strong", member.name));
+      if (!learning || !learning.shared) {
+        detail.append(node("p", "Learning plan not shared. Guided setup and learner consent are required.", "detail"));
+      } else {
+        detail.append(node("p", `${learning.status} · ${learning.sessions_practiced}/5 sessions with all tasks completed · ${learning.streak} day streak`, "detail"));
+        detail.append(node("p", learning.basis, "detail"));
+        detail.append(node("p", `Active days this week: ${learning.active_days_this_week} · Last practice: ${learning.last_practice || "Not yet"}`, "detail"));
+        const days = node("ol", undefined, "task-list");
+        for (const day of learning.sessions) {
+          const entry = node("li");
+          entry.append(node("strong", `Day ${day.day}: ${day.topic}`),
+            node("p", day.reason, "detail"),
+            node("p", `${day.date || "Unscheduled"} · ${day.delivered ? "Delivered" : "Not delivered"} · ${day.tasks_done}/${day.tasks_total} tasks complete · Understanding: ${day.learner_understood ? "learner confirmed" : "not recorded"}`, "detail"));
+          days.append(entry);
+        }
+        detail.append(days);
+        if (!learning.sessions.length) detail.append(node("p", "No approved plan yet.", "detail"));
+        for (const assessment of learning.assessments) {
+          detail.append(node("p", `${assessment.date} ${assessment.kind}: ${assessment.correct}/${assessment.total}. Sampled assessment evidence, not overall mastery.`, "detail"));
+        }
+        if (learning.plan_id && member.status === "active") {
+          detail.append(actionButton("Suggest a topic", "suggest_plan", member.id, {plan_id: learning.plan_id}));
+        }
+      }
+      panel.append(detail); $("learning-plans").append(panel);
     }
     for (const invite of data.invitations) {
       const item = node("li"), detail = node("div");
@@ -244,6 +271,16 @@
     if (action === "revokeinvite") field("Invitation ID", "invite_id");
     if (["send_lesson", "schedule_quiz"].includes(action)) field("Cloud / DevOps topic", "topic");
     if (action === "schedule_quiz") field("Due date and time (Asia/Kolkata)", "at", "input", "datetime-local");
+    if (action === "suggest_plan") {
+      const select = field("Suggested catalog topic", "topic_id", "select");
+      for (const [key, title] of Object.entries(overview.topics || {})) {
+        const option = node("option", title); option.value = key; select.append(option);
+      }
+      const plan = field("Approved plan ID", "plan_id");
+      plan.readOnly = true;
+      const member = overview.learners.find(item => item.id === $("action-target").value);
+      plan.value = member && member.learning ? member.learning.plan_id || "" : "";
+    }
     if (action === "owner_command") {
       const select = field("Your bot command", "command", "select");
       for (const [name, description] of Object.entries(overview.owner_commands)) {
@@ -256,7 +293,10 @@
       : "The next step previews the exact recipient and effect. Nothing is executed yet.";
   }
   $("action-kind").addEventListener("change", fields);
-  $("action-target").addEventListener("change", invalidatePreview);
+  $("action-target").addEventListener("change", () => {
+    if ($("action-kind").value === "suggest_plan") fields();
+    else invalidatePreview();
+  });
   $("action-fields").addEventListener("input", invalidatePreview);
   $("new-invite").addEventListener("click", () => pick("invite"));
   $("action-form").addEventListener("submit", async event => {

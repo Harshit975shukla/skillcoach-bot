@@ -5,7 +5,8 @@
     "test:diagrams": "node tests/parse-diagrams.mjs",
     "test:render": "node tests/render-diagrams.mjs",
     "test:dashboard": "node tests/dashboard-browser.mjs",
-    "test:admin": "node tests/admin-browser.mjs"
+    "test:admin": "node tests/admin-browser.mjs",
+    "test:join": "node tests/join-browser.mjs"
   },
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "11.12.0",

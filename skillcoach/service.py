@@ -60,6 +60,10 @@ class Service:
             self.schedule()
         elif self.payload["type"] == "telegram":
             self.telegram()
+        elif self.payload["type"] == "journey":
+            from skillcoach.journey import Learning
+
+            Learning(self).run_job()
         elif self.payload["type"] == "import":
             from skillcoach.migration import import_snapshot
 
@@ -164,7 +168,7 @@ class Service:
         )
 
     def start_assessment(self, kind: str, day: date, topic: str):
-        if self.state.focus in ("draft", "interview"):
+        if self.state.focus in ("draft", "interview", "onboarding"):
             from skillcoach.clients import ExternalError
 
             raise ExternalError("interactive_flow_in_progress")
@@ -569,6 +573,12 @@ class Service:
         kind, day = self.payload["kind"], date.fromisoformat(self.payload["date"])
         if day != self.now.date() or self.state.paused:
             return
+        from skillcoach.journey import Learning
+
+        if Learning(self).schedule():
+            for body in self.messages:
+                body.update(scheduled=True, scheduled_date=day.isoformat())
+            return
         if self.state.profile is None and kind != "quiz":
             self.say(
                 "Set up your private coaching profile with /setup before personalized scheduled lessons."
@@ -643,11 +653,18 @@ class Service:
             body["scheduled_date"] = day.isoformat()
 
     def telegram(self):
+        from skillcoach.journey import Learning
+
+        learning = Learning(self)
         text = self.payload.get("text", "").strip()
         callback = self.payload.get("callback")
         if callback:
             pieces = callback.split(":")
-            if len(pieces) == 4 and pieces[0] == "q":
+            if pieces[0] in ("j", "plan", "understand", "helpplan", "suggestion"):
+                learning.callback(callback)
+            elif callback == "onboard:start":
+                learning.begin()
+            elif len(pieces) == 4 and pieces[0] == "q":
                 self.answer_assessment(
                     pieces[3],
                     {
@@ -665,6 +682,8 @@ class Service:
                 self.say(
                     "There is no matching active question for that message. Use /help or the newest prompt."
                 )
+            elif self.state.focus == "onboarding":
+                learning.input(text, target)
             elif self.state.focus == "draft":
                 self.setup_input(text)
             elif self.state.focus == "interview":
@@ -678,8 +697,43 @@ class Service:
         if cmd not in COMMANDS:
             self.say("Unknown command. Use /help.")
         elif cmd in ("start", "help"):
-            self.say(help_text(admin=self.repo.is_owner))
+            if cmd == "start" and arg == "onboard":
+                learning.begin()
+            elif cmd == "start" and arg == "plan":
+                learning.show_plan()
+            else:
+                self.say(help_text(admin=self.repo.is_owner))
+        elif cmd == "onboard":
+            learning.begin()
+        elif cmd == "plan":
+            if arg:
+                self.say("Use /plan without arguments, then choose an action on the current version.")
+            else:
+                learning.show_plan()
+        elif cmd == "pace":
+            if not self.state.journey or self.state.journey.stage != "revision":
+                self.say("Open /plan, choose Change topics / difficulty / time, then /pace 15, 30, 45 or 60.")
+            elif arg not in ("15", "30", "45", "60"):
+                self.say("Choose /pace 15, 30, 45 or 60.")
+            else:
+                self.state.journey.minutes = int(arg)
+                self.say(
+                    "New time target saved for the proposal. Reply with any other changes or 'keep topics'."
+                )
+        elif cmd == "level":
+            if not self.state.journey or self.state.journey.stage != "revision":
+                self.say("Open /plan and choose Change topics / difficulty / time first.")
+            elif arg not in ("beginner", "intermediate", "advanced"):
+                self.say("Choose /level beginner, intermediate or advanced.")
+            else:
+                self.state.journey.level = arg
+                self.say(
+                    "Difficulty saved for the next proposal. Reply with any other changes or 'keep topics'."
+                )
         elif cmd == "setup" or (cmd == "profile" and (arg == "setup" or not self.state.profile)):
+            if self.state.journey:
+                learning.begin()
+                return
             if self.state.focus:
                 self.say("Finish or /cancel the current flow before starting profile setup.")
             else:
@@ -698,7 +752,9 @@ class Service:
                 f"Skills: {', '.join(profile.skills)}\n/profile setup to replace; /score for evidence."
             )
         elif cmd == "skip":
-            if self.state.draft and self.state.draft.stage == "jd":
+            if self.state.journey and self.state.journey.stage in ("resume", "jd"):
+                learning.input("skip", self.payload.get("target"))
+            elif self.state.draft and self.state.draft.stage == "jd":
                 self.start_diagnostic(self.state.draft.resume_info, self.state.draft.resume_text)
             else:
                 self.say("/skip is available after you supply a resume during setup.")
@@ -726,6 +782,12 @@ class Service:
         elif cmd == "q":
             self.answer_assessment(arg, self.payload.get("target"))
         elif cmd == "cancel":
+            if self.state.journey:
+                journey = self.state.journey
+                if journey.active_id:
+                    journey.stage, journey.proposed_id = "active", None
+                else:
+                    journey.stage, journey.proposed_id = "welcome", None
             self.state.draft = None
             if self.state.active_assessment:
                 session = self.state.assessments[self.state.active_assessment]
@@ -782,6 +844,9 @@ class Service:
                 self.state.preference = arg
                 self.say("Preference saved for the next unplanned week; existing tasks are not replaced.")
         elif cmd == "curriculum":
+            if self.state.journey:
+                learning.show_plan()
+                return
             plan = self.state.plans.get(monday(self.now.date()).isoformat())
             self.say(
                 "\n".join(f"{d}: {t}" for d, t in sorted(plan.days.items()))
@@ -831,6 +896,10 @@ class Service:
         elif cmd == "learn":
             if not arg:
                 self.say("Use /learn <topic> for a full lesson, tracked tasks and diagrams.")
+            elif self.state.journey and self.state.journey.stage != "active":
+                self.say(
+                    "Finish guided setup and approve your plan before starting lessons. Use /onboard or /plan."
+                )
             else:
                 self.lesson(arg, self.now.date())
         elif cmd == "interview":

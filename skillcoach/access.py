@@ -14,8 +14,8 @@ ADMIN_COMMANDS = {
     "invite": "[label] create a one-use invite, valid for 24 hours",
     "invites": "List open invitations",
     "revokeinvite": "<invite_id> cancel an unused invitation",
-    "requests": "List invited learners waiting for your approval",
-    "approve": "<learner_id> approve an invited learner",
+    "requests": "List learners waiting for your approval",
+    "approve": "<learner_id> approve a pending learner",
     "reject": "<learner_id> reject a pending request",
     "revoke": "<learner_id> revoke access and cancel queued coaching",
     "members": "List learner access status (not private learning content)",
@@ -172,7 +172,7 @@ def _admin(conn, update_id, key, owner, command, argument, config, *, owner_outp
             reply("Use a learner ID from /requests or /members.")
             return
         if command in ("approve", "reject") and member["status"] != "pending":
-            reply("That learner has no pending invite request. A fresh invite is required.")
+            reply("That learner has no pending request. A fresh invitation may be required.")
             return
         if command == "revoke" and member["status"] not in ("active", "pending"):
             reply("That learner does not currently have active or pending access.")
@@ -197,17 +197,82 @@ def _admin(conn, update_id, key, owner, command, argument, config, *, owner_outp
             "Only access status was changed; their private history is preserved.",
         )
         message = {
-            "active": "Your invitation has been approved. Use /setup to start, or /profile to view your own profile. "
+            "active": "Your access request has been approved. Use /onboard for guided setup, or /profile for your existing profile. "
             "The owner can see access status, activity counts and delivery health, but not your private "
-            "resume, job description, answers or feedback. Your data is not published to the public dashboard.",
+            "resume, job description, answers or feedback. Guided setup explains optional learning oversight "
+            "before you agree. Your data is not published to the public dashboard.",
             "rejected": "Your access request was rejected. No coaching access has been granted.",
             "revoked": "Your bot access was revoked. Queued coaching has been cancelled. "
             "A new invitation and approval are required to return.",
         }[status]
-        _notice(conn, key, member, message, suffix="learner-status")
+        _notice(
+            conn,
+            key,
+            member,
+            message,
+            suffix="learner-status",
+            buttons=[[{"text": "Set up my learning", "callback_data": "onboard:start"}]]
+            if status == "active"
+            else None,
+        )
 
 
-def _claim(conn, update_id, key, actor, display_name, owner, token, current):
+def _pending_member(conn, actor, display_name, current=None, *, guided=False):
+    from skillcoach.journey_models import Journey
+
+    ident = current["id"] if current else "u_" + uuid4().hex[:12]
+    if current:
+        _invalidate(conn, ident)
+        member = conn.execute(
+            "UPDATE learners SET status='pending',display_name=%s,generation=generation+1,updated_at=now() "
+            "WHERE id=%s RETURNING *",
+            (display_name, ident),
+        ).fetchone()
+    else:
+        member = conn.execute(
+            "INSERT INTO learners(id,telegram_id,display_name,status) VALUES (%s,%s,%s,'pending') RETURNING *",
+            (ident, actor, display_name),
+        ).fetchone()
+    initial = {"journey": Journey(id=uuid4().hex[:20]).model_dump(mode="json")} if guided else {}
+    conn.execute(
+        "INSERT INTO coach_state(learner_id,body) VALUES (%s,%s) ON CONFLICT(learner_id) DO NOTHING",
+        (ident, Jsonb(initial)),
+    )
+    return member
+
+
+def _request(conn, update_id, key, actor, display_name, owner, member, config):
+    if not config.access_requests_enabled:
+        return "invite_required"
+    if member:
+        # Repeat requests are status checks, never new requests or reactivation after revocation.
+        if member["status"] in ("rejected", "revoked"):
+            return member["status"]
+        return member["status"]
+    pending = conn.execute("SELECT count(*) AS n FROM learners WHERE status='pending'").fetchone()["n"]
+    recent = conn.execute(
+        "SELECT count(*) AS n FROM access_audit WHERE action='request_access' "
+        "AND created_at>now()-interval '1 hour'"
+    ).fetchone()["n"]
+    if pending >= 100 or recent >= 30:
+        return "pending_capacity_reached"
+    member = _pending_member(conn, actor, display_name, guided=True)
+    conn.execute("UPDATE telegram_receipts SET learner_id=%s WHERE update_id=%s", (member["id"], update_id))
+    _job(conn, key, member, {"type": "access_request"}, done=True)
+    _notice(
+        conn,
+        key,
+        member,
+        "Your request is waiting for owner approval. Do not send personal documents yet. "
+        "You will receive the decision here. Approval lets you set up and approve your own learning plan. "
+        "Send /request to check your access status; repeated requests do not notify the owner again.",
+    )
+    # The admin dashboard shows pending requests. No automatic owner message for each public request.
+    _audit(conn, update_id, "request_access", member["id"])
+    return "pending"
+
+
+def _claim(conn, update_id, key, actor, display_name, owner, token, current, *, guided=False):
     digest = hashlib.sha256(token.encode()).hexdigest()
     invite = conn.execute(
         "SELECT * FROM invitations WHERE token_hash=%s AND status='open' AND expires_at>now() FOR UPDATE",
@@ -229,23 +294,8 @@ def _claim(conn, update_id, key, actor, display_name, owner, token, current):
     pending = conn.execute("SELECT count(*) AS n FROM learners WHERE status='pending'").fetchone()["n"]
     if pending >= 100:
         return "pending_capacity_reached"
-    ident = current["id"] if current else "u_" + uuid4().hex[:12]
-    if current:
-        _invalidate(conn, ident)
-        member = conn.execute(
-            "UPDATE learners SET status='pending',display_name=%s,generation=generation+1,updated_at=now() "
-            "WHERE id=%s RETURNING *",
-            (display_name, ident),
-        ).fetchone()
-    else:
-        member = conn.execute(
-            "INSERT INTO learners(id,telegram_id,display_name,status) VALUES (%s,%s,%s,'pending') RETURNING *",
-            (ident, actor, display_name),
-        ).fetchone()
-    conn.execute(
-        "INSERT INTO coach_state(learner_id,body) VALUES (%s,'{}') ON CONFLICT(learner_id) DO NOTHING",
-        (ident,),
-    )
+    member = _pending_member(conn, actor, display_name, current, guided=guided)
+    ident = member["id"]
     conn.execute("UPDATE invitations SET status='claimed',claimed_by=%s WHERE id=%s", (ident, invite["id"]))
     conn.execute("UPDATE telegram_receipts SET learner_id=%s WHERE update_id=%s", (ident, update_id))
     _job(conn, key, member, {"type": "access_claim", "invite_id": invite["id"]}, done=True)
@@ -312,6 +362,28 @@ def accept_update(repo, update_id: int, payload: dict, config) -> str:
             else:
                 _admin(conn, update_id, key, owner, command, argument, config)
                 outcome = "admin_handled"
+        elif command == "request" or (command == "start" and argument == "request"):
+            if argument and command == "request":
+                outcome = "denied"
+            elif member:
+                recent = conn.execute(
+                    "SELECT count(*) AS n FROM jobs WHERE learner_id=%s "
+                    "AND created_at>now()-interval '1 minute'",
+                    (member["id"],),
+                ).fetchone()["n"]
+                if recent < 2:
+                    _job(conn, key, member, {"type": "access_status"}, done=True)
+                    status_text = {
+                        "active": "Access approved. Use /onboard or /plan.",
+                        "pending": "Your request is waiting for owner approval. No duplicate request was created.",
+                        "rejected": "Your request was rejected. A fresh owner invitation is needed to reapply.",
+                        "revoked": "Access was revoked. A fresh owner invitation is needed to return.",
+                    }[member["status"]]
+                    _notice(conn, key, member, status_text)
+                outcome = member["status"]
+            else:
+                name = re.sub(r"[\r\n\t]+", " ", payload.get("display_name", ""))[:100]
+                outcome = _request(conn, update_id, key, actor, name, owner, member, config)
         elif command in ("start", "join") and INVITE_TOKEN.fullmatch(argument):
             if actor == config.owner_id:
                 _job(conn, key, owner, {"type": "access_claim"}, done=True)
@@ -328,6 +400,7 @@ def accept_update(repo, update_id: int, payload: dict, config) -> str:
                     owner,
                     INVITE_TOKEN.fullmatch(argument).group(1),
                     member,
+                    guided=config.access_requests_enabled,
                 )
         elif member and member["status"] == "active":
             recent = conn.execute(

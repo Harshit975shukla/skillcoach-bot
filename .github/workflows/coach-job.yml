@@ -98,6 +98,7 @@ jobs:
           TELEGRAM_BOT_USERNAME: ${{ vars.TELEGRAM_BOT_USERNAME }}
           PRIVATE_DASHBOARD_URL: ${{ vars.PRIVATE_DASHBOARD_URL }}
           MAX_LEARNERS: ${{ vars.MAX_LEARNERS || '10' }}
+          ACCESS_REQUESTS_ENABLED: ${{ vars.ACCESS_REQUESTS_ENABLED || 'false' }}
           DAILY_AI_OPERATIONS: ${{ vars.DAILY_AI_OPERATIONS || '40' }}
           NARRATION_ENABLED: ${{ vars.NARRATION_ENABLED || 'false' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}

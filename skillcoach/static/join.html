@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Join SkillCoach</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <link rel="stylesheet" href="/static/admin.css">
+  <script src="/static/join.js" defer></script>
+</head>
+<body>
+  <main class="workspace">
+    <header class="header"><a class="brand" href="/join">SkillCoach</a></header>
+    <section class="introduction" aria-labelledby="join-title">
+      <h1 id="join-title">Your learning starts with a plan you choose.</h1>
+      <p class="section-description">Cloud and DevOps lessons, practical exercises and feedback in Telegram.
+        Request access first. After the owner approves, build a study week around your goals.</p>
+      <div id="join-status" class="notice" role="status" aria-live="polite">Checking access-request availability...</div>
+      <a id="request-access" class="button-link primary" hidden rel="noopener noreferrer">Request access through Telegram</a>
+      <p class="section-description">Tap Start in Telegram to submit your request using your verified Telegram identity.
+        A request does not grant access. Your decision and setup invitation arrive in the same bot chat.
+        Already requested? Send <code>/request</code> there to check your status.</p>
+    </section>
+    <section aria-labelledby="steps-title">
+      <h2 id="steps-title">From request to your first lesson</h2>
+      <ol class="task-list">
+        <li><strong>1. Request and approval</strong><p>The owner reviews your request. Repeating it does not move you ahead or send another alert.</p></li>
+        <li><strong>2. A short, private setup</strong><p>Share your goal, experience and available time. A resume and job description are optional. Answer five diagnostic questions; not knowing yet is fine.</p></li>
+        <li><strong>3. Review your study week</strong><p>See topics, objectives and practice. Change the proposal or approve it, then choose when Day 1 starts. No artificial analysis wait.</p></li>
+      </ol>
+    </section>
+    <footer>
+      <p>Before guided setup, you decide whether to share your approved learning plan and progress summaries with the owner.
+        Documents, private answers and conversations are excluded. Coaching uses configured AI providers; estimates are not certification or job guarantees.</p>
+      <p>Existing learner? Open <code>/dashboard</code> or <code>/plan</code> in the bot. This public page never displays member information.</p>
+    </footer>
+  </main>
+</body>
+</html>
