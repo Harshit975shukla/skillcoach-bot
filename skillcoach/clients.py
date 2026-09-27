@@ -97,7 +97,19 @@ class AI:
                 "max_tokens": 6000,
             },
         )
-        return data["choices"][0]["message"]["content"]
+        try:
+            choice = data["choices"][0]
+            message = choice["message"]
+            if choice.get("finish_reason") == "length":
+                raise ExternalError("ai_response_truncated")
+            if message.get("refusal") or choice.get("finish_reason") == "content_filter":
+                raise ExternalError("ai_response_refused", retryable=False)
+            text = message["content"]
+        except (KeyError, IndexError, TypeError, AttributeError):
+            raise ExternalError("invalid_ai_envelope") from None
+        if not isinstance(text, str) or not text.strip():
+            raise ExternalError("invalid_ai_envelope")
+        return text
 
     def ask_gemini(self, prompt: str, budget: Budget) -> str:
         _, data = self.http.call(
@@ -107,7 +119,19 @@ class AI:
             headers={"x-goog-api-key": self.config.gemini_key},
             json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 6000}},
         )
-        return "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
+        try:
+            candidate = data["candidates"][0]
+            reason = candidate.get("finishReason")
+            if reason == "MAX_TOKENS":
+                raise ExternalError("ai_response_truncated")
+            if reason not in (None, "STOP"):
+                raise ExternalError("ai_response_refused", retryable=False)
+            text = "".join(p.get("text", "") for p in candidate["content"]["parts"])
+        except (KeyError, IndexError, TypeError, AttributeError):
+            raise ExternalError("invalid_ai_envelope") from None
+        if not text.strip():
+            raise ExternalError("invalid_ai_envelope")
+        return text
 
     def structured(self, prompt, model, budget: Budget, validate=None):
         prompt += "\nReturn ONLY JSON matching this schema:\n" + json.dumps(model.model_json_schema())
@@ -118,14 +142,28 @@ class AI:
             if not enabled:
                 continue
             try:
-                text = call(prompt, budget)
+                text = call(prompt, budget).strip()
                 if text.startswith("```") and text.endswith("```"):
                     text = text.split("\n", 1)[1].rsplit("```", 1)[0]
                 result = model.model_validate_json(text)
                 if validate:
                     validate(result)
                 return result
-            except (ExternalError, ValidationError, KeyError, IndexError, TypeError, ValueError) as exc:
+            except ValidationError as exc:
+                # Paths, messages and inputs can contain private dictionary keys or generated text.
+                reasons = sorted(
+                    {
+                        error["type"]
+                        for error in exc.errors(include_input=False, include_context=False, include_url=False)
+                    }
+                )
+                log.warning(
+                    "ai_provider_unavailable provider=%s code=invalid_ai_response schema=%s validation=%s",
+                    provider,
+                    model.__name__,
+                    ",".join(reasons[:5]),
+                )
+            except (ExternalError, KeyError, IndexError, TypeError, ValueError) as exc:
                 # Never log prompts, provider bodies, request URLs or credentials.
                 code = exc.code if isinstance(exc, ExternalError) else "invalid_ai_response"
                 log.warning("ai_provider_unavailable provider=%s code=%s", provider, code)

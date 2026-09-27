@@ -72,6 +72,25 @@ def test_scene_ids_counts_urls_and_generated_code_are_rejected():
         Storyboard.model_validate(raw)
 
 
+def test_official_terraform_registry_is_supported_without_allowing_lookalike_hosts():
+    raw = reviewed_architecture("EC2").model_dump()
+    raw["references"] = ["https://registry.terraform.io/providers/hashicorp/aws/latest/docs"]
+    assert Storyboard.model_validate(raw).references == raw["references"]
+    assert (
+        "registry.terraform.io" in Storyboard.model_json_schema()["properties"]["references"]["description"]
+    )
+    for invalid in (
+        "http://registry.terraform.io/providers/hashicorp/aws/latest/docs",
+        "https://registry.terraform.io.attacker.invalid/providers/hashicorp/aws/latest/docs",
+        "https://registry.terraform.io@attacker.invalid/providers/hashicorp/aws/latest/docs",
+        "https://attacker.invalid@registry.terraform.io/providers/hashicorp/aws/latest/docs",
+    ):
+        raw["references"] = [invalid]
+        with pytest.raises(ValidationError) as error:
+            Storyboard.model_validate(raw)
+        assert error.value.errors()[0]["type"] == "storyboard_reference_host"
+
+
 def test_request_markers_move_without_changing_camera_or_caption():
     story = reviewed_architecture("EC2")
     font_set = fonts()
@@ -237,6 +256,93 @@ def test_slow_multicall_lesson_checkpoints_resume_without_exhausting_failures(pg
             conn.execute("SELECT count(*) AS n FROM outbox WHERE id='slow-lesson:failure'").fetchone()["n"]
             == 0
         )
+
+
+@pytest.mark.postgres
+def test_failed_terraform_storyboard_resumes_cached_lesson_without_regrading(pg_repo, config, monkeypatch):
+    from datetime import datetime
+
+    from conftest import FakeAI, FakePublisher, FakeTelegram
+    from test_flows import question_set
+
+    from skillcoach.models import Answer, Assessment
+    from skillcoach.runtime import Runtime
+    from skillcoach.timeutil import IST
+
+    now = datetime(2026, 9, 27, 8, tzinfo=IST)
+    quiz = Assessment(
+        id="completed-quiz",
+        kind="daily",
+        date=now.date(),
+        week="2026-W39",
+        status="completed",
+        questions=question_set(5)["questions"],
+        question_ids=[f"q{i}" for i in range(5)],
+        answers=[Answer(question_id=f"q{i}", given="B", correct=True, created_at=now) for i in range(5)],
+        completed_at=now,
+    )
+    pg_repo.enqueue("quiz", {"type": "telegram", "text": "/q B"})
+    token = pg_repo.acquire("domain", 60)
+    try:
+        revision, state = pg_repo.read()
+        state.assessments[quiz.id] = quiz
+        pg_repo.finish("quiz", token, revision, state, [], [(quiz.id, q) for q in quiz.question_ids])
+    finally:
+        pg_repo.release("domain", token)
+
+    lesson = json.loads(json.dumps(LESSONS["ec2"]))
+    lesson["title"] = "Terraform providers and resources"
+    lesson["reviewed_at"] = "AI-generated; not independently reviewed"
+    lesson["references"] = ["https://registry.terraform.io/providers/hashicorp/aws/latest/docs"]
+    pg_repo.enqueue("learning", {"type": "telegram", "text": "/learn Terraform providers"})
+    token = pg_repo.acquire("domain", 60)
+    try:
+        assert pg_repo.next_job(token)["id"] == "learning"
+        pg_repo.cache("learning", "lesson", lesson, token)
+        pg_repo.fail("learning", token, "ai_unavailable_or_invalid")
+    finally:
+        pg_repo.release("domain", token)
+    with pg_repo.connection() as conn:
+        conn.execute("UPDATE jobs SET available_at=now() WHERE id='learning'")
+        answers_before = conn.execute("SELECT * FROM answer_keys ORDER BY question_id").fetchall()
+
+    story = reviewed_architecture("EC2").model_dump()
+    story["references"] = lesson["references"]
+    ai, telegram = FakeAI(), FakeTelegram()
+    ai.responses.extend([story] * 5)
+    videos = []
+
+    def deliver(telegram, body, budget, *, before_send, cached):
+        before_send()
+        videos.append(body)
+        return {"file_id": "synthetic-video", "kind": "video", "metadata": {"voice": False}}
+
+    monkeypatch.setattr("skillcoach.runtime.deliver_storyboard", deliver)
+    runtime = Runtime(config, pg_repo, ai, telegram, FakePublisher(), lambda: now)
+    runtime.recover()
+    state = pg_repo.read()[1]
+    assert state.assessments == {quiz.id: quiz}
+    assert len(state.lessons) == 1 and len(state.tasks) == 3
+    assert len(ai.calls) == 5 and all(model == "Storyboard" for _, model in ai.calls)
+    assert pg_repo.cached("learning", "lesson") == lesson
+    assert len(videos) == 5 and all(not body["voice"] and body["mode"] == "video" for body in videos)
+    with pg_repo.connection() as conn:
+        assert conn.execute("SELECT * FROM answer_keys ORDER BY question_id").fetchall() == answers_before
+        assert conn.execute("SELECT status FROM jobs WHERE id='learning'").fetchone()["status"] == "done"
+        assert conn.execute("SELECT count(*) AS n FROM task_keys").fetchone()["n"] == 3
+        assert (
+            conn.execute("SELECT count(*) AS n FROM ai_results WHERE job_id='learning'").fetchone()["n"] == 6
+        )
+        assert conn.execute("SELECT count(*) AS n FROM ai_usage WHERE job_id='learning'").fetchone()["n"] == 5
+        assert (
+            conn.execute(
+                "SELECT count(*) AS n FROM outbox WHERE status NOT IN ('sent','suppressed')"
+            ).fetchone()["n"]
+            == 0
+        )
+    delivered = len(telegram.messages)
+    runtime.recover()
+    assert len(ai.calls) == 5 and len(videos) == 5 and len(telegram.messages) == delivered
 
 
 @pytest.mark.postgres

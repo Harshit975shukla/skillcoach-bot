@@ -85,6 +85,96 @@ def test_actual_groq_then_gemini_dispatch_and_no_provider(config):
         AI(replace(config, groq_key="", gemini_key="")).structured("diagnostic", Readiness, Budget())
 
 
+def test_terraform_storyboard_uses_valid_primary_without_unavailable_fallback(config):
+    from skillcoach.storyboard import Storyboard, reviewed_architecture
+
+    story = reviewed_architecture("EC2").model_dump()
+    story["references"] = ["https://registry.terraform.io/providers/hashicorp/aws/latest/docs"]
+    session = Session(
+        [
+            Response(
+                200, {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(story)}}]}
+            ),
+            Response(404, {}),
+        ]
+    )
+    ai = AI(replace(config, groq_key="fake-primary", gemini_key="fake-fallback"), HTTP(session))
+    assert ai.structured("Synthetic Terraform lesson", Storyboard, Budget()).references == story["references"]
+    assert len(session.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "envelope,code",
+    [
+        ({}, "invalid_ai_envelope"),
+        ({"choices": []}, "invalid_ai_envelope"),
+        ({"choices": [{"message": {"content": None}}]}, "invalid_ai_envelope"),
+        ({"choices": [{"finish_reason": "length", "message": {"content": "{}"}}]}, "ai_response_truncated"),
+        ({"choices": [{"message": {"refusal": "private refusal"}}]}, "ai_response_refused"),
+    ],
+)
+def test_groq_envelope_failures_have_safe_codes_and_use_fallback(config, caplog, envelope, code):
+    session = Session(
+        [
+            Response(200, envelope),
+            Response(200, {"candidates": [{"content": {"parts": [{"text": json.dumps(READINESS)}]}}]}),
+        ]
+    )
+    ai = AI(replace(config, groq_key="private-key", gemini_key="private-backup"), HTTP(session))
+    assert ai.structured("private prompt", Readiness, Budget()).readiness_score == 61
+    assert len(session.calls) == 2 and f"code={code}" in caplog.text
+    assert "private" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "envelope,code",
+    [
+        ({"candidates": []}, "invalid_ai_envelope"),
+        ({"candidates": [{"finishReason": "MAX_TOKENS"}]}, "ai_response_truncated"),
+        ({"candidates": [{"finishReason": "SAFETY"}]}, "ai_response_refused"),
+    ],
+)
+def test_gemini_envelope_failures_remain_explicit(config, caplog, envelope, code):
+    session = Session([Response(200, envelope)])
+    ai = AI(replace(config, gemini_key="private-backup"), HTTP(session))
+    with pytest.raises(ExternalError, match="ai_unavailable_or_invalid"):
+        ai.structured("private prompt", Readiness, Budget())
+    assert len(session.calls) == 1 and f"code={code}" in caplog.text
+    assert "private" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "text,reason",
+    [("private-invalid-json", "json_invalid"), ('{"text": 123}', "string_type")],
+)
+def test_json_and_schema_failure_categories_do_not_leak_inputs(config, caplog, text, reason):
+    from skillcoach.service import CoachingText
+
+    session = Session([Response(200, {"choices": [{"message": {"content": text}}]})])
+    with pytest.raises(ExternalError, match="ai_unavailable_or_invalid"):
+        AI(replace(config, groq_key="private-key"), HTTP(session)).structured(
+            "private prompt", CoachingText, Budget()
+        )
+    assert f"validation={reason}" in caplog.text
+    assert "schema=CoachingText" in caplog.text
+    assert "private" not in caplog.text and text not in caplog.text
+
+
+def test_storyboard_semantic_failure_logs_only_safe_category(config, caplog):
+    from skillcoach.storyboard import Storyboard, reviewed_architecture
+
+    raw = reviewed_architecture("EC2").model_dump()
+    raw["references"] = ["https://private-value.invalid/private-path"]
+    session = Session([Response(200, {"choices": [{"message": {"content": json.dumps(raw)}}]})])
+    with pytest.raises(ExternalError, match="ai_unavailable_or_invalid"):
+        AI(replace(config, groq_key="private-key"), HTTP(session)).structured(
+            "private prompt", Storyboard, Budget()
+        )
+    assert "validation=storyboard_reference_host" in caplog.text
+    assert "schema=Storyboard" in caplog.text
+    assert "private" not in caplog.text and "https://" not in caplog.text
+
+
 @pytest.mark.parametrize("invalid", [None, -1, 101, True, "50", 5.5])
 def test_invalid_readiness_never_becomes_fifty(invalid):
     with pytest.raises(ValidationError):

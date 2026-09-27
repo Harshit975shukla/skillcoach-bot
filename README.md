@@ -130,6 +130,14 @@ Webhook behavior:
 
 Outbox items preserve order within an operation. Error notices can bypass a failed item, but a “published” success message cannot pass a failed export. Unrelated commands continue. Automatic retries have five attempts and a five-minute backoff; `/retry` resets failed work after the underlying issue is fixed. `/status` shows queue counts. Secret-safe error codes are retained privately in `jobs.error_code` and `outbox.error_code`; logs omit request URLs, provider bodies, prompts and credentials.
 
+AI diagnostics distinguish malformed provider envelopes, truncated/refused responses, JSON/schema
+errors and storyboard semantic errors using safe categories, never raw responses or learner text.
+Generated storyboard references use an exact-host HTTPS allowlist, including the official Terraform
+Registry (`registry.terraform.io`) for provider documentation. Lookalike domains and credential-bearing
+URLs remain rejected. Fixing a failed storyboard resumes its existing job from the validated lesson
+checkpoint; it does not regenerate that lesson, regrade quizzes or substitute a generic video.
+An unavailable fallback remains an explicit provider error, not a successful recovery.
+
 **Telegram is not exactly-once transport.** If a send succeeds but recording its receipt fails, recovery may send it again. Pause/cancel cannot retract a message already sent or in flight. Domain answers/task progress remain idempotent. `/pause` atomically suppresses queued scheduled deliveries and cancels queued scheduled jobs; `/unpause` enables future runs without resurrecting old messages. Manual coaching remains usable.
 
 Supabase transaction poolers are supported: automatic prepared statements are disabled, and schema/timeouts are transaction-local. Use the exact provider-issued pooler endpoint; do not buy an IPv4 add-on or guess the region/cluster hostname.

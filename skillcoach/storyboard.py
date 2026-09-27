@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
+from pydantic_core import PydanticCustomError
 
 from skillcoach.models import Model
 
@@ -22,6 +23,7 @@ REFERENCE_HOSTS = {
     "kubernetes.io",
     "docs.docker.com",
     "developer.hashicorp.com",
+    "registry.terraform.io",
     "opentofu.org",
     "www.pulumi.com",
     "docs.ansible.com",
@@ -59,8 +61,8 @@ class Actor(Model):
 
 class Edge(Model):
     id: Identifier
-    source: Identifier
-    target: Identifier
+    source: Identifier = Field(description="An existing actors[].id, different from target.")
+    target: Identifier = Field(description="An existing actors[].id, different from source.")
     label: Annotated[str, Field(max_length=30)] = ""
     kind: Literal["request", "control", "replication"] = "request"
 
@@ -68,17 +70,25 @@ class Edge(Model):
 class Scene(Model):
     title: Annotated[str, Field(min_length=1, max_length=70)]
     caption: Annotated[str, Field(min_length=1, max_length=180)]
-    narration: Annotated[str, Field(min_length=15, max_length=360)]
-    active_edges: list[Identifier] = Field(default_factory=list, max_length=8)
-    highlights: list[Identifier] = Field(default_factory=list, max_length=6)
+    narration: Annotated[str, Field(min_length=15, max_length=360)] = Field(
+        description="At most 55 words. Explain the scene; do not claim personal experience."
+    )
+    active_edges: list[Identifier] = Field(
+        default_factory=list, max_length=8, description="Only existing edges[].id values, not actor IDs."
+    )
+    highlights: list[Identifier] = Field(
+        default_factory=list, max_length=6, description="Only existing actors[].id values, not edge IDs."
+    )
     states: dict[Identifier, Literal["healthy", "unhealthy", "starting", "waiting", "complete"]] = Field(
-        default_factory=dict
+        default_factory=dict, description="Keys must be existing actors[].id values."
     )
 
     @model_validator(mode="after")
     def bounded_speech(self):
         if len(self.narration.split()) > 55:
-            raise ValueError("Each scene must be a short explanation, at most 55 words")
+            raise PydanticCustomError(
+                "storyboard_narration_length", "Each scene must be a short explanation, at most 55 words"
+            )
         return self
 
 
@@ -88,9 +98,16 @@ class Storyboard(Model):
     pattern: Literal["flow", "decision", "timeline", "comparison"]
     actors: list[Actor] = Field(min_length=2, max_length=6)
     edges: list[Edge] = Field(max_length=8)
-    scenes: list[Scene] = Field(min_length=3, max_length=5)
+    scenes: list[Scene] = Field(
+        min_length=3,
+        max_length=5,
+        description="Each scene must have at least one active edge, actor highlight or actor state.",
+    )
     references: list[Annotated[str, Field(min_length=10, max_length=400)]] = Field(
-        min_length=1, max_length=10
+        min_length=1,
+        max_length=10,
+        description="Official HTTPS references only. Allowed exact hosts: "
+        + ", ".join(sorted(REFERENCE_HOSTS)),
     )
 
     @model_validator(mode="after")
@@ -98,27 +115,38 @@ class Storyboard(Model):
         actors = {actor.id for actor in self.actors}
         edges = {edge.id for edge in self.edges}
         if len(actors) != len(self.actors) or len(edges) != len(self.edges):
-            raise ValueError("Actor and edge identifiers must be unique")
+            raise PydanticCustomError("storyboard_duplicate_ids", "Actor and edge identifiers must be unique")
         if any(
             edge.source not in actors or edge.target not in actors or edge.source == edge.target
             for edge in self.edges
         ):
-            raise ValueError("Every edge must connect two different declared actors")
+            raise PydanticCustomError(
+                "storyboard_edge_reference", "Every edge must connect two different declared actors"
+            )
         for scene in self.scenes:
             if (
                 not set(scene.active_edges) <= edges
                 or not set(scene.highlights) <= actors
                 or not set(scene.states) <= actors
             ):
-                raise ValueError("Scenes may only refer to declared actors and edges")
+                raise PydanticCustomError(
+                    "storyboard_scene_reference", "Scenes may only refer to declared actors and edges"
+                )
             if not scene.active_edges and not scene.highlights and not scene.states:
-                raise ValueError("Each scene must show a meaningful change or focus")
+                raise PydanticCustomError(
+                    "storyboard_empty_scene", "Each scene must show a meaningful change or focus"
+                )
             if any(ord(char) < 32 and char not in "\n\t" for char in scene.narration):
-                raise ValueError("Narration contains unsupported control characters")
+                raise PydanticCustomError(
+                    "storyboard_control_characters", "Narration contains unsupported control characters"
+                )
         for reference in self.references:
             parsed = urlsplit(reference)
             if parsed.scheme != "https" or parsed.hostname not in REFERENCE_HOSTS or parsed.username:
-                raise ValueError("References must use an allowlisted official HTTPS documentation host")
+                raise PydanticCustomError(
+                    "storyboard_reference_host",
+                    "References must use an allowlisted official HTTPS documentation host",
+                )
         return self
 
 
