@@ -272,11 +272,11 @@ def test_generated_full_lesson_has_stable_tasks_and_video_default(harness):
     h.ai.responses.append(generated)
     from skillcoach.storyboard import reviewed_architecture
 
-    h.ai.responses.extend([reviewed_architecture("EC2").model_dump() for _ in range(5)])
+    h.ai.responses.append(reviewed_architecture("EC2").model_dump())
     command(h, "/learn Python")
     assert len(h.repo.state.tasks) == 3
-    assert len(h.ai.calls) == 6
-    assert len([o for o in h.repo.outbox.values() if o["body"]["kind"] == "media"]) == 5
+    assert len(h.ai.calls) == 2
+    assert len([o for o in h.repo.outbox.values() if o["body"]["kind"] == "media"]) == 1
     assert all(t.skill == "python" for t in h.repo.state.tasks.values())
     command(h, "/learn Python")
-    assert len(h.repo.state.tasks) == 3 and len(h.ai.calls) == 6
+    assert len(h.repo.state.tasks) == 3 and len(h.ai.calls) == 2

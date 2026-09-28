@@ -6,19 +6,52 @@ import { join } from "node:path";
 import puppeteer from "puppeteer";
 
 let denied = false;
-let uploadPreviews = 0, uploadConfirms = 0, dataRequests = 0, labFailOnce = false;
+let uploadPreviews = 0, uploadConfirms = 0, dataRequests = 0, labFailOnce = false, lessonRequests = 0, lessonDenied = false;
 const labSubmits = [];
 const LAB_TOKEN = "SC-TEST-TOKN";
+const LESSON_ID = "0123456789abcdef0123";
+const MISSING_LESSON = "fedcba9876543210fedc";
+const spans = text => [{t: "text", v: text}];
+const lessonFixture = {
+  id: LESSON_ID, title: "CI pipeline design: stages, artifacts and caching", date: "2026-09-29", available: true,
+  review: "Reviewed lesson · 2026-09-28",
+  sections: [
+    {heading: "Why it matters", blocks: [{type: "p", spans: [{t: "text", v: "Build once, "}, {t: "b", v: "promote"},
+      {t: "text", v: " the same artifact.\nSecond line keeps its break."}]}]},
+    {heading: "1. Artifacts", blocks: [
+      {type: "p", spans: [{t: "text", v: "Use "}, {t: "code", v: "actions/upload-artifact@v7"},
+        {t: "text", v: " <img src=x onerror='window.pwnedLesson=true'>"}]},
+      {type: "code", lang: "yaml", text: "jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo " + "long-line-".repeat(30)},
+      {type: "ol", start: 3, items: [spans("Third step"), spans("Fourth step")]},
+    ]},
+  ],
+  exercises: [
+    {id: "task-open-1", title: "Build the artifact once", minutes: 8, status: "pending",
+      blocks: [{type: "p", spans: [{t: "b", v: "Goal:"}, {t: "text", v: " produce one checksummed artifact."}]}]},
+    {id: "task-done-2", title: "Cache dependencies", minutes: 10, status: "done", blocks: [{type: "p", spans: spans("Key the cache.")}]},
+  ],
+  notes: [{heading: "Cleanup", blocks: [{type: "ul", start: 1, items: [spans("Delete the test repository.")]}]}],
+  extension: [{title: "Matrix builds", minutes: 15, blocks: [{type: "p", spans: spans("Optional.")}]}],
+  interview: {question: [{type: "p", spans: spans("How would you guarantee the tested artifact is the deployed one?")}],
+              points: [[{type: "p", spans: spans("Build once and pass the artifact.")}], [{type: "p", spans: spans("Verify a checksum.")}]]},
+  references: ["https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts",
+               "javascript:window.pwnedLesson=true"],
+  feedback: "up", generated_at: new Date().toISOString(),
+};
 const fixture = {
   profile: {name: "Synthetic learner", target_role: "Platform engineer", level: "intermediate", setup_complete: true},
   stats: {done: 4, pending: 2, total: 6, streak: 2, minutes_practiced: 65, answers_graded: 1},
   preferences: {paused: false, media: "video"},
   tasks: [
     {id: "test-task-1", title: "Explain health-based traffic routing", skill: "AWS EC2", estimated_minutes: 20,
-      assigned_date: "2026-09-26", detail: "Sketch two availability zones.\nExplain how healthy capacity handles requests."},
+      assigned_date: "2026-09-26", detail: "Sketch two availability zones.\nExplain how healthy capacity handles requests.",
+      detail_blocks: [{type: "p", spans: [{t: "b", v: "Goal:"}, {t: "text", v: " explain routing."}]},
+                      {type: "ol", start: 1, items: [spans("Sketch two availability zones.")]}]},
     {id: "test-task-2", title: "Trace a Kubernetes readiness failure", skill: "Kubernetes networking",
       estimated_minutes: 15, assigned_date: "2026-09-26", detail: "Compare pod readiness and liveness."},
   ],
+  lessons: [{id: LESSON_ID, topic: "CI pipeline design", date: "2026-09-29", delivered: true},
+            {id: MISSING_LESSON, topic: "Kubernetes pods", date: "2026-09-28", delivered: false}],
   plan: [{date: "2026-09-28", topic: "AWS EC2: instance health and replacement"},
          {date: "2026-09-29", topic: "Kubernetes: readiness and service routing"}],
   skills: [{skill: "AWS EC2", done: 3, total: 4}, {skill: "Kubernetes networking", done: 1, total: 2}],
@@ -104,9 +137,23 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify(denied ? {error: "Access was revoked. Reopen from Telegram."} : fixture));
     return;
   }
+  if (request.url === "/app/lesson") {
+    assert.equal(request.method, "POST");
+    assert.equal(request.headers.cookie, undefined);
+    let raw = ""; for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    assert.deepEqual(Object.keys(body).sort(), ["init_data", "lesson"]);
+    lessonRequests++;
+    const [status, payload] = lessonDenied ? [403, {error: "Access was revoked. Reopen from Telegram."}]
+      : body.lesson === LESSON_ID ? [200, {lesson: lessonFixture, auth_expires_at: fixture.auth_expires_at, private: true}]
+      : [404, {error: "This lesson is not in your learning history."}];
+    response.writeHead(status, {"Content-Type": "application/json", "Cache-Control": "no-store"});
+    response.end(JSON.stringify(payload));
+    return;
+  }
   const names = {"/app": ["dashboard.html", "text/html"], "/static/dashboard.css": ["dashboard.css", "text/css"],
                  "/static/dashboard.js": ["dashboard.js", "text/javascript"]};
-  const selected = names[request.url];
+  const selected = names[request.url.split("?")[0]];
   if (!selected) { response.writeHead(404).end(); return; }
   response.writeHead(200, {"Content-Type": selected[1]});
   response.end(await readFile(join("skillcoach", "static", selected[0])));
@@ -135,7 +182,7 @@ try {
     await page.goto(origin + "/app");
     await page.waitForFunction(() => !document.getElementById("content").hidden);
     assert.equal(await page.$eval("#learner-name", e => e.textContent), "Synthetic learner");
-    assert.equal(await page.$$eval("#tasks li", e => e.length), 2);
+    assert.equal(await page.$$eval("#tasks > li", e => e.length), 2);
     assert.match(await page.$eval("#plan-status", e => e.textContent), /Awaiting your approval/);
     assert.equal(await page.$eval("#plan-bot-link", e => e.href), "https://t.me/SkillCoachTestBot?start=plan");
     assert.equal(await page.evaluate(() => document.body.classList.contains("telegram-light")), true);
@@ -143,6 +190,42 @@ try {
     if (process.env.DASHBOARD_SCREENSHOT_DIR) {
       await page.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, `dashboard-${label}.png`), fullPage: true});
     }
+    // Task details render the Markdown subset as elements, never as literal ** markers.
+    assert.equal(await page.$eval("#tasks li:first-child details strong", e => e.textContent), "Goal:");
+    assert.equal(await page.evaluate(() => document.getElementById("tasks").textContent.includes("**")), false);
+    // Lesson page: open from the list, read every part, then return with nothing left behind.
+    assert.equal(await page.$$eval("#lesson-list > li", e => e.length), 2);
+    assert.match(await page.$eval("#lesson-list li:nth-child(2)", e => e.textContent), /still being delivered/);
+    await page.click("#lesson-list > li:first-child button");
+    await page.waitForFunction(() => !document.getElementById("lesson-page").hidden);
+    assert.equal(await page.$eval("#content", e => e.hidden), true);
+    assert.equal(await page.$eval("#lesson-title", e => e.textContent), lessonFixture.title);
+    assert.match(await page.$eval("#lesson-meta", e => e.textContent), /Reviewed lesson/);
+    assert.equal(await page.$eval("#lesson-body .prose strong", e => e.textContent), "promote");
+    assert.match(await page.$eval("#lesson-body .prose p", e => getComputedStyle(e).whiteSpace), /pre-line/);
+    assert.equal(await page.$eval("#lesson-body .code-block code", e => e.textContent.startsWith("jobs:\n  build:")), true);
+    assert.equal(await page.$eval("#lesson-body ol[start]", e => e.start), 3);
+    assert.equal(await page.evaluate(() => document.querySelectorAll("#lesson-body img").length), 0);
+    assert.deepEqual(await page.$$eval("#lesson-exercises li code", e => e.map(c => c.textContent)), ["/complete task-open-1"]);
+    assert.equal(await page.$$eval("#lesson-interview details li", e => e.length), 2);
+    assert.equal(await page.$eval("#lesson-interview details", e => e.open), false);
+    assert.deepEqual(await page.$$eval("#lesson-references a", e => e.map(a => a.href)), [lessonFixture.references[0]]);
+    assert.deepEqual(await page.$$eval("#lesson-jump a", e => e.map(a => a.textContent)), ["Exercises", "Interview", "References"]);
+    assert.match(await page.$eval("#lesson-feedback", e => e.textContent), /“Useful”/);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "code scrolls inside its block");
+    assert.equal(await page.evaluate(() => window.pwnedLesson), undefined);
+    if (process.env.DASHBOARD_SCREENSHOT_DIR) {
+      await page.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, `lesson-${label}.png`), fullPage: true});
+    }
+    await page.click("#lesson-back");
+    assert.equal(await page.$eval("#lesson-view", e => e.hidden), true);
+    assert.equal(await page.$eval("#content", e => e.hidden), false);
+    assert.equal(await page.$eval("#lesson-body", e => e.children.length), 0);
+    await page.click("#lesson-list > li:nth-child(2) button");
+    await page.waitForFunction(() => document.getElementById("lesson-status").textContent.includes("not in your learning history"));
+    assert.equal(await page.$eval("#lesson-page", e => e.hidden), true);
+    await page.click("#lesson-back");
+    assert.equal(await page.$eval("#content", e => e.hidden), false);
     await (await page.$("#document-file")).uploadFile(uploadPath);
     await page.click("#document-preview-button");
     await page.waitForFunction(() => !document.getElementById("document-preview").hidden);
@@ -277,7 +360,7 @@ try {
     denied = true;
     await page.click("#refresh");
     await page.waitForFunction(() => document.getElementById("content").hidden);
-    assert.equal(await page.$$eval("#tasks li", e => e.length), 0);
+    assert.equal(await page.$$eval("#tasks > li", e => e.length), 0);
     assert.equal(await page.$$eval("#lab-items > li", e => e.length), 0);
     assert.equal(await page.$eval("#plan-rationale", e => e.textContent), "");
     assert.match(await page.$eval("#notice", e => e.textContent), /revoked/);
@@ -310,7 +393,50 @@ try {
   assert.equal(await stale.$eval("#content", e => e.hidden), true);
   assert.equal(await stale.$eval("#plan-rationale", e => e.textContent), "");
   await stale.close();
-  console.log("Private dashboard mobile/desktop, labs, text escaping, revocation clearing and direct-open checks passed.");
+  // A lesson link from Telegram opens straight into that lesson and clears it when hidden.
+  const direct = await browser.newPage();
+  await direct.setRequestInterception(true);
+  direct.on("request", request => {
+    if (request.url().startsWith("https://telegram.org/")) {
+      request.respond({status: 200, contentType: "text/javascript", body:
+        "window.backShown=0;window.Telegram={WebApp:{initData:'synthetic',colorScheme:'dark',ready(){},expand(){},onEvent(){}," +
+        "BackButton:{show(){window.backShown++},hide(){window.backShown=0},onClick(f){window.backClick=f}}}};"});
+    } else if (request.url().startsWith(origin)) request.continue();
+    else request.abort();
+  });
+  await direct.setViewport({width: 390, height: 900, deviceScaleFactor: 1});
+  await direct.goto(`${origin}/app?lesson=${LESSON_ID}`);
+  await direct.waitForFunction(() => !document.getElementById("lesson-page").hidden);
+  assert.equal(await direct.$eval("#content", e => e.hidden), true);
+  assert.ok(await direct.evaluate(() => window.backShown > 0));
+  if (process.env.DASHBOARD_SCREENSHOT_DIR) {
+    await direct.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, "lesson-dark-mobile.png"), fullPage: true});
+  }
+  await direct.evaluate(() => {
+    Object.defineProperty(document, "hidden", {configurable: true, value: true});
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  assert.equal(await direct.$eval("#lesson-view", e => e.hidden), true);
+  assert.equal(await direct.evaluate(() => document.body.textContent.includes("guarantee the tested artifact")), false);
+  const reopened = lessonRequests;
+  await direct.evaluate(() => {
+    Object.defineProperty(document, "hidden", {configurable: true, value: false});
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await direct.waitForFunction(() => !document.getElementById("lesson-page").hidden);
+  assert.equal(lessonRequests, reopened + 1);
+  await direct.evaluate(() => window.backClick());
+  assert.equal(await direct.$eval("#content", e => e.hidden), false);
+  assert.equal(await direct.evaluate(() => window.backShown), 0);
+  lessonDenied = true;
+  await direct.click("#lesson-list > li:first-child button");
+  await direct.waitForFunction(() => !document.getElementById("notice").hidden);
+  assert.match(await direct.$eval("#notice", e => e.textContent), /revoked/);
+  assert.equal(await direct.$eval("#lesson-view", e => e.hidden), true);
+  assert.equal(await direct.$eval("#content", e => e.hidden), true);
+  lessonDenied = false;
+  await direct.close();
+  console.log("Private dashboard mobile/desktop, lesson page, labs, text escaping, revocation clearing and direct-open checks passed.");
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

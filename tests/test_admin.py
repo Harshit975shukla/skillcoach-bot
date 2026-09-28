@@ -395,6 +395,12 @@ def test_admin_overview_contains_counts_not_private_learning_content(admin):
                 score=7, accuracy=7, reasoning=7, communication=7, feedback=private, model_answer=private
             ),
         )
+        state.lessons["2026-09-25:private"] = {
+            "topic": private,
+            "date": "2026-09-25",
+            "id": "a" * 20,
+            "feedback": {"rating": "down", "reports": ["outdated", private], "note": private},
+        }
 
     admin.bot.save(guest, seed)
     login(admin)
@@ -402,6 +408,10 @@ def test_admin_overview_contains_counts_not_private_learning_content(admin):
     assert response.status_code == 200
     assert private not in response.get_data(as_text=True)
     assert "resume_text" not in response.get_data(as_text=True)
+    assert response.json["lesson_feedback"] == {
+        "ratings": {"up": 0, "down": 1},
+        "reports": {"wrong": 0, "outdated": 1, "confusing": 0, "hard": 0, "easy": 0},
+    }
     member = next(item for item in response.json["learners"] if item["id"] == guest.learner_id)
     assert member["progress"]["assigned"] == 1 and member["progress"]["interviews_completed"] == 1
     assert "profile" not in member and "telegram_id" not in member

@@ -54,7 +54,8 @@ def verify_init_data(raw: str, bot_token: str, now: int) -> tuple[int, int]:
         ) from None
 
 
-def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narration_enabled=False, config=None):
+def authorize_learner(repo, actor: int, issued: int, auth_hash: str):
+    """Verify membership and bind the launch data to its access generation; returns (learner_id, state)."""
     with repo.connection() as conn:
         row = conn.execute(
             "SELECT l.id,l.status,l.generation,l.updated_at,c.body FROM learners l "
@@ -77,7 +78,14 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
         ).fetchone()
         if session["learner_id"] != row["id"] or session["access_generation"] != row["generation"]:
             raise DashboardDenied("Your access changed. Reopen the dashboard from Telegram.")
-        state = State.model_validate(row["body"])
+        return row["id"], State.model_validate(row["body"])
+
+
+def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narration_enabled=False, config=None):
+    from skillcoach.formatting import md_blocks
+    from skillcoach.lesson_delivery import recent_lessons
+
+    _, state = authorize_learner(repo, actor, issued, auth_hash)
     profile = state.profile
     today = now.astimezone(IST).date()
     plan = state.plans.get(monday(today).isoformat())
@@ -113,6 +121,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
                 "title": t.title,
                 "skill": t.skill,
                 "detail": t.detail,
+                "detail_blocks": md_blocks(t.detail),
                 "assigned_date": t.assigned_date.isoformat(),
                 "estimated_minutes": t.estimated_minutes,
             }
@@ -122,6 +131,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
         if plan
         else [],
         "skills": skill_summary(state, public=False),
+        "lessons": recent_lessons(state),
         "recent_interviews": [
             {
                 "question": i.question.question,
@@ -208,6 +218,32 @@ def register_dashboard(app, runtime_factory):
             return jsonify(error=str(exc)), 403
         except (ConfigurationError, ValidationError, *STORAGE_ERRORS):
             return jsonify(error="Private progress is temporarily unavailable. Try Refresh shortly."), 503
+
+    @app.post("/app/lesson")
+    def dashboard_lesson():
+        from skillcoach.lesson_delivery import LESSON_ID, page
+
+        try:
+            runtime = runtime_factory()
+            body = request.get_json(silent=True)
+            if request.args or not isinstance(body, dict) or set(body) != {"init_data", "lesson"}:
+                raise DashboardDenied("Open this lesson from the bot.")
+            if not isinstance(body["lesson"], str) or not LESSON_ID.fullmatch(body["lesson"]):
+                return jsonify(error="That lesson link is not valid."), 404
+            actor, issued = verify_init_data(
+                body["init_data"], runtime.config.telegram_token, int(runtime.clock().timestamp())
+            )
+            digest = hashlib.sha256(body["init_data"].encode()).hexdigest()
+            with runtime.repo.session():
+                learner, state = authorize_learner(runtime.repo, actor, issued, digest)
+                data = page(runtime.repo.for_learner(learner), state, body["lesson"], runtime.clock())
+            if data is None:
+                return jsonify(error="This lesson is not in your learning history."), 404
+            return jsonify(lesson=data, auth_expires_at=issued + MAX_AUTH_AGE, private=True)
+        except DashboardDenied as exc:
+            return jsonify(error=str(exc)), 403
+        except (ConfigurationError, ValidationError, *STORAGE_ERRORS):
+            return jsonify(error="This lesson is temporarily unavailable. Try again shortly."), 503
 
     def document_identity(runtime):
         from skillcoach.admin_auth import same_origin

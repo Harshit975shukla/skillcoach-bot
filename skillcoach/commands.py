@@ -14,7 +14,7 @@ COMMANDS = {
     "gaps": "Private skill gaps",
     "curriculum": "This week's personalized plan",
     "nextweek": "<preference> for the next unplanned week",
-    "learn": "<topic> full lesson with tracked tasks and animated diagrams",
+    "learn": "<topic> lesson, video and tracked exercises",
     "ask": "<question> personalized coaching",
     "mock": "[topic] sample Q&A, not a graded interview",
     "interview": "[topic] question-first interview (or 'next' for another round)",
@@ -60,7 +60,8 @@ def help_text(*, admin=True):
             f"/{name} - {description}" for name, description in ADMIN_COMMANDS.items()
         )
     return (
-        text + "\n\nPrivacy: the owner sees access status, activity counts and delivery health. "
+        text + "\n\nPrivacy: the owner sees access status, activity counts, delivery health and "
+        "lesson-rating totals. "
         "After guided-setup consent, they also see approved catalog topics, controlled learning reasons "
         "and assessment summaries, not private documents, answers or feedback."
     )

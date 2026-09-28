@@ -275,7 +275,7 @@ def test_day_one_preflight_and_single_recovery_run_send_full_lesson(pg_repo, con
     runtime = Runtime(config, pg_repo, FakeAI(), FakeTelegram(), FakePublisher(), lambda: now)
     runtime.ai.responses.append(core_guide())
     runtime.recover(media=pg_repo.needs_media())
-    assert len(videos) == 5 and all(not b["voice"] for b in videos)
+    assert len(videos) == 1 and all(not b["voice"] for b in videos)
     state = pg_repo.read()[1]
     assert len(state.tasks) == 2
     assert all(lesson["delivered_at"] for lesson in state.lessons.values())
@@ -288,4 +288,4 @@ def test_day_one_preflight_and_single_recovery_run_send_full_lesson(pg_repo, con
             == 0
         )
     runtime.recover(media=True)
-    assert len(videos) == 5
+    assert len(videos) == 1

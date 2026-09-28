@@ -18,7 +18,8 @@ as the final submitted answer. Failure notices do not count; ambiguous cross-dat
 Approved session objectives, practice and level now produce a separate bounded core study section:
 15/30/45/60-minute targets allocate 5/10/15/20 minutes to reading/video review and respectively
 one/two/three/four required exercises totaling the remaining time. Estimates are validated, not logged
-as actual practice. The full reference and all videos remain available for optional deeper study.
+as actual practice. The full reference stays one tap away ("Read the full lesson here" and the
+private lesson page) for optional deeper study; extra reference exercises are labelled optional.
 Changing pace never rewrites already prepared or completed tasks.
 
 ### Private resume and job-description updates
@@ -353,6 +354,40 @@ This is a **practice-integrity check, not proctoring**. A passing check shows th
 
 ## Full lessons and media
 
+### Lesson format
+
+A lesson arrives as at most four Telegram messages, formatted with bold text and code blocks:
+
+1. **Mission**: title, time split, today's goal, the core explanation, and cost and safety notes to
+   read before starting. Buttons: **Open lesson page** (private dashboard) and **Read the full lesson
+   here** (sends the complete reference in chat, with no AI call).
+2. **One architecture video** (animated by default; `/media static` for an image).
+3. **Exercises**: the required, tracked tasks with exact commands or file contents and a
+   `/complete <id>` line for each.
+4. **Closing**: cleanup steps, one scenario interview question for the exact topic (the answer
+   checklist is in the full lesson), and feedback buttons.
+
+The private lesson page (`/app?lesson=<id>`, opened from the button or the dashboard's Lessons list)
+shows the whole lesson with copyable code blocks. It is authorized with the same signed Telegram launch
+as the dashboard and only returns lessons in the signed learner's own history.
+
+Feedback stores only the button pressed: Useful / Not useful, or one of five fixed report reasons
+(wrong, outdated, confusing, too hard, too easy). No free text is collected. The owner's `/admin` view
+shows totals only, never which learner or lesson.
+
+Content checks run on every AI lesson before it is accepted, and the failure message is returned to the
+provider as its single repair hint: retired or branch-pinned GitHub Actions majors, IAM actions for tools
+that are not AWS services, cloud credentials configured after the cloud command, workflow triggers
+nested inside a job, OIDC without `id-token: write`, invalid JSON blocks and missing official
+references. Accepted lessons are upgraded to current action majors deterministically.
+
+Ten lessons are human-reviewed against official documentation: the six AWS topics below, plus CI
+pipeline design, Kubernetes Pods/Deployments/ReplicaSets, Terraform providers/resources/modules and
+GitHub Actions OIDC. Those four use a fixed reviewed core and exercises (no AI call) scaled to the
+approved minutes; for the AWS lessons the core session is condensed by AI from the reviewed reference
+and validated. Other topics are AI-generated, checked automatically and labelled **not
+human-reviewed**.
+
 ### Explanatory media and offline narration
 
 `/topics` exposes a versioned Cloud/DevOps syllabus covering foundations, Linux, networking, Git,
@@ -360,17 +395,14 @@ scripting, AWS, Azure, Google Cloud, containers, Kubernetes, infrastructure as c
 observability, SRE, DevSecOps, platform engineering, data systems, MLOps and FinOps. `/topics <module>`
 lists stable topic IDs; `/learn <topic_id>` uses that entry. This is an explicit syllabus, not a promise
 that every vendor feature or future version is already reviewed. The catalogue distinguishes broad
-generation support from the six fully reviewed AWS lesson topics.
+generation support from the ten human-reviewed lesson topics.
 
 New media uses validated storyboards: two to six labelled actors, typed request/control/replication
 edges, and three to five explanation scenes. Flow/decision scenes move markers along the active
 paths; timeline/comparison scenes highlight the relevant steps rather than invent network traffic.
-The six reviewed AWS architectures have authored behavior sequences. Their 24 concept-specific
-comparison walkthroughs show actual named options/entities (CPU credits, storage classes, policy
-types and similar), with narrated bounded excerpts while the full written concept remains available.
-These are narrated comparisons, not 24 additional moving system architectures. Active edge labels
-are displayed rather than discarded.
-Generated topics receive concept-specific and end-to-end AI storyboards, clearly labelled
+Each lesson sends one architecture video. The ten reviewed topics use authored behavior sequences
+that can be shared across learners. Active edge labels are displayed rather than discarded.
+Generated topics receive one end-to-end AI storyboard, clearly labelled
 **AI-generated; verify the references**. Only supported JSON scene data is accepted; no generated
 Python, HTML, shell commands, file paths or executable animation code is run.
 
@@ -417,7 +449,7 @@ paid speech API or a software licence purchase, but their open-source licences s
 The system consumes installed tools; redistribution must preserve their applicable notices/source
 obligations. No third-party neural voice model is bundled or assumed to share the engine's licence.
 
-Authored EC2, S3, RDS, VPC, IAM and Lambda lessons contain four concepts, end-to-end flows, three stable tasks, key terms, official references, review metadata, cost cautions and cleanup instructions. Other topics use validated full AI-generated lessons, explicitly not independently reviewed. Generic exercise-flow diagrams for generated topics are illustrative, not invented service architectures.
+Authored EC2, S3, RDS, VPC, IAM and Lambda lessons contain four concepts, end-to-end flows, three stable tasks, key terms, official references, review metadata, cost cautions, cleanup instructions and a scenario interview question with an answer checklist. Other topics use validated full AI-generated lessons, explicitly not independently reviewed. Generic exercise-flow diagrams for generated topics are illustrative, not invented service architectures.
 
 The original video enhancement was preserved before refactoring. `skillcoach/media.py` retains the 25-second center-anchored Ken Burns zoom (1.0x to 1.25x), one-second fade-in, two-second fade-out, caption overlay, H.264 1280x720 at 24fps, and static fallback on encoding failure. Captions use a text file to avoid filter injection. Static preference keeps the full lesson.
 

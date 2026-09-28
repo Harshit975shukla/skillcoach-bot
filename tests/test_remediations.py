@@ -65,8 +65,8 @@ def test_approved_pacing_sets_real_core_work_and_keeps_full_reference(harness, m
     assert all("APPROVED-OBJECTIVE" in t.detail and "APPROVED-PRACTICE" in t.detail for t in tasks)
     assert all(t.actual_minutes == 0 for t in tasks)
     bodies = [o["body"] for o in h.repo.outbox.values()]
-    assert len([b for b in bodies if b["kind"] == "media"]) == 5
-    assert sum(b["kind"] == "text" and b["text"].startswith("Concept ") for b in bodies) == 4
+    assert len([b for b in bodies if b["kind"] == "media"]) == 1
+    assert sum(b["kind"] == "text" and "APPROVED-OBJECTIVE" in b["text"] for b in bodies) >= 1
     assert f"Total target: {minutes}" in h.ai.calls[0][0]
 
 

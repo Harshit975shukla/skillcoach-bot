@@ -169,12 +169,13 @@ def test_voice_controls_topics_and_generated_topic_storyboards(harness):
     lesson = json.loads(json.dumps(LESSONS["ec2"]))
     lesson["title"] = TOPICS[topic_id][1]
     lesson["reviewed_at"] = "AI-generated; not independently reviewed"
-    harness.ai.responses.extend([lesson, *[reviewed_architecture("ec2").model_dump() for _ in range(5)]])
+    harness.ai.responses.extend([lesson, reviewed_architecture("ec2").model_dump()])
     command(harness, "/learn " + topic_id)
     assert len(harness.repo.state.tasks) == 3
     media = [item["body"] for item in harness.repo.outbox.values() if item["body"]["kind"] == "media"]
-    assert len(media) == 5 and all(not item["voice"] and not item["shared_reviewed"] for item in media)
-    assert any("storyboard:concept" in key[1] for key in harness.repo.cache_data)
+    assert len(media) == 1 and all(not item["voice"] and not item["shared_reviewed"] for item in media)
+    assert any("storyboard:architecture" in key[1] for key in harness.repo.cache_data)
+    assert not any("storyboard:concept" in key[1] for key in harness.repo.cache_data)
 
 
 def test_static_generated_lesson_does_not_require_storyboard_or_voice_generation(harness):
@@ -189,7 +190,7 @@ def test_static_generated_lesson_does_not_require_storyboard_or_voice_generation
     assert len(harness.ai.calls) == 1
     assert len(harness.repo.state.tasks) == 3
     bodies = [row["body"] for row in harness.repo.outbox.values() if row["body"]["kind"] == "media"]
-    assert len(bodies) == 5 and all("storyboard" not in body for body in bodies)
+    assert len(bodies) == 1 and all("storyboard" not in body for body in bodies)
 
 
 @pytest.mark.postgres
@@ -228,29 +229,29 @@ def test_slow_multicall_lesson_checkpoints_resume_without_exhausting_failures(pg
     }
     lesson = json.loads(json.dumps(LESSONS["ec2"]))
     lesson["title"], lesson["reviewed_at"] = "Python automation", "AI-generated"
-    ai.responses.extend([plan, lesson, *[reviewed_architecture("EC2").model_dump() for _ in range(5)]])
+    ai.responses.extend([plan, lesson, reviewed_architecture("EC2").model_dump()])
     seed(pg_repo, lambda state: setattr(state, "profile", Profile(**PROFILE)))
     runtime = Runtime(
         config, pg_repo, ai, FakeTelegram(), FakePublisher(), lambda: datetime(2026, 9, 25, 9, tzinfo=IST)
     )
     pg_repo.enqueue("slow-lesson", {"type": "schedule", "kind": "lesson", "date": "2026-09-25"})
-    for turn in range(7):
+    for turn in range(3):
         assert runtime.process_one(TimedBudget())
         with pg_repo.connection() as conn:
             job = conn.execute("SELECT status,attempts FROM jobs WHERE id='slow-lesson'").fetchone()
-            assert job["status"] == ("done" if turn == 6 else "pending")
-            assert job["attempts"] == (1 if turn == 6 else 0)
-        if turn < 6:
+            assert job["status"] == ("done" if turn == 2 else "pending")
+            assert job["attempts"] == (1 if turn == 2 else 0)
+        if turn < 2:
             assert pg_repo.read()[1].tasks == {}
-    assert len(ai.calls) == 7 and not ai.responses
+    assert len(ai.calls) == 3 and not ai.responses
     assert len(pg_repo.read()[1].tasks) == 3
     with pg_repo.connection() as conn:
         assert (
             conn.execute("SELECT count(*) AS n FROM ai_results WHERE job_id='slow-lesson'").fetchone()["n"]
-            == 7
+            == 3
         )
         assert (
-            conn.execute("SELECT count(*) AS n FROM ai_usage WHERE job_id='slow-lesson'").fetchone()["n"] == 7
+            conn.execute("SELECT count(*) AS n FROM ai_usage WHERE job_id='slow-lesson'").fetchone()["n"] == 3
         )
         assert (
             conn.execute("SELECT count(*) AS n FROM outbox WHERE id='slow-lesson:failure'").fetchone()["n"]
@@ -309,7 +310,7 @@ def test_failed_terraform_storyboard_resumes_cached_lesson_without_regrading(pg_
     story = reviewed_architecture("EC2").model_dump()
     story["references"] = lesson["references"]
     ai, telegram = FakeAI(), FakeTelegram()
-    ai.responses.extend([story] * 5)
+    ai.responses.append(story)
     videos = []
 
     def deliver(telegram, body, budget, *, before_send, cached):
@@ -323,17 +324,17 @@ def test_failed_terraform_storyboard_resumes_cached_lesson_without_regrading(pg_
     state = pg_repo.read()[1]
     assert state.assessments == {quiz.id: quiz}
     assert len(state.lessons) == 1 and len(state.tasks) == 3
-    assert len(ai.calls) == 5 and all(model == "Storyboard" for _, model in ai.calls)
+    assert len(ai.calls) == 1 and all(model == "Storyboard" for _, model in ai.calls)
     assert pg_repo.cached("learning", "lesson") == lesson
-    assert len(videos) == 5 and all(not body["voice"] and body["mode"] == "video" for body in videos)
+    assert len(videos) == 1 and all(not body["voice"] and body["mode"] == "video" for body in videos)
     with pg_repo.connection() as conn:
         assert conn.execute("SELECT * FROM answer_keys ORDER BY question_id").fetchall() == answers_before
         assert conn.execute("SELECT status FROM jobs WHERE id='learning'").fetchone()["status"] == "done"
         assert conn.execute("SELECT count(*) AS n FROM task_keys").fetchone()["n"] == 3
         assert (
-            conn.execute("SELECT count(*) AS n FROM ai_results WHERE job_id='learning'").fetchone()["n"] == 6
+            conn.execute("SELECT count(*) AS n FROM ai_results WHERE job_id='learning'").fetchone()["n"] == 2
         )
-        assert conn.execute("SELECT count(*) AS n FROM ai_usage WHERE job_id='learning'").fetchone()["n"] == 5
+        assert conn.execute("SELECT count(*) AS n FROM ai_usage WHERE job_id='learning'").fetchone()["n"] == 1
         assert (
             conn.execute(
                 "SELECT count(*) AS n FROM outbox WHERE status NOT IN ('sent','suppressed')"
@@ -342,7 +343,7 @@ def test_failed_terraform_storyboard_resumes_cached_lesson_without_regrading(pg_
         )
     delivered = len(telegram.messages)
     runtime.recover()
-    assert len(ai.calls) == 5 and len(videos) == 5 and len(telegram.messages) == delivered
+    assert len(ai.calls) == 1 and len(videos) == 1 and len(telegram.messages) == delivered
 
 
 @pytest.mark.postgres

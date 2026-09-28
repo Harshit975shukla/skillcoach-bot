@@ -8,6 +8,9 @@
   let epoch = 0;
   let documentCsrf = "", uploadId = null, uploadPreview = null, uploadBusy = false, uploadController;
   let labBusy = false, labController, labRequests = {};
+  const LESSON = /^[0-9a-f]{20}$/;
+  const linked = new URLSearchParams(location.search).get("lesson");
+  let wantedLesson = linked && LESSON.test(linked) ? linked : null, shownLesson = null, lessonController;
   const node = (tag, value, className) => {
     const element = document.createElement(tag);
     if (value !== undefined) element.textContent = String(value);
@@ -19,6 +22,8 @@
     if (controller) controller.abort();
     if (uploadController) uploadController.abort();
     if (labController) labController.abort();
+    if (lessonController) lessonController.abort();
+    hideLesson();
     documentCsrf = ""; uploadId = null; uploadPreview = null; uploadBusy = false;
     labBusy = false; labRequests = {};
     $("document-file").value = ""; $("document-preview").hidden = true;
@@ -29,7 +34,7 @@
     for (const id of ["learner-name", "target-role", "tasks", "plan-days", "skills", "interviews",
                       "done", "streak", "minutes", "graded", "preferences", "updated", "task-count",
                       "plan-status", "plan-rationale", "lab-items", "lab-catalog", "lab-count", "lab-status",
-                      "lab-cost", "lab-gate"]) {
+                      "lab-cost", "lab-gate", "lesson-list"]) {
       $(id).replaceChildren();
     }
     $("lab-gate").hidden = true;
@@ -41,6 +46,181 @@
   }
   function empty(id, message) { $(id).append(node("li", message, "empty")); }
   const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+  const day = value => value ? new Date(value + "T00:00:00").toLocaleDateString(undefined,
+    {weekday: "short", day: "numeric", month: "short", year: "numeric"}) : "";
+  function inline(parent, spans) {
+    for (const span of spans || []) {
+      if (span.t === "code") parent.append(node("code", span.v));
+      else if (span.t === "b") parent.append(node("strong", span.v));
+      else parent.append(document.createTextNode(String(span.v)));
+    }
+    return parent;
+  }
+  function codeBlock(block) {
+    const figure = node("figure", undefined, "code-block"), bar = node("figcaption");
+    const copy = node("button", "Copy"), pre = node("pre"), code = node("code", block.text);
+    copy.type = "button";
+    copy.setAttribute("aria-label", `Copy ${block.lang || "code"} example`);
+    pre.tabIndex = 0; pre.setAttribute("role", "region");
+    pre.setAttribute("aria-label", `${block.lang || "Code"} example`);
+    pre.append(code); bar.append(node("span", block.lang || "code"), copy); figure.append(bar, pre);
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(block.text);
+        copy.textContent = "Copied";
+      } catch {
+        const range = document.createRange(), selection = getSelection();
+        range.selectNodeContents(code); selection.removeAllRanges(); selection.addRange(range);
+        copy.textContent = "Selected, copy it";
+      }
+      setTimeout(() => { copy.textContent = "Copy"; }, 2500);
+    });
+    return figure;
+  }
+  function renderBlocks(parent, blocks) {
+    for (const block of blocks || []) {
+      if (block.type === "code") parent.append(codeBlock(block));
+      else if (block.type === "ul" || block.type === "ol") {
+        const list = node(block.type);
+        if (block.type === "ol" && block.start > 1) list.start = block.start;
+        for (const item of block.items) list.append(inline(node("li"), item));
+        parent.append(list);
+      } else parent.append(inline(node(block.type === "h" ? "h3" : "p"), block.spans));
+    }
+    return parent;
+  }
+  const prose = blocks => renderBlocks(node("div", undefined, "prose"), blocks);
+  function lessonSection(heading, id) {
+    const section = node("section", undefined, "lesson-section");
+    if (id) section.id = id;
+    section.append(node("h2", heading));
+    return section;
+  }
+  function renderExercise(exercise) {
+    const item = node("li");
+    const status = exercise.status === "done" ? "Done" : exercise.status === "skipped" ? "Skipped" : "Open";
+    item.append(node("span", exercise.title, "task-title"),
+                node("p", `About ${exercise.minutes} min · ${status}`, "task-meta"), prose(exercise.blocks));
+    if (exercise.status === "pending") {
+      const command = node("span", undefined, "task-command");
+      command.append(node("code", `/complete ${exercise.id}`));
+      item.append(command);
+    }
+    return item;
+  }
+  function lessonStatus(message, error = false) {
+    $("lesson-page").hidden = true;
+    $("lesson-status").textContent = message;
+    $("lesson-status").classList.toggle("error", error);
+    $("lesson-status").hidden = false;
+  }
+  function hideLesson() {
+    shownLesson = null;
+    for (const id of ["lesson-title", "lesson-meta", "lesson-jump", "lesson-body", "lesson-feedback", "lesson-status"]) {
+      $(id).replaceChildren();
+    }
+    $("lesson-view").hidden = true; $("lesson-page").hidden = true;
+    if (app && app.BackButton) app.BackButton.hide();
+  }
+  function renderLesson(lesson) {
+    $("lesson-title").textContent = lesson.title;
+    $("lesson-meta").textContent = [day(lesson.date), lesson.review].filter(Boolean).join(" · ");
+    const body = $("lesson-body"), jump = $("lesson-jump");
+    body.replaceChildren(); jump.replaceChildren();
+    const anchor = (label, id) => { const link = node("a", label); link.href = "#" + id; jump.append(link); };
+    if (!lesson.available) {
+      body.append(node("p", "The full text of this older lesson was not kept. Its tracked exercises are below.", "guidance"));
+    }
+    for (const section of lesson.sections || []) {
+      const element = lessonSection(section.heading); element.append(prose(section.blocks)); body.append(element);
+    }
+    if (lesson.exercises.length) {
+      anchor("Exercises", "lesson-exercises");
+      const element = lessonSection("Today's exercises", "lesson-exercises");
+      element.append(node("p", "Tracked in your practice list. Record each one in the bot with its command.", "section-description"));
+      const list = node("ol", undefined, "task-list");
+      for (const exercise of lesson.exercises) list.append(renderExercise(exercise));
+      element.append(list); body.append(element);
+    }
+    if (lesson.extension && lesson.extension.length) {
+      const element = lessonSection("Optional extension practice");
+      element.append(node("p", "Outside today's time target and not tracked.", "section-description"));
+      for (const extra of lesson.extension) {
+        element.append(node("h3", `${extra.title} · about ${extra.minutes} min`), prose(extra.blocks));
+      }
+      body.append(element);
+    }
+    for (const note of lesson.notes || []) {
+      const element = lessonSection(note.heading); element.append(prose(note.blocks)); body.append(element);
+    }
+    if (lesson.interview) {
+      anchor("Interview", "lesson-interview");
+      const element = lessonSection("Interview practice", "lesson-interview");
+      element.append(prose(lesson.interview.question));
+      if (lesson.interview.points.length) {
+        const details = node("details"), list = node("ul", undefined, "prose checklist");
+        details.append(node("summary", "Show the answer checklist"));
+        for (const point of lesson.interview.points) list.append(renderBlocks(node("li"), point));
+        details.append(list); element.append(details);
+      }
+      element.append(node("p", "Answer out loud in about two minutes first. For a graded round, send /interview in the bot.", "section-description"));
+      body.append(element);
+    }
+    const references = (lesson.references || []).filter(url => /^https:\/\/[A-Za-z0-9.-]+\//.test(url));
+    if (references.length) {
+      anchor("References", "lesson-references");
+      const element = lessonSection("Official references", "lesson-references"), list = node("ul", undefined, "lesson-refs");
+      for (const url of references) {
+        const link = node("a", url.replace(/^https:\/\//, "")), item = node("li");
+        link.href = url; link.rel = "noopener noreferrer"; link.target = "_blank";
+        link.addEventListener("click", event => {
+          if (app && app.openLink) { event.preventDefault(); app.openLink(url); }
+        });
+        item.append(link); list.append(item);
+      }
+      element.append(list); body.append(element);
+    }
+    const ratings = {up: "Useful", down: "Not useful"};
+    $("lesson-feedback").textContent = lesson.feedback in ratings
+      ? `You rated this lesson “${ratings[lesson.feedback]}”. You can change it with the buttons at the end of the lesson in Telegram.`
+      : "Rate this lesson with the buttons at the end of the lesson in Telegram. Only the button you pick is stored.";
+    $("lesson-feedback").hidden = !lesson.available;
+    $("lesson-status").hidden = true;
+    $("lesson-page").hidden = false;
+  }
+  async function openLesson(id) {
+    if (!authenticated || !app || !app.initData || !LESSON.test(id)) return;
+    wantedLesson = id; shownLesson = null;
+    if (lessonController) lessonController.abort();
+    const token = lessonController = new AbortController(), requestEpoch = epoch;
+    $("content").hidden = true; $("lesson-view").hidden = false;
+    lessonStatus("Opening your lesson…");
+    if (app.BackButton) app.BackButton.show();
+    window.scrollTo(0, 0);
+    try {
+      const response = await fetch("/app/lesson", {
+        method: "POST", cache: "no-store", credentials: "omit", signal: token.signal,
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({init_data: app.initData, lesson: id}),
+      });
+      const data = await response.json();
+      if (requestEpoch !== epoch || token.signal.aborted) return;
+      if (response.status === 403) { clearPrivate(data.error || "Session expired. Reopen /dashboard from the bot.", true); return; }
+      shownLesson = id;
+      if (!response.ok) { lessonStatus(data.error || "This lesson could not be opened.", true); return; }
+      renderLesson(data.lesson);
+    } catch (error) {
+      if (requestEpoch === epoch && error.name !== "AbortError") {
+        lessonStatus("Could not load this lesson. Check your connection, then tap Refresh.", true);
+      }
+    }
+  }
+  function closeLesson() {
+    wantedLesson = null;
+    if (lessonController) lessonController.abort();
+    hideLesson();
+    if (authenticated) { $("content").hidden = false; $("lessons").scrollIntoView(); }
+  }
   function labRoute(lab, route) {
     const details = node("details");
     details.append(node("summary", route.label));
@@ -153,7 +333,11 @@
       const item = node("li");
       item.append(node("span", task.title, "task-title"));
       item.append(node("p", `${task.skill} · ${task.estimated_minutes} min estimate · assigned ${task.assigned_date}`, "task-meta"));
-      if (task.detail) {
+      if (task.detail_blocks && task.detail_blocks.length) {
+        const details = node("details");
+        details.append(node("summary", "Exercise details"), prose(task.detail_blocks));
+        item.append(details);
+      } else if (task.detail) {
         const details = node("details");
         details.append(node("summary", "Exercise details"), node("p", task.detail, "task-detail"));
         item.append(details);
@@ -164,6 +348,17 @@
       $("tasks").append(item);
     }
     if (!data.tasks.length) empty("tasks", "No open tasks. Your next lesson will add practice here.");
+    $("lesson-list").replaceChildren();
+    for (const lesson of data.lessons || []) {
+      const item = node("li"), text = node("div"), button = node("button", "Read");
+      text.append(node("span", lesson.topic, "plan-topic"),
+                  node("p", day(lesson.date) + (lesson.delivered ? "" : " · still being delivered"), "task-meta"));
+      button.type = "button"; button.setAttribute("aria-label", `Read ${lesson.topic}`);
+      button.addEventListener("click", () => openLesson(lesson.id));
+      item.append(text, button);
+      $("lesson-list").append(item);
+    }
+    if (!(data.lessons || []).length) empty("lesson-list", "Lessons you receive appear here, so you can reread them anytime.");
     const proposed = data.learning && data.learning.plan;
     documentCsrf = data.document_csrf || "";
     renderLabs(data.labs);
@@ -211,11 +406,12 @@
     $("preferences").textContent = `Scheduled coaching ${data.preferences.paused ? "paused" : awaiting ? "waiting for plan approval" : "active"} · Media: ${data.preferences.media} · Voice: ${data.preferences.voice ? "on" : "off"}`;
     $("updated").textContent = `Updated ${new Date(data.generated_at).toLocaleString()}`;
     $("notice").hidden = true;
-    $("content").hidden = false;
+    $("content").hidden = Boolean(wantedLesson);
     authenticated = true;
     clearTimeout(expiryTimer);
     expiryTimer = setTimeout(() => clearPrivate("For privacy, this view has expired. Reopen /dashboard from the bot."),
                              Math.max(0, data.auth_expires_at * 1000 - Date.now()));
+    if (wantedLesson && shownLesson !== wantedLesson) openLesson(wantedLesson);
   }
   async function refresh() {
     if (uploadBusy || labBusy) return;
@@ -358,6 +554,8 @@
   }
   $("document-confirm").addEventListener("click", () => confirmUpload($("document-choice").value));
   $("document-cancel").addEventListener("click", () => confirmUpload("cancel"));
+  $("lesson-back").addEventListener("click", closeLesson);
+  if (app && app.BackButton) app.BackButton.onClick(closeLesson);
   if (app) {
     const theme = () => {
       document.body.classList.toggle("telegram-dark", app.colorScheme === "dark");

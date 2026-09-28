@@ -28,6 +28,7 @@ REFERENCE_HOSTS = {
     "learn.microsoft.com",
     "cloud.google.com",
     "kubernetes.io",
+    "kind.sigs.k8s.io",
     "docs.docker.com",
     "developer.hashicorp.com",
     "registry.terraform.io",
@@ -430,16 +431,39 @@ ARCHITECTURE_DATA = {
 
 def reviewed_architecture(topic: str) -> Storyboard | None:
     from lesson_content import REFERENCES
+    from skillcoach.curriculum import reviewed_entry
 
+    entry = reviewed_entry(topic)
+    if entry is not None:
+        data = entry["architecture"]
+        return _architecture(
+            data["title"],
+            data["pattern"],
+            data["labels"],
+            data["connections"],
+            data["stages"],
+            entry["lesson"]["references"],
+        )
     words = re.sub(r"[^a-z0-9]+", " ", topic.casefold()).split()
     key = next((key for key in ARCHITECTURE_DATA if key in words), None)
     if key is None:
         return None
     labels, connections, stages = ARCHITECTURE_DATA[key]
+    return _architecture(
+        f"{key.upper()} - behavior and trade-offs",
+        "decision" if key == "iam" else "flow",
+        labels,
+        connections,
+        stages,
+        REFERENCES[key],
+    )
+
+
+def _architecture(title, pattern, labels, connections, stages, references) -> Storyboard:
     return Storyboard(
-        title=f"{key.upper()} - behavior and trade-offs",
+        title=title,
         objective=stages[0][1],
-        pattern="decision" if key == "iam" else "flow",
+        pattern=pattern,
         actors=[Actor(id=f"n{i}", label=label) for i, label in enumerate(labels)],
         edges=[
             Edge(id=f"e{i}", source=f"n{a}", target=f"n{b}", kind=kind)
@@ -456,7 +480,7 @@ def reviewed_architecture(topic: str) -> Storyboard | None:
             )
             for title, caption, narration, active, states in stages
         ],
-        references=REFERENCES[key],
+        references=references,
     )
 
 

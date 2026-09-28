@@ -28,6 +28,7 @@
       </section>
       <nav class="sections" aria-label="Learning sections">
         <a href="#today">Practice</a>
+        <a href="#lessons">Lessons</a>
         <a href="#labs">Labs</a>
         <a href="#plan">Weekly plan</a>
         <a href="#progress">Progress</a>
@@ -39,6 +40,12 @@
           Answer five diagnostic questions, then review and approve your plan before Day 1.</p>
         <p class="section-description">Open tasks, ordered by assigned date. Complete them in the bot using the task ID.</p>
         <ol id="tasks" class="task-list"></ol>
+      </section>
+      <section id="lessons" aria-labelledby="lessons-heading">
+        <h2 id="lessons-heading">Recent lessons</h2>
+        <p class="section-description">Reread any lesson you received: every concept, the end-to-end flow, the exercises,
+          the interview answer checklist and the official references.</p>
+        <ol id="lesson-list" class="lesson-index"></ol>
       </section>
       <section id="labs" aria-labelledby="labs-heading">
         <div class="section-heading"><h2 id="labs-heading">Hands-on labs</h2><span id="lab-count"></span></div>
@@ -106,6 +113,17 @@
         <p>To keep this view private, it expires after five minutes. Reopen it from <code>/dashboard</code>.</p>
       </footer>
     </div>
+    <article id="lesson-view" class="lesson-view" hidden aria-labelledby="lesson-title">
+      <button type="button" id="lesson-back" class="back">← Your learning</button>
+      <p id="lesson-status" class="notice" role="status" aria-live="polite"></p>
+      <div id="lesson-page" hidden>
+        <h1 id="lesson-title"></h1>
+        <p id="lesson-meta" class="lesson-meta"></p>
+        <nav id="lesson-jump" class="sections lesson-jump" aria-label="In this lesson"></nav>
+        <div id="lesson-body"></div>
+        <p id="lesson-feedback" class="guidance"></p>
+      </div>
+    </article>
   </main>
 </body>
 </html>

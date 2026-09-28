@@ -495,9 +495,11 @@ def admin_overview(runtime):
             )
         }
     learners = []
+    feedback_states = []
     for row in rows:
         try:
             state = State.model_validate(row["body"])
+            feedback_states.append(state)
             from skillcoach.journey import safe_learning_view
 
             learning = safe_learning_view(state, now, labs_enabled=runtime.config.labs_enabled)
@@ -541,8 +543,11 @@ def admin_overview(runtime):
             {k: v.isoformat() if isinstance(v, datetime) else v for k, v in item.items()} for item in items
         ]
 
+    from skillcoach.lesson_delivery import feedback_summary
+
     return {
         "learners": learners,
+        "lesson_feedback": feedback_summary(feedback_states),
         "invitations": dated(invites),
         "jobs": dated(queue),
         "deliveries": deliveries,
@@ -558,7 +563,8 @@ def admin_overview(runtime):
         "generated_at": now.isoformat(),
         "privacy": "With learner consent: approved catalog topics, controlled learning reasons, activity and "
         "assessment summaries. Private documents, questions, answers, custom topics and raw AI explanations "
-        "are excluded. Delivered videos are not measured as watched or mastered.",
+        "are excluded. Delivered videos are not measured as watched or mastered. Lesson feedback is shown "
+        "only as totals across all learners.",
     }
 
 

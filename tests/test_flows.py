@@ -180,10 +180,13 @@ def test_full_authored_lesson_tasks_media_and_completion(harness):
     assert len(h.repo.state.tasks) == 3
     bodies = [o["body"] for o in h.repo.outbox.values()]
     media = [b for b in bodies if b["kind"] == "media"]
-    assert len(media) == 5 and all(b["mode"] == "video" for b in media)
+    assert len(media) == 1 and all(b["mode"] == "video" for b in media)
+    assert len(bodies) == 4 and [b["kind"] for b in bodies] == ["text", "media", "text", "text"]
     text = "\n".join(b.get("text", "") for b in bodies)
-    assert "Concept 4" in text and "CLEANUP" in text and "REFERENCES" in text
-    assert len(text) > 5000
+    assert "Today's exercises" in text and "Cleanup when you finish" in text and "Interview practice" in text
+    assert "**Cost and safety** (read before you start)" in bodies[0]["text"]
+    assert all(b.get("format") == "md" for b in bodies if b["kind"] == "text")
+    assert all(f"/complete {ident}" in text for ident in h.repo.state.tasks)
     command(h, "/learn EC2")
     assert len(h.repo.state.tasks) == 3
     ident = next(iter(h.repo.state.tasks))
@@ -196,7 +199,7 @@ def test_full_authored_lesson_tasks_media_and_completion(harness):
     assert len(h.repo.state.tasks) == 6
     assert all(
         o["body"]["mode"] == "static"
-        for o in list(h.repo.outbox.values())[-20:]
+        for o in list(h.repo.outbox.values())[-4:]
         if o["body"]["kind"] == "media"
     )
 

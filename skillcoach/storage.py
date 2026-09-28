@@ -265,6 +265,16 @@ class Repository:
             ).fetchone()
             return row["body"] if row else None
 
+    def lesson_job(self, key: str):
+        """The job that prepared a lesson, for lessons recorded before their job id was stored."""
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT job_id FROM outbox WHERE learner_id=%s AND body->>'lesson_key'=%s "
+                "ORDER BY sequence LIMIT 1",
+                (self.learner_id, key),
+            ).fetchone()
+            return row["job_id"] if row else None
+
     def cache(self, job: str, operation: str, body: dict, token: str):
         with self.connection() as conn:
             self._fence(conn, "domain", token)

@@ -62,14 +62,14 @@ class FakeTelegram:
         parent = self
 
         class Recipient:
-            def send(self, text, budget, buttons=None):
+            def send(self, text, budget, buttons=None, *, parse_mode=None):
                 if parent.fail:
                     raise ExternalError("fake_telegram_failure")
                 parent.chat_messages.setdefault(chat_id, []).append((text, buttons))
 
         return Recipient()
 
-    def send(self, text, budget, buttons=None):
+    def send(self, text, budget, buttons=None, *, parse_mode=None):
         if self.fail:
             raise ExternalError("fake_telegram_failure")
         self.messages.append((text, buttons))
@@ -175,6 +175,11 @@ class MemoryRepository:
 
     def cached(self, job, operation):
         return copy.deepcopy(self.cache_data.get((job, operation)))
+
+    def lesson_job(self, key):
+        return next(
+            (row["job_id"] for row in self.outbox.values() if row["body"].get("lesson_key") == key), None
+        )
 
     def cache(self, job, operation, body, token):
         self.cache_data.setdefault((job, operation), copy.deepcopy(body))

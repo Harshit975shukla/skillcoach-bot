@@ -81,10 +81,17 @@ class Service:
             raise ValueError("Unknown durable job type")
         return self.state, self.messages, self.answers, self.control
 
-    def say(self, text: str, *, target=None, buttons=None):
-        parts = chunks(text)
+    def say(self, text: str, *, target=None, buttons=None, md=False):
+        if md:
+            from skillcoach.formatting import md_chunks
+
+            parts = md_chunks(text)
+        else:
+            parts = chunks(text)
         for index, part in enumerate(parts):
             body = {"kind": "text", "text": part}
+            if md:
+                body["format"] = "md"
             if target and index == len(parts) - 1:
                 body["target"] = target
             if buttons and index == len(parts) - 1:
@@ -430,12 +437,15 @@ class Service:
         )
 
     def lesson(self, topic: str, day: date, *, session=None, study_plan=None):
-        from lesson_content import get_concept_diagrams, get_lesson
+        from lesson_content import get_lesson
+        from skillcoach import lesson_delivery as delivery
         from skillcoach.catalog import find_topic
+        from skillcoach.content_checks import CURRENT_ACTIONS, finalize_lesson, lesson_validator
         from skillcoach.lessons import architecture
-        from skillcoach.storyboard import Storyboard, concept_walkthrough, reviewed_architecture
+        from skillcoach.storyboard import Storyboard, reviewed_architecture
 
         entry = find_topic(topic)
+        module = entry[1] if entry else None
         if entry:
             topic = entry[2]
 
@@ -449,84 +459,74 @@ class Service:
             )
             return
         authored = get_lesson(topic)
+        fallback = module.reference if module else None
+        level = study_plan.level if study_plan else (self.state.profile.level if self.state.profile else None)
         lesson = (
             Lesson.model_validate(authored)
             if authored
-            else self.structured(
-                "lesson",
-                "Write a FULL detailed lesson, not a digest, on "
-                + topic
-                + ". Include four thorough concepts, end-to-end flow, 2-4 practical tracked tasks, key terms, "
-                "official reference URLs, safe sandbox prerequisites, cost cautions and explicit cleanup steps. "
-                "Avoid unsourced universal prices or limits. Label illustrative stories hypothetical. "
-                "Use reviewed_at='AI-generated; not independently reviewed'. Context:\n" + self.context(),
-                Lesson,
+            else finalize_lesson(
+                self.structured(
+                    "lesson",
+                    "Write an accurate, practical lesson on the catalog topic '"
+                    + topic
+                    + "'"
+                    + (f" (module: {module.title}; official docs: {module.reference})" if module else "")
+                    + (f". Learner level: {level}" if level else "")
+                    + ". "
+                    + (
+                        f"It must directly support today's approved objective: {session.objective} "
+                        f"and approved practice: {session.practice}. "
+                        if session is not None
+                        else ""
+                    )
+                    + "Structure: why it matters in real engineering work; what it is; exactly four concepts "
+                    "that build on each other, each with concrete mechanics, defaults and one common mistake; "
+                    "a 4-12 step end-to-end flow; 2-4 hands-on tasks with exact commands or file contents in "
+                    "``` fenced blocks with a language and what the learner should observe, preferring free "
+                    "local tools (kind or minikube for Kubernetes, the local/random providers or OpenTofu for "
+                    "Terraform, moto or LocalStack for AWS APIs, a public GitHub repository for Actions) and "
+                    "stating any cost; key terms; safety and cost notes; cleanup; 1-5 official vendor "
+                    "documentation URLs. interview_question: one realistic scenario question an interviewer "
+                    "would ask about this exact topic (not a template); interview_points: 3-5 points a strong "
+                    "answer covers. Use Markdown only as `code`, **bold**, '- ' bullets and ``` fences; no "
+                    "tables or headings. Do not invent numbers, prices or limits; say to check current docs "
+                    "when unsure. GitHub Actions examples must use current majors ("
+                    + CURRENT_ACTIONS
+                    + "), set permissions explicitly, configure cloud credentials before any cloud command "
+                    "and add `id-token: write` for OIDC. IAM policies may only use real AWS service actions. "
+                    "Label illustrative stories hypothetical and never claim personal experience. "
+                    "Use reviewed_at='AI-generated; not independently reviewed'. Context:\n" + self.context(),
+                    Lesson,
+                    lesson_validator(fallback),
+                ),
+                fallback,
             )
         )
-        tasks = lesson.tasks
+        ident = delivery.lesson_id(key)
+        tasks, guide, reading = lesson.tasks, None, None
         if session is not None and study_plan is not None:
             from skillcoach.pacing import build_session
 
-            guide, reading = build_session(self, lesson, session, study_plan)
+            guide, reading = build_session(self, lesson, session, study_plan, topic)
             tasks = guide.tasks
-            self.say(
-                f"YOUR {study_plan.minutes}-MINUTE CORE SESSION ({study_plan.level})\n"
-                f"Approved objective: {session.objective}\nApproved practice: {session.practice}\n"
-                f"Read/review: {reading} minutes; required exercises: {study_plan.minutes - reading} minutes.\n"
-                "These are estimates, not recorded practice time.\n\n" + guide.explanation
-            )
-            self.say(
-                "FULL REFERENCE AND VIDEOS\nThe complete lesson follows for reference and optional deeper study. "
-                "Focus first on the core session and the required tasks matched to your time budget."
-            )
-        self.say(f"{lesson.title}\n{day.isoformat()}\n\nWHY\n{lesson.why}\n\nWHAT\n{lesson.what}")
-        diagrams = get_concept_diagrams(topic)
-        for index, concept in enumerate(lesson.concepts):
-            self.say(f"Concept {index + 1}: {concept.name}\n\n{concept.body}")
-            code = diagrams[index] if diagrams else architecture(topic, concept.name)
-            if self.state.media == "static":
-                self.messages.append(
-                    {
-                        "kind": "media",
-                        "mode": "static",
-                        "code": code,
-                        "caption": f"Concept {index + 1}: {concept.name}"
-                        + ("" if authored else " (study-workflow diagram)"),
-                    }
-                )
-                continue
-            board = (
-                concept_walkthrough(lesson, index)
-                if authored
-                else self.structured(
-                    f"storyboard:concept:{index}",
-                    "Create a short educational storyboard for this concept. Choose flow, decision, timeline "
-                    "or comparison to match the actual concept. Moving request edges mean real request/data flow; "
-                    "never invent a data path for a non-flow concept. Use 3-5 scenes and 2-6 actors, short captions, "
-                    "and narration of at most 55 words per scene. Only use the supported schema; no executable code. "
-                    "Explain normal behavior and a meaningful trade-off/failure when relevant. "
-                    "Do not claim personal experience or include learner names/resume details. "
-                    f"Topic: {topic}\nConcept: {concept.model_dump_json()}\n"
-                    f"Official starting references: {json.dumps(lesson.references)}",
-                    Storyboard,
-                )
-            )
+        self.say(
+            delivery.mission(lesson, day, guide, reading, session, study_plan),
+            md=True,
+            buttons=delivery.open_buttons(self.config.private_dashboard_url, ident),
+        )
+        if self.state.media == "static":
             self.messages.append(
                 {
                     "kind": "media",
-                    "mode": self.state.media,
-                    "voice": self.state.voice and self.config.narration_enabled,
-                    "code": code,
-                    "caption": f"Concept {index + 1}: {concept.name}",
-                    "storyboard": board.model_dump(mode="json"),
-                    "shared_reviewed": bool(authored),
+                    "mode": "static",
+                    "code": architecture(topic),
+                    "caption": "Architecture: "
+                    + lesson.title
+                    + ("" if authored else " (study-workflow diagram)"),
                 }
             )
-        self.say("END-TO-END\n" + "\n".join(lesson.e2e))
-        board = (
-            None
-            if self.state.media == "static"
-            else (
+        else:
+            board = (
                 reviewed_architecture(topic)
                 if authored
                 else self.structured(
@@ -541,78 +541,46 @@ class Service:
                     Storyboard,
                 )
             )
-        )
-        architecture_message = {
-            "kind": "media",
-            "mode": self.state.media,
-            "voice": self.state.voice and self.config.narration_enabled,
-            "code": architecture(topic),
-            "caption": "Full architecture: " + lesson.title,
-        }
-        if board is not None:
-            architecture_message.update(
-                storyboard=board.model_dump(mode="json"), shared_reviewed=bool(authored)
-            )
-        elif not authored:
-            architecture_message["caption"] += " (study-workflow diagram)"
-        self.messages.append(architecture_message)
-        self.say("SAFE LAB PREREQUISITES AND COST\n" + lesson.safety)
+            media = {
+                "kind": "media",
+                "mode": self.state.media,
+                "voice": self.state.voice and self.config.narration_enabled,
+                "code": architecture(topic),
+                "caption": "Architecture: " + lesson.title,
+            }
+            if board is not None:
+                media.update(storyboard=board.model_dump(mode="json"), shared_reviewed=bool(authored))
+            elif not authored:
+                media["caption"] += " (study-workflow diagram)"
+            self.messages.append(media)
+        ids = []
         for index, task in enumerate(tasks):
             origin = f"{key}:{index}"
-            ident = stable_id("task:" + origin)
-            self.state.tasks[ident] = Task(
-                id=ident,
+            task_id = stable_id("task:" + origin)
+            ids.append(task_id)
+            self.state.tasks[task_id] = Task(
+                id=task_id,
                 origin=origin,
                 title=task.name,
-                detail=(
-                    f"Approved objective: {session.objective}\nApproved practice: {session.practice}\n"
-                    if session is not None
-                    else ""
-                )
-                + task.goal
-                + "\n"
-                + "\n".join(task.steps),
+                detail=delivery.exercise_detail(task, session),
                 skill=topic_key(topic),
                 assigned_date=day,
                 estimated_minutes=task.minutes,
             )
-            self.say(
-                f"TASK {ident}: {task.name}\nGoal: {task.goal}\n"
-                + "\n".join(f"{i}. {step}" for i, step in enumerate(task.steps, 1))
-                + f"\n/complete {ident} [actual_minutes]"
-            )
-        if session is not None:
-            self.say(
-                "OPTIONAL EXTENSION PRACTICE (outside today's core time target; not counted as required tasks)\n\n"
-                + "\n\n".join(t.name + "\n" + t.goal + "\n" + "\n".join(t.steps) for t in lesson.tasks)
-            )
-        self.say(
-            "CLEANUP\n"
-            + "\n".join(lesson.cleanup)
-            + "\n\nKEY TERMS\n"
-            + "\n".join(lesson.key_terms)
-            + "\n\nREFERENCES\n"
-            + "\n".join(lesson.references)
-            + "\nReviewed: "
-            + lesson.reviewed_at
-        )
+        practice = study_plan.minutes - reading if guide is not None else None
+        self.say(delivery.exercises(lesson, tasks, ids, practice), md=True)
         from skillcoach.lab_flow import LabFlow
 
         LabFlow(self).assign(topic, key, day, session, study_plan)
-        self.say(
-            "HYPOTHETICAL INTERVIEW PRACTICE\nQ: Explain a design using "
-            + topic
-            + ", its failure modes, and one cost trade-off.\n"
-            "Sample answer structure: state assumptions, describe the request/data path, compare "
-            "alternatives, explain monitoring and recovery, then test cost and limits against current docs. "
-            "Do not claim you operated a system you have not worked on. Use /interview for a graded round."
-        )
+        self.say(delivery.closing(lesson, topic), md=True, buttons=delivery.feedback_buttons(ident))
         self.state.lessons[key] = {
             "topic": topic,
             "date": day.isoformat(),
             "source": "authored" if authored else "AI",
             "prepared_at": self.now.isoformat(),
             "delivered_at": None,
+            "id": ident,
+            "job_id": self.job["id"],
         }
         self.messages[-1]["lesson_key"] = key
 
@@ -718,6 +686,14 @@ class Service:
                 learning.callback(callback)
             elif callback == "onboard:start":
                 learning.begin()
+            elif pieces[0] == "lr" and len(pieces) == 2:
+                from skillcoach.lesson_delivery import LessonActions
+
+                LessonActions(self).read(pieces[1])
+            elif pieces[0] == "lf" and len(pieces) in (3, 4):
+                from skillcoach.lesson_delivery import LessonActions
+
+                LessonActions(self).feedback(pieces[1], pieces[2], pieces[3] if len(pieces) == 4 else None)
             elif pieces[0] == "lab" and len(pieces) == 3:
                 from skillcoach.lab_flow import LabFlow
 

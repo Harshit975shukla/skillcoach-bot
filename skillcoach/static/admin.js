@@ -40,7 +40,7 @@
     $("action-preview").hidden = true; $("action-result").hidden = true;
     for (const id of ["members", "invites", "jobs", "deliveries", "audit", "learning-plans", "result-messages", "action-fields",
                       "action-kind", "action-target", "preview-details", "preview-warnings", "summary-line",
-                      "privacy-note", "limits", "updated", "session-expiry", "preview-recipient", "preview-title"]) {
+                      "privacy-note", "limits", "lesson-feedback", "updated", "session-expiry", "preview-recipient", "preview-title"]) {
       $(id).replaceChildren();
     }
     $("invite-url").value = "";
@@ -242,6 +242,14 @@
     if (!$("action-fields").children.length) fields();
     $("limits").textContent = `Configured limits: ${data.limits.members} active learners including you, ${data.limits.ai_operations_per_learner} AI operations per learner/day. These do not guarantee free-tier capacity.`;
     $("privacy-note").textContent = data.privacy;
+    const feedback = data.lesson_feedback;
+    if (feedback) {
+      const reasons = {wrong: "wrong", outdated: "outdated", confusing: "confusing", hard: "too hard", easy: "too easy"};
+      const reported = Object.entries(feedback.reports).filter(([, count]) => count > 0)
+        .map(([code, count]) => `${count} ${reasons[code] || "other"}`);
+      $("lesson-feedback").textContent = `Lesson feedback, totals across all learners: ${feedback.ratings.up} useful · ${feedback.ratings.down} not useful`
+        + (reported.length ? ` · reported: ${reported.join(", ")}` : " · no problem reports");
+    }
     $("updated").textContent = `Updated ${date(data.generated_at)} IST`;
     $("console").hidden = false;
   }

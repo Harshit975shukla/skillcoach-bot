@@ -621,24 +621,27 @@ class Learning:
         for body in self.s.messages:
             body["journey_plan_id"] = plan.id
             body["journey_lesson_key"] = key
-        self.s.say(
-            "When you have studied it, you can record your understanding below. "
-            "This is separate from practical task completion and assessed performance.",
-            buttons=[
-                [
-                    {
-                        "text": "I understand this lesson",
-                        "callback_data": f"understand:{plan.id}:{plan.sessions.index(current)}",
-                    }
-                ],
-                [
-                    {
-                        "text": "Explain differently / ask a question",
-                        "callback_data": f"helpplan:{plan.id}:ask",
-                    }
-                ],
+        closing = self.s.messages[-1]
+        closing["buttons"] = [
+            *closing.get("buttons", []),
+            [
+                {
+                    "text": "✅ I understand this lesson",
+                    "callback_data": f"understand:{plan.id}:{plan.sessions.index(current)}",
+                }
             ],
-        )
+            [
+                {
+                    "text": "Explain differently / ask a question",
+                    "callback_data": f"helpplan:{plan.id}:ask",
+                }
+            ],
+        ]
+        if closing.get("kind") == "text":
+            closing["text"] += (
+                "\nRecording that you understand it is separate from completing the exercises and from "
+                "assessed performance."
+            )
 
     def schedule(self):
         if not self.j:

@@ -370,8 +370,11 @@ class Telegram:
             raise ExternalError("telegram_rejected")
         return body.get("result")
 
-    def send(self, text: str, budget: Budget, buttons=None):
+    def send(self, text: str, budget: Budget, buttons=None, *, parse_mode=None):
         payload = {"text": text}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+            payload["link_preview_options"] = {"is_disabled": True}
         if buttons:
             payload["reply_markup"] = {"inline_keyboard": buttons}
         return self.call("sendMessage", budget, data=payload)

@@ -166,6 +166,11 @@ class Lesson(Model):
     cleanup: list[Text] = Field(min_length=1, max_length=12)
     references: list[Text] = Field(min_length=1, max_length=15)
     reviewed_at: str
+    # Optional so lessons cached before these fields existed still validate.
+    interview_question: Annotated[str, Field(min_length=20, max_length=900)] | None = None
+    interview_points: list[Annotated[str, Field(min_length=1, max_length=400)]] = Field(
+        default_factory=list, max_length=6
+    )
 
 
 class WeekPlan(Model):

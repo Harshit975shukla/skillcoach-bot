@@ -172,7 +172,21 @@ class Runtime:
             try:
                 if body["kind"] == "text":
                     authorize_send()
-                    telegram.send(body["text"], budget, body.get("buttons"))
+                    if body.get("format") == "md":
+                        from skillcoach.formatting import plain, telegram_html
+
+                        try:
+                            telegram.send(
+                                telegram_html(body["text"]), budget, body.get("buttons"), parse_mode="HTML"
+                            )
+                        except ExternalError as exc:
+                            # Telegram's 400 means nothing was sent, so one plain resend cannot duplicate.
+                            if exc.code != "http_400":
+                                raise
+                            authorize_send()
+                            telegram.send(plain(body["text"]), budget, body.get("buttons"))
+                    else:
+                        telegram.send(body["text"], budget, body.get("buttons"))
                 elif body["kind"] == "media":
                     if "storyboard" in body:
                         from skillcoach.storyboard import Storyboard, asset_key

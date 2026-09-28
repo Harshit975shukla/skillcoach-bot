@@ -1038,8 +1038,106 @@ CLEANUP = {
     ],
 }
 
+INTERVIEWS = {
+    "ec2": (
+        "Your EC2 bill is $50k a month and leadership wants it down 40% without hurting reliability. "
+        "How do you find the savings, in what order do you act, and how do you prove the result?",
+        [
+            "Measure first: break spend down by account, service and tag in Cost Explorer or the Cost and "
+            "Usage Report, and use Compute Optimizer to find idle and oversized instances.",
+            "Right-size and schedule before committing: downsize over-provisioned instances and scale "
+            "non-production to zero outside working hours with scheduled Auto Scaling actions.",
+            "Cover the remaining steady baseline with Savings Plans or Reserved Instances; buying "
+            "commitments before right-sizing locks in waste.",
+            "Move interruption-tolerant work (batch, CI, stateless workers) to Spot with diversified "
+            "instance types and graceful handling of the two-minute interruption notice.",
+            "Report savings against a measured baseline; 40% is a target to test, not a guarantee.",
+        ],
+    ),
+    "s3": (
+        "Design an S3-based data lake that ingests 10 TB of logs a day, keeps 90 days hot and archives "
+        "for five years. Walk through layout, lifecycle, security and how you would estimate cost.",
+        [
+            "Partition keys by source and date (for example `logs/source=app/dt=2026-09-29/`) and write "
+            "compressed columnar files such as Parquet so queries scan less data.",
+            "Lifecycle rules transition by age (objects must stay at least 30 days before Standard-IA), "
+            "archive to Glacier Flexible Retrieval or Deep Archive, and expire after five years.",
+            "Account for minimum storage durations and per-object transition requests: many tiny objects "
+            "can cost more to transition than they save, so compact them first.",
+            "Security: Block Public Access on, Object Ownership set to bucket owner enforced, default "
+            "encryption (SSE-S3 or SSE-KMS), TLS-only bucket policy and least-privilege access.",
+            "Estimate cost from volume x retention per storage class plus request and retrieval charges, "
+            "using the current regional price list rather than remembered numbers.",
+        ],
+    ),
+    "rds": (
+        "A team runs MySQL on RDS and asks whether to move to Aurora MySQL. What do you compare, and "
+        "what evidence would make you recommend one over the other?",
+        [
+            "Storage: Aurora keeps six copies of a shared cluster volume across three AZs used by the "
+            "writer and up to 15 Aurora Replicas; RDS MySQL uses EBS storage attached to each instance.",
+            "Availability and reads: a Multi-AZ DB instance standby serves no reads, a Multi-AZ DB cluster "
+            "has two readable standbys, and Aurora replicas share storage and can be promoted on failover.",
+            "Compatibility: confirm the MySQL major version, extensions and features you rely on exist in "
+            "both, and note Aurora-only options such as Global Database and Serverless v2.",
+            "Cost: compare current regional prices for your I/O profile; Aurora Standard bills I/O "
+            "requests while Aurora I/O-Optimized does not, and small steady workloads can favour RDS.",
+            "Decide with a benchmark and a failover test of your own workload, not marketing ratios.",
+        ],
+    ),
+    "vpc": (
+        "Design the network for a fintech application that runs in two AWS Regions for disaster "
+        "recovery. Cover addressing, subnets, egress, connectivity and how failover is tested.",
+        [
+            "Plan non-overlapping CIDR ranges per Region and environment, sized for growth, so peering or "
+            "Transit Gateway routing works later without renumbering.",
+            "Spread subnets across at least two AZs per Region; only load balancers and NAT gateways sit in "
+            "public subnets, application and data tiers stay private, with one NAT gateway per AZ.",
+            "Connect Regions with Transit Gateway inter-Region peering or VPC peering, and on-premises with "
+            "Direct Connect plus a Site-to-Site VPN as backup.",
+            "Use security groups that reference each other, gateway or interface endpoints for AWS "
+            "services, and VPC Flow Logs for audit.",
+            "State the RPO and RTO, replicate data across Regions, fail over with Route 53 health checks, "
+            "and rehearse failover on a schedule.",
+        ],
+    ),
+    "iam": (
+        "Your organization has 50 AWS accounts and too many broad permissions. How do you move to least "
+        "privilege without blocking teams, and how do you keep it that way?",
+        [
+            "Set guardrails with Organizations SCPs: they cap the maximum permissions in member accounts, "
+            "grant nothing themselves and do not apply to the management account.",
+            "Centralize human access in IAM Identity Center with job-function permission sets and "
+            "short-lived credentials instead of IAM users with long-lived access keys.",
+            "Let teams create roles safely with permissions boundaries, so delegated administrators "
+            "cannot escalate beyond the boundary.",
+            "Give workloads roles, not keys: instance profiles, IRSA or EKS Pod Identity for pods, and "
+            "OIDC federation for CI/CD.",
+            "Keep reviewing: IAM Access Analyzer external and unused-access findings, policy generation "
+            "from CloudTrail activity, and removal of what is not used.",
+        ],
+    ),
+    "lambda": (
+        "You are building a new microservice. When would you run it on Lambda rather than ECS on "
+        "Fargate, and what would change your mind?",
+        [
+            "Limits: a Lambda invocation runs at most 15 minutes with up to 10,240 MB of memory; long "
+            "jobs, always-on listeners and long-lived connections fit Fargate better.",
+            "Traffic and cost: Lambda scales per request and costs nothing when idle, which suits spiky or "
+            "event-driven load; steady high throughput is often cheaper on running tasks, so compare "
+            "current prices for your traffic.",
+            "Latency: new execution environments add cold-start time; provisioned concurrency or SnapStart "
+            "(supported runtimes only) reduce it at extra cost or with constraints.",
+            "Operations: Lambda removes container and scaling management; Fargate gives full control of "
+            "the runtime, sidecars and networking.",
+            "Keep both stateless and store state in services such as DynamoDB, S3 or a database.",
+        ],
+    ),
+}
+
 for _topic, _lesson in LESSONS.items():
     _lesson["reviewed_at"] = REVIEWED_AT
+    _lesson["interview_question"], _lesson["interview_points"] = INTERVIEWS[_topic]
     _lesson["references"] = REFERENCES[_topic]
     _lesson["safety"] = (
         "Use a disposable sandbox account, least-privilege permissions and synthetic data only. "
@@ -1055,7 +1153,12 @@ for _topic, _lesson in LESSONS.items():
 
 
 def get_lesson(topic):
-    """Return pre-written lesson for the topic, or None if not found."""
+    """Return a reviewed lesson for the exact catalog topic, a pre-written lesson, or None."""
+    from skillcoach.curriculum import reviewed_lesson
+
+    reviewed = reviewed_lesson(topic)
+    if reviewed is not None:
+        return reviewed
     topic_words = topic.lower().replace(":", " ").split()
     for key, lesson in LESSONS.items():
         if key in topic_words:
