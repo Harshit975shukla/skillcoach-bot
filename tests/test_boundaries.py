@@ -126,11 +126,11 @@ def test_provider_dispatch_fallback_and_invalid_json(config, monkeypatch):
     ai = AI(replace(config, groq_key="fake", gemini_key="fake"))
     calls = []
 
-    def groq(prompt, budget):
+    def groq(prompt, budget, **_):
         calls.append("groq")
         return '{"text": 123}'
 
-    def gemini(prompt, budget):
+    def gemini(prompt, budget, **_):
         calls.append("gemini")
         return '{"text":"valid answer"}'
 
@@ -138,7 +138,7 @@ def test_provider_dispatch_fallback_and_invalid_json(config, monkeypatch):
     monkeypatch.setattr(ai, "ask_gemini", gemini)
     assert ai.structured("question", CoachingText, Budget()).text == "valid answer"
     assert calls == ["groq", "gemini"]
-    monkeypatch.setattr(ai, "ask_gemini", lambda *args: "not json")
+    monkeypatch.setattr(ai, "ask_gemini", lambda *args, **_: "not json")
     with pytest.raises(ExternalError):
         ai.structured("question", CoachingText, Budget())
 

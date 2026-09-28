@@ -106,8 +106,8 @@ jobs:
           LABS_GITHUB_TOKEN: ${{ secrets.LABS_GITHUB_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GROQ_MODEL: ${{ vars.GROQ_MODEL || 'openai/gpt-oss-120b' }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          GROQ_MODEL: ${{ vars.GROQ_MODEL || 'openai/gpt-oss-120b,openai/gpt-oss-20b' }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash,gemini-3.5-flash,gemini-2.5-flash' }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           DASHBOARD_REPO: ${{ vars.DASHBOARD_REPO }}
           DASHBOARD_PATH: ${{ vars.DASHBOARD_PATH || 'docs/data.json' }}

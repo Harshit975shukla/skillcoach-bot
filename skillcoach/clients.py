@@ -1,22 +1,67 @@
 import base64
 import json
 import logging
+import re
 import time
 from urllib.parse import quote
 
 import requests
 from pydantic import ValidationError
 
-from skillcoach.config import Config
+from skillcoach.config import Config, model_chain
 
 log = logging.getLogger(__name__)
 
+STRICT_STORYBOARD_MODELS = ("openai/gpt-oss-120b", "openai/gpt-oss-20b")
+
 
 class ExternalError(RuntimeError):
-    def __init__(self, code: str, *, retryable: bool = True):
+    def __init__(
+        self, code: str, *, retryable: bool = True, retry_after: float | None = None, detail: str = ""
+    ):
         super().__init__(code)
         self.code = code
         self.retryable = retryable
+        self.retry_after = retry_after
+        # Only fixed-vocabulary provider categories and integers; never bodies, prompts or keys.
+        self.detail = detail
+
+
+def _failure_details(response, budget=None) -> dict:
+    headers = getattr(response, "headers", None) or {}
+    retry_after = None
+    value = str(headers.get("retry-after", "")).strip()
+    if re.fullmatch(r"\d{1,5}(\.\d{1,3})?", value):
+        retry_after = float(value)
+    parts = []
+    for header, name in (
+        ("x-ratelimit-remaining-requests", "remaining_requests"),
+        ("x-ratelimit-remaining-tokens", "remaining_tokens"),
+    ):
+        count = str(headers.get(header, "")).strip()
+        if re.fullmatch(r"\d{1,12}", count):
+            parts.append(f"{name}={count}")
+    try:
+        raw = b""
+        for chunk in response.iter_content(4096):
+            if budget is not None:
+                budget.remaining()
+            raw += chunk
+            if len(raw) >= 16384:
+                break
+        error = json.loads(raw[:16384]).get("error", {})
+    except Exception:
+        error = {}
+    if isinstance(error, dict):
+        status = error.get("status")
+        if isinstance(status, str) and re.fullmatch(r"[A-Z_]{1,40}", status):
+            parts.append(f"status={status}")
+        message = error.get("message")
+        if isinstance(message, str):
+            limit = re.search(r"\((TPD|TPM|RPD|RPM|ITPM|OTPM|ASH|ASD)\)", message)
+            if limit:
+                parts.append(f"limit={limit.group(1)}")
+    return {"retry_after": retry_after, "detail": " ".join(parts)}
 
 
 class WorkDeferred(Exception):
@@ -38,20 +83,24 @@ class HTTP:
     def __init__(self, session=None):
         self.session = session or requests.Session()
 
-    def call(self, method, url, *, budget: Budget, attempts=2, allow=(200,), **kwargs):
+    def call(self, method, url, *, budget: Budget, attempts=2, allow=(200,), read_timeout=8, **kwargs):
         for attempt in range(attempts):
             remaining = budget.remaining()
             try:
                 with self.session.request(
                     method,
                     url,
-                    timeout=(min(3, remaining / 2), min(8, remaining / 2)),
+                    timeout=(min(3, remaining / 2), min(read_timeout, remaining / 2)),
                     stream=True,
                     **kwargs,
                 ) as response:
                     if response.status_code not in allow:
                         transient = response.status_code in (408, 409, 429, 500, 502, 503, 504)
-                        raise ExternalError(f"http_{response.status_code}", retryable=transient)
+                        raise ExternalError(
+                            f"http_{response.status_code}",
+                            retryable=transient,
+                            **_failure_details(response, budget),
+                        )
                     chunks = []
                     size = 0
                     for chunk in response.iter_content(65536):
@@ -69,7 +118,13 @@ class HTTP:
                 error = exc
             if not error.retryable or attempt + 1 == attempts:
                 raise error
-            time.sleep(min(0.2 * (attempt + 1), budget.remaining() / 4))
+            wait = 0.2 * (attempt + 1)
+            if error.retry_after is not None:
+                # A provider-announced window longer than this request can afford is not retried blindly.
+                if error.retry_after > min(20, budget.remaining() / 3):
+                    raise error
+                wait = error.retry_after
+            time.sleep(min(wait, budget.remaining() / 2))
         raise ExternalError("request_failed")
 
 
@@ -78,14 +133,14 @@ class AI:
         self.config = config
         self.http = http or HTTP()
 
-    def ask_groq(self, prompt: str, budget: Budget, *, schema=None) -> str:
+    def ask_groq(self, prompt: str, budget: Budget, *, schema=None, model: str | None = None) -> str:
         _, data = self.http.call(
             "POST",
             "https://api.groq.com/openai/v1/chat/completions",
             budget=budget,
             headers={"Authorization": f"Bearer {self.config.groq_key}"},
             json={
-                "model": self.config.groq_model,
+                "model": model or model_chain(self.config.groq_model)[0],
                 "messages": [
                     {
                         "role": "system",
@@ -110,6 +165,7 @@ class AI:
                     else {}
                 ),
             },
+            read_timeout=60,
         )
         try:
             choice = data["choices"][0]
@@ -125,13 +181,19 @@ class AI:
             raise ExternalError("invalid_ai_envelope")
         return text
 
-    def ask_gemini(self, prompt: str, budget: Budget) -> str:
+    def ask_gemini(self, prompt: str, budget: Budget, *, model: str | None = None) -> str:
+        name = model or model_chain(self.config.gemini_model)[0]
         _, data = self.http.call(
             "POST",
-            f"https://generativelanguage.googleapis.com/v1beta/models/{quote(self.config.gemini_model, safe='')}:generateContent",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{quote(name, safe='')}:generateContent",
             budget=budget,
             headers={"x-goog-api-key": self.config.gemini_key},
-            json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": 6000}},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                # Current Flash models spend part of this allowance on internal thinking.
+                "generationConfig": {"maxOutputTokens": 16384, "responseMimeType": "application/json"},
+            },
+            read_timeout=60,
         )
         try:
             candidate = data["candidates"][0]
@@ -140,65 +202,128 @@ class AI:
                 raise ExternalError("ai_response_truncated")
             if reason not in (None, "STOP"):
                 raise ExternalError("ai_response_refused", retryable=False)
-            text = "".join(p.get("text", "") for p in candidate["content"]["parts"])
+            text = "".join(p.get("text", "") for p in candidate["content"]["parts"] if not p.get("thought"))
         except (KeyError, IndexError, TypeError, AttributeError):
             raise ExternalError("invalid_ai_envelope") from None
         if not text.strip():
             raise ExternalError("invalid_ai_envelope")
         return text
 
+    def routes(self) -> list[tuple[str, str]]:
+        """Primary Groq model, then Gemini models, then extra Groq models as a last resort."""
+        groq = model_chain(self.config.groq_model) if self.config.groq_key else []
+        gemini = model_chain(self.config.gemini_model) if self.config.gemini_key else []
+        return (
+            [("groq", name) for name in groq[:1]]
+            + [("gemini", name) for name in gemini]
+            + [("groq", name) for name in groq[1:]]
+        )
+
     def structured(self, prompt, model, budget: Budget, validate=None):
         from skillcoach.storyboard import Storyboard, canonical_response, response_schema
 
-        standard_prompt = (
-            prompt + "\nReturn ONLY JSON matching this schema:\n" + json.dumps(model.model_json_schema())
-        )
-        for enabled, call, provider in (
-            (self.config.groq_key, self.ask_groq, "groq"),
-            (self.config.gemini_key, self.ask_gemini, "gemini"),
-        ):
-            if not enabled:
+        schema_text = json.dumps(model.model_json_schema())
+        unavailable = set()
+        for provider, name in self.routes():
+            if provider in unavailable:
                 continue
-            try:
-                if (
-                    provider == "groq"
-                    and model is Storyboard
-                    and self.config.groq_model
-                    in (
-                        "openai/gpt-oss-120b",
-                        "openai/gpt-oss-20b",
+            strict = provider == "groq" and model is Storyboard and name in STRICT_STORYBOARD_MODELS
+            wire_schema = response_schema() if strict else None
+            base = (
+                prompt
+                + "\nReturn ONLY JSON matching this schema:\n"
+                + (json.dumps(wire_schema) if strict else schema_text)
+            )
+            hints = None
+            for repair in (False, True):
+                if repair and (not hints or _left(budget) < REPAIR_SECONDS):
+                    break
+                request = base
+                if repair:
+                    request += (
+                        "\nYOUR PREVIOUS RESPONSE WAS REJECTED BY VALIDATION:\n"
+                        + "\n".join(f"- {hint}" for hint in hints)
+                        + "\nReturn one corrected, complete JSON object that satisfies every limit and rule."
                     )
-                ):
-                    schema = response_schema()
-                    wire_prompt = prompt + "\nReturn ONLY JSON matching this schema:\n" + json.dumps(schema)
-                    text = canonical_response(call(wire_prompt, budget, schema=schema))
-                else:
-                    text = call(standard_prompt, budget).strip()
-                if text.startswith("```") and text.endswith("```"):
-                    text = text.split("\n", 1)[1].rsplit("```", 1)[0]
-                result = model.model_validate_json(text)
-                if validate:
-                    validate(result)
-                return result
-            except ValidationError as exc:
-                # Paths, messages and inputs can contain private dictionary keys or generated text.
-                reasons = sorted(
-                    {
-                        error["type"]
-                        for error in exc.errors(include_input=False, include_context=False, include_url=False)
-                    }
-                )
-                log.warning(
-                    "ai_provider_unavailable provider=%s code=invalid_ai_response schema=%s validation=%s",
-                    provider,
-                    model.__name__,
-                    ",".join(reasons[:5]),
-                )
-            except (ExternalError, KeyError, IndexError, TypeError, ValueError) as exc:
-                # Never log prompts, provider bodies, request URLs or credentials.
-                code = exc.code if isinstance(exc, ExternalError) else "invalid_ai_response"
-                log.warning("ai_provider_unavailable provider=%s code=%s", provider, code)
+                hints = None
+                try:
+                    if provider == "groq":
+                        raw = self.ask_groq(request, budget, schema=wire_schema, model=name)
+                    else:
+                        raw = self.ask_gemini(request, budget, model=name)
+                    text = canonical_response(raw) if strict else raw.strip()
+                    if text.startswith("```") and text.endswith("```"):
+                        text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+                    result = model.model_validate_json(text)
+                    if validate:
+                        validate(result)
+                    return result
+                except ValidationError as exc:
+                    # Paths, messages and inputs can contain private dictionary keys or generated text.
+                    reasons = sorted(
+                        {
+                            error["type"]
+                            for error in exc.errors(
+                                include_input=False, include_context=False, include_url=False
+                            )
+                        }
+                    )
+                    log.warning(
+                        "ai_provider_unavailable provider=%s model=%s code=invalid_ai_response schema=%s "
+                        "validation=%s repair=%s",
+                        provider,
+                        name,
+                        model.__name__,
+                        ",".join(reasons[:5]),
+                        str(repair).lower(),
+                    )
+                    hints = _validation_hints(exc)
+                except ExternalError as exc:
+                    # Never log prompts, provider bodies, request URLs or credentials.
+                    log.warning(
+                        "ai_provider_unavailable provider=%s model=%s code=%s%s%s",
+                        provider,
+                        name,
+                        exc.code,
+                        f" retry_after={exc.retry_after:g}" if exc.retry_after is not None else "",
+                        f" {exc.detail}" if exc.detail else "",
+                    )
+                    if exc.code == "request_budget_exhausted":
+                        raise ExternalError("ai_unavailable_or_invalid") from None
+                    if exc.code in ("http_401", "http_403"):
+                        unavailable.add(provider)
+                    if exc.code == "ai_response_truncated":
+                        hints = [
+                            "The previous response was cut off at the output limit; keep every field concise."
+                        ]
+                except (KeyError, IndexError, TypeError, ValueError) as exc:
+                    log.warning(
+                        "ai_provider_unavailable provider=%s model=%s code=invalid_ai_response",
+                        provider,
+                        name,
+                    )
+                    detail = str(exc)[:300] if isinstance(exc, ValueError) else ""
+                    hints = [detail or "The response did not match the required JSON structure."]
         raise ExternalError("ai_unavailable_or_invalid")
+
+
+REPAIR_SECONDS = 30
+
+
+def _left(budget: Budget) -> float:
+    try:
+        return budget.remaining()
+    except ExternalError:
+        return 0
+
+
+def _validation_hints(exc: ValidationError) -> list[str]:
+    """Correction notes are sent only to the provider, never logged."""
+    hints = []
+    for error in exc.errors(include_input=False, include_url=False)[:8]:
+        path = ".".join("[]" if isinstance(part, int) else str(part) for part in error.get("loc", ()))
+        hints.append(f"{path or 'response'}: {error.get('msg') or error.get('type')}"[:300])
+    return hints
 
 
 def chunks(text: str, limit: int = 3500) -> list[str]:

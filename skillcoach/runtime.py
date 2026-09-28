@@ -14,6 +14,16 @@ from skillcoach.timeutil import IST, now_ist
 log = logging.getLogger(__name__)
 
 
+WORKER_STEP_SECONDS = 90
+
+
+def _left(budget: Budget) -> float:
+    try:
+        return budget.remaining()
+    except ExternalError:
+        return 0
+
+
 class DeliveryDeferred(Exception):
     """Leave unsent work pending when the request lacks time for a safe network attempt."""
 
@@ -38,7 +48,8 @@ class Runtime:
     def process_one(
         self, budget: Budget, *, proposal_for: str | None = None, document_job: str | None = None
     ) -> bool:
-        token = self.repo.acquire("domain", 60)
+        # The fenced lease must outlive the step's network budget so validated work is never lost.
+        token = self.repo.acquire("domain", max(60, int(_left(budget)) + 40))
         if not token:
             return False
         job = None
@@ -216,10 +227,11 @@ class Runtime:
     def recover(self, *, limit=200, media=True, max_seconds=900):
         deadline = time.monotonic() + max_seconds
         for _ in range(limit):
-            if time.monotonic() + 20 >= deadline:
+            if time.monotonic() + WORKER_STEP_SECONDS >= deadline:
                 break
             with self.repo.session():
-                worked = self.process_one(Budget(20))
+                # Background steps may wait for provider windows, repair invalid JSON and fall back.
+                worked = self.process_one(Budget(WORKER_STEP_SECONDS))
                 for _ in range(3):
                     can_render = media and time.monotonic() + 210 < deadline
                     # Background workers need room for DB authorization plus transport. Webhooks

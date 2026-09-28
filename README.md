@@ -462,8 +462,8 @@ See `.env.example`; environment variables are loaded at operation startup, not n
 | `DATABASE_URL` | Provider-neutral private PostgreSQL URL; verified TLS for remote DBs; use a least-privilege runtime role |
 | `TELEGRAM_BOT_TOKEN`, `OWNER_ID` | Required messaging configuration; positive private-chat owner ID (`CHAT_ID` is a legacy alias) |
 | `TELEGRAM_WEBHOOK_SECRET` | Vercel-only requirement: 32-256 random URL-safe characters matching webhook registration |
-| `GROQ_API_KEY`, `GROQ_MODEL` | Optional primary provider; model default `openai/gpt-oss-120b` |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | Optional fallback; model default `gemini-2.5-flash`; verify current account/model availability |
+| `GROQ_API_KEY`, `GROQ_MODEL` | Optional primary provider. `GROQ_MODEL` is a comma-separated fallback list (default `openai/gpt-oss-120b,openai/gpt-oss-20b`); the first model is tried first and extra Groq models only after Gemini, because Groq quotas are per model |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | Optional fallback. Comma-separated list (default `gemini-3.8-flash,gemini-3.5-flash,gemini-2.5-flash`); newer Google projects get HTTP 404 for models in the LEGACY stage, so the next listed model is tried |
 | `GITHUB_TOKEN` | Optional dashboard publishing PAT; Actions maps **`secrets.GH_PAT`** to this variable |
 | `DASHBOARD_REPO`, `DASHBOARD_PATH`, `DASHBOARD_URL` | Configured destination; no hard-coded personal repository or identity |
 | `LABS_ENABLED`, `LABS_TEMPLATE_REPO` | Hands-on labs kill switch (default `true`) and the public `owner/repository` code-lab template |

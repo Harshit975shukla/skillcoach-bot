@@ -138,7 +138,7 @@ def test_groq_envelope_failures_have_safe_codes_and_use_fallback(config, caplog,
 )
 def test_gemini_envelope_failures_remain_explicit(config, caplog, envelope, code):
     session = Session([Response(200, envelope)])
-    ai = AI(replace(config, gemini_key="private-backup"), HTTP(session))
+    ai = AI(replace(config, gemini_key="private-backup", gemini_model="gemini-3.8-flash"), HTTP(session))
     with pytest.raises(ExternalError, match="ai_unavailable_or_invalid"):
         ai.structured("private prompt", Readiness, Budget())
     assert len(session.calls) == 1 and f"code={code}" in caplog.text
