@@ -134,6 +134,10 @@ code { font-family: ui-monospace, "Cascadia Mono", monospace; font-size: .875em;
 .lesson-index .plan-topic { display: block; }
 .lesson-index .task-meta { margin-top: 2px; }
 .lesson-index .empty { display: block; }
+.quiz-link { display: inline-flex; align-items: center; min-height: 44px; padding: 9px 12px;
+  border: 1px solid var(--line); border-radius: 8px; font-weight: 650; text-decoration: none; }
+.quiz-link:hover { background: var(--soft); }
+#quiz-count { color: var(--muted); font-size: .875rem; white-space: nowrap; }
 .lesson-view { padding: 4px 0 40px; }
 .back { margin-bottom: 22px; }
 .lesson-view h1 { max-width: 24ch; text-wrap: balance; }
@@ -180,6 +184,8 @@ footer p + p { margin-top: 7px; }
   .sections { gap: 0 2px; }
   .sections a { padding: 10px 8px; font-size: .94rem; }
   .metrics { grid-template-columns: repeat(2, 1fr); gap: 20px 15px; }
+  #quiz-list li { grid-template-columns: 1fr; gap: 12px; }
+  .quiz-link { justify-self: start; }
   .plan-list li { grid-template-columns: 85px 1fr; gap: 13px; }
   .lesson-section { padding-top: 28px; }
   .code-block pre { font-size: .8rem; }

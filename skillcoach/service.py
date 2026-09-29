@@ -167,6 +167,8 @@ class Service:
         return self.state.plans[key]
 
     def show_question(self, session: Assessment):
+        from skillcoach.quizzes import deadline
+
         index = len(session.answers)
         q = session.questions[index]
         buttons = [
@@ -178,10 +180,81 @@ class Service:
         self.say(
             f"{session.kind.title()} question {index + 1}/{len(session.questions)}\n\n{q.question}\n\n"
             + "\n".join(f"{key}) {value}" for key, value in q.options.items())
-            + "\n\nChoose a button or /q A (B/C/D). Buttons are bound to this question.",
+            + "\n\nChoose a button or /q A (B/C/D). Buttons are bound to this question."
+            + (
+                "\nAvailable through "
+                + (deadline(session.date) - timedelta(seconds=1)).strftime("%a %d %b, %H:%M IST")
+                + ". Use /quizzes to resume if another assessment takes over."
+                if session.kind == "daily"
+                else ""
+            ),
             target=self.state.target(),
             buttons=buttons,
         )
+
+    def quiz_menu(self):
+        from skillcoach.quizzes import catalogue
+
+        available = [item for item in catalogue(self.state, self.now) if item["can_resume"]]
+        if not available:
+            self.say(
+                "No unfinished daily quizzes are available this week. Check /dashboard for your history."
+            )
+            return
+        self.say(
+            "Your daily quizzes stay available through Sunday, 23:59 IST of their lesson week.\n"
+            "Choose a quiz below. Start or resume one at a time; saved answers and scores are not reset.\n"
+            "You can also find these under Quizzes in /dashboard.",
+            buttons=[
+                [
+                    {
+                        "text": f"{item['date']} - {item['title'][:40]} ({item['answered']}/{item['total']})",
+                        "callback_data": f"quiz:{item['id']}",
+                    }
+                ]
+                for item in available[:20]
+            ],
+        )
+
+    def recover_quiz(self, identifier):
+        from skillcoach.quizzes import QUIZ_ID, catalogue, is_open
+
+        if not QUIZ_ID.fullmatch(identifier):
+            self.say("Use /quizzes to choose a valid quiz from your learning history.")
+            return
+        matches = [
+            a
+            for a in self.state.assessments.values()
+            if a.kind == "daily" and a.date.isoformat() == identifier
+        ]
+        if matches:
+            identifier = matches[-1].id
+        entry = next((item for item in catalogue(self.state, self.now) if item["id"] == identifier), None)
+        if not entry:
+            self.say("This quiz is not in your learning history. Use /quizzes to choose your own quiz.")
+            return
+        if not entry["can_resume"]:
+            self.say(
+                "This quiz is already completed or its Sunday deadline has passed. Saved scores are unchanged."
+            )
+            return
+        if self.state.focus not in (None, "assessment"):
+            self.say("Finish or /cancel your current activity before resuming a quiz. Your quiz stays saved.")
+            return
+        active = self.state.assessments.get(self.state.active_assessment)
+        if active and active.status == "active" and is_open(active, self.now) and active.id != identifier:
+            self.say(
+                "Finish the current assessment first, or /cancel it before choosing another. Saved answers are kept."
+            )
+            return
+        session = self.state.assessments.get(identifier)
+        if session is None:
+            self.start_assessment("daily", date.fromisoformat(entry["date"]), entry["title"])
+        else:
+            self.expire_assessment()
+            session.status = "active"
+            self.state.active_assessment, self.state.focus = session.id, "assessment"
+            self.show_question(session)
 
     def start_assessment(self, kind: str, day: date, topic: str):
         if self.state.focus == "lab":
@@ -245,9 +318,11 @@ class Service:
             )
             return
         session = self.state.assessments[target["session"]]
-        if session.date != self.now.date():
+        from skillcoach.quizzes import is_open
+
+        if not is_open(session, self.now):
             self.expire_assessment()
-            self.say("That assessment has expired. No answer was graded.")
+            self.say("That assessment has expired. No answer was graded. Use /quizzes for available quizzes.")
             return
         q = session.questions[len(session.answers)]
         answer = Answer(
@@ -270,6 +345,10 @@ class Service:
                 f"({round(100 * score / len(session.questions))}%). This is assessment evidence, "
                 "not a claim of overall job readiness."
             )
+            if session.kind == "daily":
+                self.say(
+                    "Use /quizzes or the Quizzes section of /dashboard for your other unfinished quizzes."
+                )
         else:
             self.show_question(session)
 
@@ -698,7 +777,9 @@ class Service:
         callback = self.payload.get("callback")
         if callback:
             pieces = callback.split(":")
-            if pieces[0] == "doc" and len(pieces) == 3:
+            if pieces[0] == "quiz" and len(pieces) == 2:
+                self.recover_quiz(pieces[1])
+            elif pieces[0] == "doc" and len(pieces) == 3:
                 documents.confirm(pieces[1], pieces[2])
             elif pieces[0] in ("j", "plan", "understand", "helpplan", "suggestion", "recover"):
                 learning.callback(callback)
@@ -765,7 +846,9 @@ class Service:
         if cmd not in COMMANDS:
             self.say("Unknown command. Use /help.")
         elif cmd in ("start", "help"):
-            if cmd == "start" and arg == "onboard":
+            if cmd == "start" and arg.startswith("quiz_"):
+                self.recover_quiz(arg[5:])
+            elif cmd == "start" and arg == "onboard":
                 learning.begin()
             elif cmd == "start" and arg == "plan":
                 learning.show_plan()
@@ -858,6 +941,10 @@ class Service:
                     + "\n"
                     + evidence.summary
                 )
+        elif cmd == "quizzes":
+            self.quiz_menu()
+        elif cmd == "quiz":
+            self.recover_quiz(arg)
         elif cmd == "q":
             self.answer_assessment(arg, self.payload.get("target"))
         elif cmd == "cancel":

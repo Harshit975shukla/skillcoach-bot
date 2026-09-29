@@ -43,7 +43,7 @@
     authenticated = false;
     $("content").hidden = true;
     for (const id of ["learner-name", "target-role", "tasks", "plan-days", "skills", "interviews",
-                      "done", "streak", "minutes", "graded", "preferences", "updated", "task-count",
+                      "done", "streak", "minutes", "graded", "preferences", "updated", "task-count", "quiz-list", "quiz-count",
                       "plan-status", "plan-rationale", "lab-items", "lab-catalog", "lab-count", "lab-status",
                       "lab-cost", "lab-gate", "lesson-list", "resource-list", "resource-count",
                       "resource-notice", "resource-rights", "course-list", "course-count", "course-notice"]) {
@@ -57,6 +57,36 @@
     clearTimeout(expiryTimer);
   }
   function empty(id, message) { $(id).append(node("li", message, "empty")); }
+  function renderQuizzes(quizzes, botUrl) {
+    const list = $("quiz-list"); list.replaceChildren();
+    $("quiz-count").textContent = `${quizzes.filter(quiz => quiz.can_resume).length} available`;
+    for (const quiz of quizzes) {
+      const item = node("li"), detail = node("div");
+      const status = quiz.status === "completed" ? `Completed · ${quiz.score}/${quiz.total} correct`
+        : quiz.status === "expired" ? "Deadline passed" : `${quiz.answered}/${quiz.total} answered`;
+      detail.append(node("span", quiz.title, "plan-topic"), node("p", `${day(quiz.date)} · ${status}`, "task-meta"));
+      if (quiz.can_resume) {
+        const closes = new Date(new Date(quiz.deadline).getTime() - 1000).toLocaleString("en-IN", {
+          timeZone: "Asia/Kolkata", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+        });
+        detail.append(node("p", `Available through ${closes} IST`, "task-meta"));
+      }
+      item.append(detail);
+      if (quiz.can_resume && /^(?:[a-f0-9]{20}|\d{4}-\d{2}-\d{2})$/.test(quiz.id)) {
+        if (botUrl && /^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(botUrl)) {
+          const link = node("a", quiz.answered ? "Resume in Telegram" : "Start in Telegram", "quiz-link");
+          link.href = botUrl + "?start=quiz_" + quiz.id;
+          link.rel = "noopener noreferrer";
+          link.addEventListener("click", event => {
+            if (app && app.openTelegramLink) { event.preventDefault(); app.openTelegramLink(link.href); }
+          });
+          item.append(link);
+        } else detail.append(node("code", `/quiz ${quiz.id}`, "task-command"));
+      }
+      list.append(item);
+    }
+    if (!quizzes.length) empty("quiz-list", "Your daily quizzes will appear here after your first delivered lesson.");
+  }
   const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
   const day = value => value ? new Date(value + "T00:00:00").toLocaleDateString(undefined,
     {weekday: "short", day: "numeric", month: "short", year: "numeric"}) : "";
@@ -368,6 +398,7 @@
     for (const element of document.querySelectorAll(".lab-input, .lab-button")) element.disabled = disabled || !documentCsrf;
   }
   function render(data) {
+    renderQuizzes(data.quizzes || [], data.bot_url);
     $("learner-name").textContent = data.profile.name;
     $("target-role").textContent = data.profile.target_role || "A plan built around your goals starts with /setup.";
     $("setup-note").hidden = data.profile.setup_complete;

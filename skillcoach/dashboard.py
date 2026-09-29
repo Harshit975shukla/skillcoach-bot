@@ -86,6 +86,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
     from skillcoach.course_library import index
     from skillcoach.formatting import md_blocks
     from skillcoach.lesson_delivery import recent_lessons
+    from skillcoach.quizzes import catalogue
     from skillcoach.resources import library_view
 
     _, state = authorize_learner(repo, actor, issued, auth_hash)
@@ -135,6 +136,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
         else [],
         "skills": skill_summary(state, public=False),
         "lessons": recent_lessons(state),
+        "quizzes": catalogue(state, now)[:30],
         "resources": library_view(),
         "courses": index(),
         "recent_interviews": [

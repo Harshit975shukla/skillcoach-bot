@@ -64,6 +64,16 @@ const fixture = {
   ],
   lessons: [{id: LESSON_ID, topic: "CI pipeline design", date: "2026-09-29", delivered: true},
             {id: MISSING_LESSON, topic: "Kubernetes pods", date: "2026-09-28", delivered: false}],
+  quizzes: [
+    {id: LESSON_ID, title: "CI pipeline quiz", date: "2026-09-29", status: "in_progress",
+      answered: 2, total: 5, score: null, can_resume: true, deadline: "2026-10-05T00:00:00+05:30"},
+    {id: "2026-09-28", title: "Terraform quiz", date: "2026-09-28", status: "not_started",
+      answered: 0, total: 5, score: null, can_resume: true, deadline: "2026-10-05T00:00:00+05:30"},
+    {id: "a".repeat(20), title: "Completed quiz", date: "2026-09-25", status: "completed",
+      answered: 5, total: 5, score: 4, can_resume: false, deadline: "2026-09-28T00:00:00+05:30"},
+    {id: "b".repeat(20), title: "<img src=x onerror='window.pwnedQuiz=true'>", date: "2026-09-24", status: "expired",
+      answered: 1, total: 5, score: null, can_resume: false, deadline: "2026-09-28T00:00:00+05:30"},
+  ],
   plan: [{date: "2026-09-28", topic: "AWS EC2: instance health and replacement"},
          {date: "2026-09-29", topic: "Kubernetes: readiness and service routing"}],
   skills: [{skill: "AWS EC2", done: 3, total: 4}, {skill: "Kubernetes networking", done: 1, total: 2}],
@@ -199,11 +209,12 @@ try {
   for (const [label, width] of [["mobile", 390], ["desktop", 1100]]) {
     const page = await browser.newPage();
     await page.setViewport({width, height: 900, deviceScaleFactor: 1});
+    await page.emulateMediaFeatures([{name: "prefers-reduced-motion", value: "reduce"}]);
     await page.setRequestInterception(true);
     page.on("request", request => {
       if (request.url().startsWith("https://telegram.org/")) {
         request.respond({status: 200, contentType: "text/javascript", body:
-          "window.Telegram={WebApp:{initData:'synthetic-signed-launch',colorScheme:'light',ready(){},expand(){},onEvent(){}}};"});
+          "window.Telegram={WebApp:{initData:'synthetic-signed-launch',colorScheme:'light',ready(){},expand(){},onEvent(){},openTelegramLink(url){window.openedQuiz=url;}}};"});
       } else if (request.url().startsWith(origin)) request.continue();
       else request.abort();
     });
@@ -211,6 +222,19 @@ try {
     await page.waitForFunction(() => !document.getElementById("content").hidden);
     assert.equal(await page.$eval("#learner-name", e => e.textContent), "Synthetic learner");
     assert.equal(await page.$$eval("#tasks > li", e => e.length), 2);
+    assert.equal(await page.$eval("#quiz-count", e => e.textContent), "2 available");
+    assert.equal(await page.$$eval("#quiz-list a", e => e.length), 2);
+    assert.equal(await page.$$eval("#quiz-list img", e => e.length), 0);
+    assert.equal(await page.evaluate(() => window.pwnedQuiz), undefined);
+    assert.match(await page.$eval("#quiz-list", e => e.textContent), /2\/5 answered/);
+    assert.match(await page.$eval("#quiz-list", e => e.textContent), /4\/5 correct/);
+    assert.match(await page.$eval("#quiz-list", e => e.textContent), /Deadline passed/);
+    await page.click("#quiz-list a");
+    assert.equal(await page.evaluate(() => window.openedQuiz), "https://t.me/SkillCoachTestBot?start=quiz_" + LESSON_ID);
+    if (process.env.DASHBOARD_SCREENSHOT_DIR) {
+      await page.$eval("#quizzes", e => e.scrollIntoView());
+      await page.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, `quizzes-${label}.png`)});
+    }
     assert.match(await page.$eval("#plan-status", e => e.textContent), /Awaiting your approval/);
     assert.equal(await page.$eval("#plan-bot-link", e => e.href), "https://t.me/SkillCoachTestBot?start=plan");
     assert.equal(await page.evaluate(() => document.body.classList.contains("telegram-light")), true);
@@ -250,6 +274,7 @@ try {
     await page.waitForFunction(() => document.getElementById("content").hidden && !document.getElementById("notice").hidden);
     assert.equal(await page.$eval("#lesson-body", e => e.textContent), "");
     assert.equal(await page.$$eval("#course-list > li", e => e.length), 0);
+    assert.equal(await page.$$eval("#quiz-list > li", e => e.length), 0);
     courseDenied = false;
     await page.click("#refresh");
     await page.waitForFunction(() => !document.getElementById("lesson-page").hidden);

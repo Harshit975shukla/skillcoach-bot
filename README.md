@@ -372,6 +372,24 @@ text, never as HTML. Revocation blocks the next request; already downloaded cont
 remotely recalled. No administration actions are exposed in the Mini App. The separate public
 dashboard remains anonymous and owner-controlled.
 
+### Missed daily quizzes
+
+Daily quizzes stay available through **Sunday 23:59 Asia/Kolkata of the lesson's week** (the
+cutoff is Monday 00:00, exclusive), rather than expiring at midnight each day. The private
+dashboard's **Quizzes** section shows available quizzes, saved progress, completed scores and
+deadlines. **Start / Resume in Telegram** opens a learner-scoped bot link; answers are entered
+in Telegram using the existing question-bound buttons. `/quizzes` shows the same catch-up choices.
+No quiz is started merely by viewing the dashboard or opening an unauthenticated URL.
+
+Resuming preserves the original quiz date, question IDs, saved answers and grading receipts.
+Completed quizzes cannot be reset or rescored. A delivered lesson whose quiz was missed can
+generate one validated five-question quiz on demand; unsent lessons and past-week lessons cannot.
+Only one assessment is active at a time. Catch-up buttons never replace another open assessment:
+finish it or explicitly `/cancel` before switching. Normal scheduled daily/weekly assessments
+still take priority over the active question; the unfinished daily quiz remains resumable from
+the catalogue until its Sunday deadline. Saturday's ten-question assessment is separate and
+keeps its existing same-day deadline. Neither schedules nor historical lesson dates are changed.
+
 Help is generated from `skillcoach/commands.py`. `/profile` displays the private profile or enters setup; `/profile setup` replaces it only after successful validation.
 
 | Commands | Behavior |
@@ -382,7 +400,8 @@ Help is generated from `skillcoach/commands.py`. `/profile` displays the private
 | `/curriculum`, `/nextweek <preference>` | Dated six-day plan, including Saturday review; preferences apply to the next unplanned week |
 | `/learn <topic>`, `/ask <question>`, `/tip` | Full lesson with tracked tasks, personalized coaching or practice tip |
 | `/resources [cloud\|devops\|linux\|topic\|search]` | Curated free learning links; `--page 2` for more; no AI call |
-| `/q A` (or B/C/D), question buttons | Answer only the active question; stale daily quizzes expire when weekly assessment starts |
+| `/q A` (or B/C/D), question buttons | Answer only the active question; old buttons cannot grade a different question |
+| `/quizzes`, `/quiz <id or lesson date>` | Resume unfinished daily quizzes through Sunday 23:59 IST without resetting answers; also available from the private dashboard |
 | `/interview [topic]`, `/interview next` | Question first, learner answer, rubric feedback and hypothetical model answer afterward |
 | `/mock [topic]` | Clearly labeled sample Q&A, **not** a graded interview |
 | `/tasks`, `/today`, `/complete <id> [actual_minutes]` | Stable tasks and one-time completion; omitted actual minutes are zero, not estimated practice |
