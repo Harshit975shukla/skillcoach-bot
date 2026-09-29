@@ -84,6 +84,7 @@ def authorize_learner(repo, actor: int, issued: int, auth_hash: str):
 def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narration_enabled=False, config=None):
     from skillcoach.formatting import md_blocks
     from skillcoach.lesson_delivery import recent_lessons
+    from skillcoach.resources import library_view
 
     _, state = authorize_learner(repo, actor, issued, auth_hash)
     profile = state.profile
@@ -132,6 +133,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
         else [],
         "skills": skill_summary(state, public=False),
         "lessons": recent_lessons(state),
+        "resources": library_view(),
         "recent_interviews": [
             {
                 "question": i.question.question,

@@ -309,6 +309,7 @@ Help is generated from `skillcoach/commands.py`. `/profile` displays the private
 | `/score`, `/gaps` | Actual evidence and skill ratings; unavailable is not fabricated as 50 |
 | `/curriculum`, `/nextweek <preference>` | Dated six-day plan, including Saturday review; preferences apply to the next unplanned week |
 | `/learn <topic>`, `/ask <question>`, `/tip` | Full lesson with tracked tasks, personalized coaching or practice tip |
+| `/resources [cloud\|devops\|linux\|topic\|search]` | Curated free learning links; `--page 2` for more; no AI call |
 | `/q A` (or B/C/D), question buttons | Answer only the active question; stale daily quizzes expire when weekly assessment starts |
 | `/interview [topic]`, `/interview next` | Question first, learner answer, rubric feedback and hypothetical model answer afterward |
 | `/mock [topic]` | Clearly labeled sample Q&A, **not** a graded interview |
@@ -325,6 +326,45 @@ Help is generated from `skillcoach/commands.py`. `/profile` displays the private
 Plans use the actual target role, level, gaps, prior topics, task evidence and recent incorrect answers. Delivered/prepared lessons are not treated as mastery. Only completed, correctly dated weekly assessments enter a weekly score report. Missing or unfinished attempts remain unavailable. Practice on one date contributes only one streak day; a missed day resets the streak.
 
 Resume/JD alignment scores are explicitly provisional document-based estimates. Diagnostic scores are limited evidence, not a guarantee of job readiness. Private resume/JD/answer text is sent to your configured AI provider when you invoke those features; configure an acceptable provider/data-retention policy before use.
+
+## Free learning library
+
+`/resources` and **Free resources** in the private dashboard expose 24 curated links across cloud,
+DevOps and Linux. Search by provider, keyword, syllabus module/topic ID, or resource ID. Telegram
+shows four results at a time (`/resources linux --page 2`); the dashboard supports area/search and
+no-account-to-read filters. Each entry includes attribution, level, format, a suggested starting
+point, account requirements, cost caveats and its link/access review date (initially 2026-09-29).
+This is a link/access review, **not** an expert audit of entire courses or a permanent price guarantee.
+
+Sources include AWS Educate and service documentation, Microsoft Learn, Google Cloud documentation,
+Pro Git, GitHub Actions, Docker, Kubernetes, Terraform's local Docker track, Ansible, Prometheus,
+Google SRE books, Killercoda, Argo CD, Helm, Ubuntu, GNU Bash, LinuxCommand.org, Debian, systemd and
+MIT's Missing Semester. Related resources appear on the full lesson page, in the chat full-reference
+view and with lab steps. Older lesson records are not rewritten. Full daily lessons and animated
+videos remain unchanged; resources supplement rather than replace them.
+
+**No new completion gates.** These external resources are optional. Opening a link does not create
+tasks, log minutes, award grades, verify a lab or change a streak. They never block quizzes or
+next-week planning. Only the existing required SkillCoach labs affect the lab gate.
+
+**Free access is not free infrastructure.** Documentation can be read without deploying anything.
+Provider-hosted practice can require a free account and impose session limits. Optional exams,
+paid courses, software licensing and learner-owned cloud usage are separate; do not enter billing
+details or create cloud resources just to read a guide. The linked Debian handbook edition covers
+Bullseye; learners are told to check current release documentation.
+
+**Publisher rights and privacy.** The catalog stores links and original SkillCoach descriptions,
+not copied courses, videos, PDFs or translations. Pro Git and LinuxCommand.org have non-commercial
+license restrictions; they are linked, not rehosted or sold. Other materials remain subject to their
+publishers' terms; free availability is not a redistribution license. No endorsement or partnership
+is implied. Outbound URLs contain no learner/profile/answer data, use no referral tracking and open
+only on the learner's action. Providers apply their own privacy policies after opening. No content
+is scraped or sent to an AI provider at runtime, and resource discovery makes no external API call.
+
+Maintainers edit `skillcoach/resources.py`, recheck source availability/access and cost notes, and
+bump `RESOURCE_VERSION` when reviewing the catalog. Regression tests validate catalog IDs, topic
+mapping, safe URLs, bounded pagination, unchanged learning state and dashboard behavior using fakes.
+There is no dependency, environment, database migration, scheduler or public-dashboard change.
 
 ## Hands-on labs
 

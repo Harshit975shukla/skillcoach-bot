@@ -8,6 +8,7 @@
   let epoch = 0;
   let documentCsrf = "", uploadId = null, uploadPreview = null, uploadBusy = false, uploadController;
   let labBusy = false, labController, labRequests = {};
+  let resourceCatalog = [], resourceLimit = 6;
   const LESSON = /^[0-9a-f]{20}$/;
   const linked = new URLSearchParams(location.search).get("lesson");
   let wantedLesson = linked && LESSON.test(linked) ? linked : null, shownLesson = null, lessonController;
@@ -26,6 +27,9 @@
     hideLesson();
     documentCsrf = ""; uploadId = null; uploadPreview = null; uploadBusy = false;
     labBusy = false; labRequests = {};
+    resourceCatalog = []; resourceLimit = 6;
+    $("resource-search").value = ""; $("resource-group").value = ""; $("resource-no-account").checked = false;
+    $("resource-more").hidden = true;
     $("document-file").value = ""; $("document-preview").hidden = true;
     for (const id of ["document-file", "document-kind", "document-confirm", "document-cancel", "document-choice"]) $(id).disabled = false;
     $("document-status").textContent = ""; $("document-preview-summary").textContent = "";
@@ -34,7 +38,8 @@
     for (const id of ["learner-name", "target-role", "tasks", "plan-days", "skills", "interviews",
                       "done", "streak", "minutes", "graded", "preferences", "updated", "task-count",
                       "plan-status", "plan-rationale", "lab-items", "lab-catalog", "lab-count", "lab-status",
-                      "lab-cost", "lab-gate", "lesson-list"]) {
+                      "lab-cost", "lab-gate", "lesson-list", "resource-list", "resource-count",
+                      "resource-notice", "resource-rights"]) {
       $(id).replaceChildren();
     }
     $("lab-gate").hidden = true;
@@ -180,6 +185,13 @@
       }
       element.append(list); body.append(element);
     }
+    if (lesson.resources && lesson.resources.length) {
+      anchor("Free resources", "lesson-resources");
+      const element = lessonSection("Optional free learning", "lesson-resources");
+      element.append(node("p", "External links, not required practice. They do not change your progress or lab status.",
+                          "section-description"), resourceList(lesson.resources));
+      body.append(element);
+    }
     const ratings = {up: "Useful", down: "Not useful"};
     $("lesson-feedback").textContent = lesson.feedback in ratings
       ? `You rated this lesson “${ratings[lesson.feedback]}”. You can change it with the buttons at the end of the lesson in Telegram.`
@@ -243,6 +255,42 @@
     details.append(node("p", "Submit: " + route.submit, "task-detail"));
     return details;
   }
+  function resourceList(items) {
+    const list = node("ul", undefined, "resource-list");
+    for (const resource of items) {
+      if (!/^https:\/\/[A-Za-z0-9.-]+\//.test(resource.url)) continue;
+      const item = node("li"), link = node("a", resource.title);
+      link.href = resource.url; link.target = "_blank"; link.rel = "noopener noreferrer";
+      link.referrerPolicy = "no-referrer";
+      link.addEventListener("click", event => {
+        if (app && app.openLink) { event.preventDefault(); app.openLink(resource.url); }
+      });
+      item.append(link, node("p", `${resource.provider} · ${resource.kind} · ${resource.level}`, "task-meta"),
+        node("p", resource.summary), node("p", `${resource.account_label}. ${resource.cost_note}`, "resource-cost"));
+      const details = node("details");
+      details.append(node("summary", "Where to start and source details"), node("p", resource.start),
+        node("p", `Link/access checked ${resource.checked_at}; not a full course audit. ${resource.rights_note}`, "task-meta"));
+      item.append(details); list.append(item);
+    }
+    return list;
+  }
+  function renderResourceLibrary() {
+    const group = $("resource-group").value, query = $("resource-search").value.trim().toLowerCase();
+    const tokens = query.split(/\s+/).filter(Boolean);
+    const items = resourceCatalog.filter(resource => {
+      const text = [resource.title, resource.provider, resource.tags, resource.summary, ...(resource.modules || [])]
+        .join(" ").toLowerCase();
+      return (!group || resource.group === group || (resource.modules || []).includes(group))
+        && (!$("resource-no-account").checked || resource.account !== "required")
+        && tokens.every(token => text.includes(token));
+    });
+    $("resource-list").replaceChildren(...resourceList(items.slice(0, resourceLimit)).children);
+    $("resource-count").textContent = `${Math.min(resourceLimit, items.length)} of ${items.length} resources`;
+    $("resource-more").hidden = items.length <= resourceLimit;
+    if (!items.length) empty("resource-list", resourceCatalog.length
+      ? "No matching resources. Try a broader topic or change the filters."
+      : "The resource library is unavailable in this view. Tap Refresh or use /resources in the bot.");
+  }
   function renderLabs(labs) {
     for (const id of ["lab-items", "lab-catalog"]) $(id).replaceChildren();
     $("lab-gate").hidden = true; $("lab-cost").textContent = ""; $("lab-count").textContent = "";
@@ -293,6 +341,11 @@
           const entry = node("li"); entry.append(link); list.append(entry);
         }
         details.append(list); item.append(details);
+      }
+      if (lab.resources && lab.resources.length) {
+        const details = node("details");
+        details.append(node("summary", "Optional free learning (does not verify this lab)"), resourceList(lab.resources));
+        item.append(details);
       }
       if (lab.routes.some(route => route.accepts_link)) {
         const form = node("form", undefined, "lab-form"), label = node("label", "Repository or AWS lab link");
@@ -362,6 +415,10 @@
     const proposed = data.learning && data.learning.plan;
     documentCsrf = data.document_csrf || "";
     renderLabs(data.labs);
+    resourceCatalog = data.resources ? data.resources.items : [];
+    $("resource-notice").textContent = data.resources ? data.resources.notice : "";
+    $("resource-rights").textContent = data.resources ? data.resources.rights : "";
+    renderResourceLibrary();
     $("document-preview-button").disabled = !documentCsrf || !data.documents || !data.documents.can_update;
     if (!uploadBusy && !uploadPreview) {
       $("document-status").textContent = data.documents
@@ -413,6 +470,12 @@
                              Math.max(0, data.auth_expires_at * 1000 - Date.now()));
     if (wantedLesson && shownLesson !== wantedLesson) openLesson(wantedLesson);
   }
+  for (const id of ["resource-search", "resource-group", "resource-no-account"]) {
+    $(id).addEventListener(id === "resource-search" ? "input" : "change", () => {
+      resourceLimit = 6; renderResourceLibrary();
+    });
+  }
+  $("resource-more").addEventListener("click", () => { resourceLimit += 6; renderResourceLibrary(); });
   async function refresh() {
     if (uploadBusy || labBusy) return;
     if (!app || !app.initData) {

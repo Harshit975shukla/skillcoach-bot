@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { readFile, mkdtemp, writeFile, rm, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +13,9 @@ const LAB_TOKEN = "SC-TEST-TOKN";
 const LESSON_ID = "0123456789abcdef0123";
 const MISSING_LESSON = "fedcba9876543210fedc";
 const spans = text => [{t: "text", v: text}];
+const resources = JSON.parse(execFileSync(process.env.TEST_PYTHON || "python",
+  ["-c", "import json; from skillcoach.resources import library_view; print(json.dumps(library_view()))"],
+  {encoding: "utf8"}));
 const lessonFixture = {
   id: LESSON_ID, title: "CI pipeline design: stages, artifacts and caching", date: "2026-09-29", available: true,
   review: "Reviewed lesson · 2026-09-28",
@@ -37,8 +41,10 @@ const lessonFixture = {
   references: ["https://docs.github.com/en/actions/concepts/workflows-and-actions/workflow-artifacts",
                "javascript:window.pwnedLesson=true"],
   feedback: "up", generated_at: new Date().toISOString(),
+  resources: resources.items.filter(r => r.id === "github-actions"),
 };
 const fixture = {
+  resources,
   profile: {name: "Synthetic learner", target_role: "Platform engineer", level: "intermediate", setup_complete: true},
   stats: {done: 4, pending: 2, total: 6, streak: 2, minutes_practiced: 65, answers_graded: 1},
   preferences: {paused: false, media: "video"},
@@ -82,6 +88,7 @@ const fixture = {
             cleanup: ["Delete the object and bucket."], submit: "/submitlab s3-private-presigned <presigned link>",
             accepts_link: true},
         ],
+        resources: resources.items.filter(r => r.id === "aws-s3-guide"),
         references: ["https://docs.aws.amazon.com/AmazonS3/latest/userguide/ShareObjectPreSignedURL.html",
                      "javascript:window.pwnedLab=true"]},
       {id: "lab-synthetic-2", lab_id: "iam-least-privilege", title: "<img src=x onerror='window.pwnedLab=true'>",
@@ -187,7 +194,29 @@ try {
     assert.equal(await page.$eval("#plan-bot-link", e => e.href), "https://t.me/SkillCoachTestBot?start=plan");
     assert.equal(await page.evaluate(() => document.body.classList.contains("telegram-light")), true);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    assert.equal(await page.$$eval("#resource-list > li", e => e.length), 6);
+    await page.click("#resource-more");
+    assert.equal(await page.$$eval("#resource-list > li", e => e.length), 12);
+    const requestsBeforeSearch = dataRequests;
+    await page.type("#resource-search", "terraform");
+    assert.equal(await page.$$eval("#resource-list > li", e => e.length), 1);
+    assert.match(await page.$eval("#resource-list", e => e.textContent), /local Docker/i);
+    assert.equal(await page.$eval("#resource-more", e => e.hidden), true);
+    await page.$eval("#resource-search", e => { e.value = "no-match-secret"; e.dispatchEvent(new Event("input")); });
+    assert.match(await page.$eval("#resource-list", e => e.textContent), /No matching resources/);
+    await page.$eval("#resource-search", e => { e.value = ""; e.dispatchEvent(new Event("input")); });
+    await page.select("#resource-group", "linux");
+    await page.click("#resource-no-account");
+    assert.match(await page.$eval("#resource-count", e => e.textContent), /6 of 6/);
+    assert.equal(await page.$eval("#resource-list", e => e.textContent.includes("Killercoda")), false);
+    assert.equal(dataRequests, requestsBeforeSearch, "resource filtering makes no API or AI call");
+    assert.equal(await page.$$eval("#resource-list a", links => links.every(a =>
+      a.target === "_blank" && a.rel.includes("noreferrer") && a.referrerPolicy === "no-referrer"
+      && !a.href.includes("synthetic-signed-launch"))), true);
+    await page.$eval("#resources", e => e.scrollIntoView());
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     if (process.env.DASHBOARD_SCREENSHOT_DIR) {
+      await page.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, `resources-${label}.png`)});
       await page.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, `dashboard-${label}.png`), fullPage: true});
     }
     // Task details render the Markdown subset as elements, never as literal ** markers.
@@ -210,7 +239,10 @@ try {
     assert.equal(await page.$$eval("#lesson-interview details li", e => e.length), 2);
     assert.equal(await page.$eval("#lesson-interview details", e => e.open), false);
     assert.deepEqual(await page.$$eval("#lesson-references a", e => e.map(a => a.href)), [lessonFixture.references[0]]);
-    assert.deepEqual(await page.$$eval("#lesson-jump a", e => e.map(a => a.textContent)), ["Exercises", "Interview", "References"]);
+    assert.deepEqual(await page.$$eval("#lesson-jump a", e => e.map(a => a.textContent)),
+      ["Exercises", "Interview", "References", "Free resources"]);
+    assert.equal(await page.$eval("#lesson-resources a", e => e.href), lessonFixture.resources[0].url);
+    assert.match(await page.$eval("#lesson-resources", e => e.textContent), /not required practice/);
     assert.match(await page.$eval("#lesson-feedback", e => e.textContent), /“Useful”/);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "code scrolls inside its block");
     assert.equal(await page.evaluate(() => window.pwnedLesson), undefined);
@@ -343,6 +375,8 @@ try {
     });
     await new Promise(resolve => setTimeout(resolve, 30));
     assert.equal(await page.$$eval("#lab-items > li", e => e.length), 0);
+    assert.equal(await page.$$eval("#resource-list > li", e => e.length), 0);
+    assert.equal(await page.$eval("#resource-search", e => e.value), "");
     assert.equal(await page.$eval("#lab-status", e => e.textContent), "");
     assert.equal(await page.evaluate(token => document.body.textContent.includes(token), LAB_TOKEN), false);
     await page.evaluate(() => {

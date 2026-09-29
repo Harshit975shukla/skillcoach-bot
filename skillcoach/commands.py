@@ -41,7 +41,8 @@ COMMANDS = {
     "retry": "Retry failed operations and deliveries without regrading",
     "media": "<video|static>; animated video is the default",
     "voice": "<on|off> narration preference; voice stays unavailable until a replacement is approved",
-    "topics": "[module_id] browse the versioned Cloud/DevOps syllabus",
+    "topics": "[module_id] Cloud/DevOps syllabus",
+    "resources": "[search] free links; --page 2 for more",
     "publish": "Queue an anonymous dashboard summary",
     "dashboard": "Open your authenticated private learner dashboard",
     "status": "Private pending/retry queue counts",
@@ -60,8 +61,7 @@ def help_text(*, admin=True):
             f"/{name} - {description}" for name, description in ADMIN_COMMANDS.items()
         )
     return (
-        text + "\n\nPrivacy: the owner sees access status, activity counts, delivery health and "
-        "lesson-rating totals. "
-        "After guided-setup consent, they also see approved catalog topics, controlled learning reasons "
-        "and assessment summaries, not private documents, answers or feedback."
+        text + "\n\nPrivacy: owner sees access status, activity counts, delivery health and lesson-rating totals. "
+        "With setup consent: approved catalog topics, controlled learning reasons and assessment summaries. "
+        "Not private documents, answers or feedback."
     )

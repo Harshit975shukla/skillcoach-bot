@@ -88,6 +88,8 @@ def gate_text(items):
 
 def lab_view(state, config, now):
     """Private learner dashboard DTO. Never includes submitted URLs or digests."""
+    from skillcoach.resources import related_view
+
     gate = blocking(state, config)
     gate_ids = {a.id for a in gate}
     items = []
@@ -128,6 +130,7 @@ def lab_view(state, config, now):
                 "cleanup": a.cleanup,
                 "routes": routes,
                 "references": list(lab.references),
+                "resources": related_view(lab.topics[0]),
             }
         )
     j = state.journey
@@ -421,6 +424,8 @@ class LabFlow:
         self.announce(item)
 
     def route_details(self, assignment_id, route):
+        from skillcoach.resources import related_text
+
         item = self.state.labs.get(assignment_id)
         if not item or item.lab_id not in LABS or route not in LABS[item.lab_id].routes:
             self.s.say("That lab button is no longer current. Use /labs.")
@@ -447,6 +452,7 @@ class LabFlow:
             )
         text += "\n\nSubmit: " + submit + "\nOr paste the link in the Labs section of /dashboard."
         text += "\n\nOfficial references:\n" + "\n".join(lab.references)
+        text += related_text(lab.topics[0])
         self.s.say(text)
 
     # In-app scenario ------------------------------------------------------------------------

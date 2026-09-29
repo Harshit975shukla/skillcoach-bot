@@ -907,6 +907,10 @@ class Service:
             from skillcoach.catalog import catalog_text
 
             self.say(catalog_text(arg))
+        elif cmd == "resources":
+            from skillcoach.resources import resources_text
+
+            self.say(resources_text(arg))
         elif cmd == "nextweek":
             if not arg:
                 self.say("Use /nextweek <preference>. Applies to the next week not already planned.")

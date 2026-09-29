@@ -401,7 +401,7 @@ def catalog_text(module_id=""):
             f"Cloud/DevOps syllabus {CATALOG_VERSION}: {len(TOPICS)} topic entries.\n"
             "This is a versioned syllabus, not every vendor product/version.\n\n"
             + "\n".join(f"{module.id}: {module.title} ({len(module.topics)})" for module in MODULES)
-            + "\n\nUse /topics <module_id>, then /learn <topic_id>."
+            + "\n\nUse /topics <module_id>, then /learn <topic_id>. Free external learning: /resources."
         )
     module = next((module for module in MODULES if module.id == module_id.casefold()), None)
     if module is None:
@@ -412,6 +412,7 @@ def catalog_text(module_id=""):
         + "\n".join(f"{ident}\n{title}" for ident, (owner, title) in TOPICS.items() if owner.id == module.id)
         + "\n\nOfficial starting reference: "
         + module.reference
+        + f"\nOptional free learning: /resources {module.id}"
     )
 
 

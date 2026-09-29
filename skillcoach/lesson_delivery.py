@@ -133,11 +133,14 @@ def closing(lesson, topic) -> str:
         + question
         + "\n\nAnswer out loud or in writing in about two minutes, then compare with the answer checklist "
         "in the full lesson. For a graded round, use /interview.\n\n"
+        "Optional free courses and guides: /resources (also on the lesson page).\n\n"
         "**How was today's lesson?** Your rating stores only the button you pick; the owner sees totals only."
     )
 
 
-def full_reference(lesson, extension=()) -> str:
+def full_reference(lesson, extension=(), *, topic="") -> str:
+    from skillcoach.resources import related_text
+
     parts = [
         f"**📖 Full lesson: {lesson.title}**",
         f"**Why it matters**\n{lesson.why}",
@@ -164,7 +167,7 @@ def full_reference(lesson, extension=()) -> str:
         + "\n"
         + review_note(lesson)
     )
-    return "\n\n".join(parts)
+    return "\n\n".join(parts) + (related_text(topic) if topic else "")
 
 
 def stored_lesson(repo, key, record):
@@ -197,6 +200,8 @@ def extension_tasks(lesson, tasks):
 
 
 def page(repo, state, ident, now):
+    from skillcoach.resources import related_view
+
     key, record = find_lesson(state, ident)
     if key is None:
         return None
@@ -209,6 +214,7 @@ def page(repo, state, ident, now):
             "date": record.get("date"),
             "available": False,
             "exercises": [exercise_view(t) for t in tasks],
+            "resources": related_view(record.get("topic", "")) if record.get("topic") else [],
         }
     sections = [
         {"heading": "Why it matters", "blocks": md_blocks(lesson.why)},
@@ -252,6 +258,7 @@ def page(repo, state, ident, now):
         if lesson.interview_question
         else None,
         "references": [u for u in lesson.references if u.startswith("https://")],
+        "resources": related_view(record.get("topic", "")) if record.get("topic") else [],
         "feedback": (record.get("feedback") or {}).get("rating"),
         "generated_at": now.isoformat(),
     }
@@ -296,7 +303,9 @@ class LessonActions:
             )
             return
         tasks = lesson_tasks(self.s.state, key)
-        self.s.say(full_reference(lesson, extension_tasks(lesson, tasks)), md=True)
+        self.s.say(
+            full_reference(lesson, extension_tasks(lesson, tasks), topic=record.get("topic", "")), md=True
+        )
 
     def feedback(self, ident, value, reason=None):
         key, record = find_lesson(self.s.state, ident)

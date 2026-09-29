@@ -69,6 +69,26 @@ code { font-family: ui-monospace, "Cascadia Mono", monospace; font-size: .875em;
 #document-preview button { margin-top: 12px; }
 #document-status { overflow-wrap: anywhere; }
 .sections { flex-wrap: wrap; }
+.resource-filters { display: grid; grid-template-columns: minmax(120px, 1fr) 2fr; gap: 16px; }
+.resource-filters label { display: block; margin-bottom: 6px; font-weight: 650; }
+.resource-filters select, .resource-filters input {
+  width: 100%; min-width: 0; min-height: 44px; padding: 10px; font: inherit;
+  color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+}
+.resource-filters input::placeholder { color: var(--muted); opacity: 1; }
+.resource-filters :is(input, select):focus-visible, .resource-check input:focus-visible {
+  outline: 3px solid var(--accent); outline-offset: 3px;
+}
+.resource-check { display: flex; align-items: center; gap: 10px; min-height: 44px; margin: 8px 0; cursor: pointer; }
+.resource-check input { width: 18px; height: 18px; accent-color: var(--accent); }
+.resource-list > li { padding: 18px 0; border-bottom: 1px solid var(--line); }
+.resource-list a { display: inline-block; font-weight: 650; overflow-wrap: anywhere; }
+.resource-list p { max-width: 70ch; margin-top: 7px; overflow-wrap: anywhere; }
+.resource-list details { margin-top: 5px; }
+.resource-list li.empty { color: var(--muted); }
+.resource-list .resource-cost { font-size: .94rem; }
+#resource-more { margin-top: 16px; }
+#resource-count { margin-bottom: 4px; }
 #lab-count { white-space: nowrap; color: var(--muted); font-size: .875rem; }
 .lab-state { display: inline-block; margin-top: 8px; padding: 2px 9px; border-radius: 5px; font-size: .82rem;
   font-weight: 650; background: var(--soft); color: var(--ink); }
@@ -144,6 +164,7 @@ details .prose { margin-top: 6px; }
 footer { margin-top: 35px; padding-top: 22px; border-top: 1px solid var(--line); color: var(--muted); font-size: .85rem; }
 footer p + p { margin-top: 7px; }
 @media (max-width: 520px) {
+  .resource-filters { grid-template-columns: 1fr; gap: 12px; }
   .workspace { padding: 0 18px 30px; }
   .header { min-height: 72px; }
   .sections { gap: 0 2px; }

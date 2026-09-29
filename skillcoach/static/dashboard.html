@@ -30,6 +30,7 @@
         <a href="#today">Practice</a>
         <a href="#lessons">Lessons</a>
         <a href="#labs">Labs</a>
+        <a href="#resources">Free resources</a>
         <a href="#plan">Weekly plan</a>
         <a href="#progress">Progress</a>
         <a href="#documents">Documents</a>
@@ -58,6 +59,33 @@
         <h3 id="lab-catalog-heading">More labs you can start</h3>
         <ul id="lab-catalog" class="skill-list"></ul>
         <p id="lab-cost" class="section-description"></p>
+      </section>
+      <section id="resources" aria-labelledby="resources-heading">
+        <h2 id="resources-heading">Free learning resources</h2>
+        <p class="section-description">Courses, guides and practice from their original publishers.
+          Choose a resource to open on the provider's site; your SkillCoach documents and answers are not sent with it.</p>
+        <p id="resource-notice" class="section-description"></p>
+        <div class="resource-filters">
+          <div>
+            <label for="resource-group">Area</label>
+            <select id="resource-group">
+              <option value="">All areas</option>
+              <option value="cloud">Cloud</option>
+              <option value="devops">DevOps</option>
+              <option value="linux">Linux</option>
+            </select>
+          </div>
+          <div>
+            <label for="resource-search">Find a topic or provider</label>
+            <input id="resource-search" type="search" maxlength="160" autocomplete="off"
+              placeholder="e.g. AWS, Terraform, shell" aria-controls="resource-list">
+          </div>
+        </div>
+        <label class="resource-check"><input id="resource-no-account" type="checkbox"> No account needed to read</label>
+        <p id="resource-count" class="task-meta" role="status" aria-live="polite"></p>
+        <ul id="resource-list" class="resource-list"></ul>
+        <button id="resource-more" type="button" hidden>Show more resources</button>
+        <p id="resource-rights" class="section-description"></p>
       </section>
       <section id="plan" aria-labelledby="plan-heading">
         <h2 id="plan-heading">Your weekly plan</h2>
