@@ -5,6 +5,8 @@
   const framed = window.self !== window.top;
   let csrf = "", telegramSession = "", preview = null, overview = null, poll = null, sessionTimer = null, busy = false;
   let requestId = null;
+  let materials = null, courseLimit = 10, courseVersion = 0, learnerVersion = 0;
+  let lessonNext = null, deliveryNext = null, historyBusy = false, lastCourseButton = null;
   let epoch = 0, actionVersion = 0, pendingLogin = null, loginPollBusy = false, signedOut = false;
   const controllers = new Set();
   class StaleRequest extends Error {}
@@ -30,6 +32,15 @@
   function clearPrivate(keepLogin = false) {
     invalidateRequests();
     csrf = ""; telegramSession = ""; preview = null; overview = null; requestId = null; busy = false; actionVersion += 1;
+    materials = null; courseLimit = 10; courseVersion += 1; lastCourseButton = null;
+    clearLearner();
+    $("learner-select").replaceChildren(new Option("Choose a learner", ""));
+    $("materials-index").hidden = true; $("course-review").hidden = true;
+    $("materials-load").disabled = false; $("admin-course-more").hidden = true;
+    $("admin-course-search").value = "";
+    $("admin-course-module").replaceChildren(new Option("All modules", ""));
+    for (const id of ["materials-status", "admin-course-count", "admin-course-list", "admin-labs", "admin-resources",
+                      "admin-lab-notice", "admin-resource-notice", "course-review-title", "course-review-meta", "course-review-body"]) $(id).replaceChildren();
     if (!keepLogin) {
       pendingLogin = null; $("login-challenge").hidden = true;
       $("login-code").textContent = ""; $("telegram-login-link").removeAttribute("href");
@@ -165,6 +176,12 @@
         group.append(actionButton("Revoke", "revoke", member.id));
       }
       if (member.status === "active") group.append(actionButton("Choose action", "send_lesson", member.id));
+      const inspect = node("button", "Learning details"); inspect.type = "button";
+      inspect.addEventListener("click", () => {
+        $("learner-select").value = member.id; loadLearner();
+        $("learner-history").scrollIntoView(); $("learner-select").focus({preventScroll: true});
+      });
+      group.append(inspect);
       controls.append(group);
       row.append(name, state, progress, node("td", date(member.last_interaction)), controls);
       $("members").append(row);
@@ -251,13 +268,229 @@
         + (reported.length ? ` · reported: ${reported.join(", ")}` : " · no problem reports");
     }
     $("updated").textContent = `Updated ${date(data.generated_at)} IST`;
+    const selected = $("learner-select").value;
+    $("learner-select").replaceChildren(new Option("Choose a learner", ""),
+      ...data.learners.map(member => new Option(`${member.name} (${member.status})`, member.id)));
+    if (data.learners.some(member => member.id === selected)) $("learner-select").value = selected;
+    else clearLearner();
     $("console").hidden = false;
   }
+  function clearLearner() {
+    learnerVersion += 1; historyBusy = false; lessonNext = deliveryNext = null;
+    $("learner-detail").hidden = true; $("learner-refresh").disabled = true;
+    $("lessons-more").hidden = $("deliveries-more").hidden = true;
+    for (const id of ["learner-status", "learner-summary", "upcoming-notice", "learner-upcoming",
+                      "learner-lessons", "learner-deliveries", "delivery-notice"]) $(id).replaceChildren();
+  }
+  function courseButton(topic, version, label = "Review lesson") {
+    const button = node("button", label); button.type = "button";
+    button.setAttribute("aria-label", `${label}: ${topic.title}`);
+    button.addEventListener("click", () => { lastCourseButton = button; openCourse(topic.id, version); });
+    return button;
+  }
+  async function loadLearner(more = null) {
+    const learner = $("learner-select").value;
+    if (more && historyBusy) return;
+    if (!more) clearLearner();
+    if (!learner || !csrf) return;
+    const version = learnerVersion, requestEpoch = epoch;
+    historyBusy = true; $("learner-refresh").disabled = true;
+    $("lessons-more").disabled = $("deliveries-more").disabled = true;
+    $("learner-status").textContent = more ? "Loading older records…" : "Loading learner history…";
+    try {
+      const data = await api("/admin/learner", {learner,
+        lesson_before: more === "lessons" ? lessonNext : null,
+        delivery_before: more === "deliveries" ? deliveryNext : null});
+      if (version !== learnerVersion || learner !== $("learner-select").value) return;
+      if (!data.learning.shared) {
+        clearLearner(); $("learner-status").textContent = data.upcoming.status;
+        $("learner-refresh").disabled = false; return;
+      }
+      $("learner-summary").textContent = `${data.learning.status} · ${data.learning.streak} day streak · ${data.learning.sessions_practiced}/5 sessions with all tasks complete`;
+      $("upcoming-notice").textContent = data.upcoming.status;
+      $("learner-upcoming").replaceChildren();
+      for (const slot of data.upcoming.slots) {
+        const item = node("li");
+        item.append(node("strong", `${slot.title} · ${date(slot.at)} IST`),
+          node("p", slot.topic ? slot.topic.title : "Content depends on learning progress"),
+          node("p", slot.detail, "detail"));
+        if (slot.topic) item.append(courseButton(slot.topic, null, "Review shared reference"));
+        $("learner-upcoming").append(item);
+      }
+      if (!data.upcoming.slots.length) empty("learner-upcoming", "No automatic next delivery to preview.");
+      if (more !== "deliveries") {
+        if (!more) $("learner-lessons").replaceChildren();
+        for (const lesson of data.lessons) {
+          const item = node("li");
+          item.append(node("strong", lesson.topic.title),
+            node("p", `${lesson.date || "Date unavailable"} · ${lesson.source}${lesson.version ? " · " + lesson.version : ""}`, "detail"),
+            node("p", lesson.delivered_at ? `Lesson delivery completed ${date(lesson.delivered_at)} IST`
+              : "No completed lesson-delivery receipt; check the bot delivery log.", "detail"),
+            node("p", `${lesson.tasks_done}/${lesson.tasks_total} tasks complete`, "detail"));
+          if (lesson.topic.id) item.append(courseButton(lesson.topic, lesson.version,
+            lesson.version ? "Review versioned reference" : "Review current reference"));
+          $("learner-lessons").append(item);
+        }
+        if (!more && !data.lessons.length) empty("learner-lessons", "No saved lessons for this learner.");
+        lessonNext = data.lesson_next; $("lessons-more").hidden = !lessonNext;
+      }
+      if (more !== "lessons") {
+        if (!more) $("learner-deliveries").replaceChildren();
+        for (const delivery of data.deliveries) {
+          const item = node("li"), counts = delivery.messages;
+          item.append(node("strong", `${delivery.title} · ${delivery.status}`),
+            node("p", `Created ${date(delivery.created_at)} IST · processing: ${delivery.processing}`, "detail"),
+            node("p", `${counts.sent}/${counts.total} messages sent · ${counts.pending} pending · ${counts.failed} failed · ${counts.suppressed} suppressed · ${delivery.media_sent} media sent`, "detail"));
+          if (["pending", "running", "failed"].includes(delivery.processing)) {
+            item.append(node("p", `Eligible after ${date(delivery.eligible_at)} IST; not a promised send time.`, "detail"));
+          }
+          if (delivery.last_sent_at) item.append(node("p", `Last successful send ${date(delivery.last_sent_at)} IST`, "detail"));
+          $("learner-deliveries").append(item);
+        }
+        if (!more && !data.deliveries.length) empty("learner-deliveries", "No retained delivery records for this learner.");
+        deliveryNext = data.delivery_next; $("deliveries-more").hidden = !deliveryNext;
+      }
+      $("delivery-notice").textContent = data.notice;
+      $("learner-detail").hidden = false;
+      $("learner-status").textContent = `History updated ${date(data.generated_at)} IST`;
+    } catch (error) {
+      if (version !== learnerVersion || requestEpoch !== epoch) return;
+      $("learner-status").textContent = "Could not load history. Use Refresh learner to retry.";
+      showError(error);
+    } finally {
+      if (requestEpoch === epoch && version === learnerVersion) {
+        historyBusy = false; $("learner-refresh").disabled = false;
+        $("lessons-more").disabled = $("deliveries-more").disabled = false;
+      }
+    }
+  }
+  function safeLink(url, title) {
+    if (!/^https:\/\/[A-Za-z0-9.-]+\//.test(url)) return node("span", title);
+    const link = node("a", title); link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer";
+    return link;
+  }
+  function renderMaterialIndex() {
+    const words = $("admin-course-search").value.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    const group = $("admin-course-module").value;
+    const topics = materials.courses.modules.flatMap(module => module.topics.map(topic => ({...topic, module})))
+      .filter(topic => (!group || topic.module.id === group) && words.every(word =>
+        (topic.title + " " + topic.module.title).toLowerCase().includes(word)));
+    $("admin-course-list").replaceChildren();
+    for (const topic of topics.slice(0, courseLimit)) {
+      const item = node("li"), detail = node("div");
+      detail.append(node("strong", topic.title), node("p", topic.module.title, "detail"));
+      item.append(detail, courseButton(topic, materials.courses.version)); $("admin-course-list").append(item);
+    }
+    if (!topics.length) empty("admin-course-list", "No matching lessons. Try another search or module.");
+    $("admin-course-count").textContent = `Showing ${Math.min(courseLimit, topics.length)} of ${topics.length} stored lessons`;
+    $("admin-course-more").hidden = topics.length <= courseLimit;
+  }
+  async function loadMaterials() {
+    const requestEpoch = epoch;
+    $("materials-load").disabled = true; $("materials-status").textContent = "Loading stored materials…";
+    try {
+      materials = await api("/admin/materials", {});
+      $("admin-course-module").replaceChildren(new Option("All modules", ""),
+        ...materials.courses.modules.map(module => new Option(module.title, module.id)));
+      courseLimit = 10; renderMaterialIndex();
+      $("materials-status").textContent = `${materials.courses.total} lessons · ${materials.courses.modules.length} modules · version ${materials.courses.version}. ${materials.courses.notice}`;
+      $("admin-resource-notice").textContent = materials.resources.notice + " " + materials.resources.rights;
+      $("admin-resources").replaceChildren();
+      for (const resource of materials.resources.items) {
+        const item = node("li");
+        item.append(safeLink(resource.url, resource.title), node("p", `${resource.provider} · ${resource.account_label}`, "detail"),
+          node("p", resource.summary), node("p", resource.start), node("p", resource.cost_note, "detail"));
+        $("admin-resources").append(item);
+      }
+      $("admin-lab-notice").textContent = `${materials.labs.items.length} templates · ${materials.labs.review}. ${materials.labs.enabled ? "" : "Lab delivery is disabled. "}${materials.labs.cost} Placeholder tokens below are not learner credentials. Scenario questions and answer keys stay in the bot.`;
+      $("admin-labs").replaceChildren();
+      for (const lab of materials.labs.items) {
+        const item = node("li"), detail = node("details");
+        detail.append(node("summary", `${lab.title} · about ${lab.minutes} min`), node("p", lab.goal));
+        for (const route of lab.routes) {
+          detail.append(node("h3", route.label));
+          if (!route.steps.length) detail.append(node("p", "Learners practice through question-bound scenarios in Telegram."));
+          const steps = node("ol", undefined, "lab-steps");
+          for (const step of route.steps) steps.append(node("li", step));
+          detail.append(steps);
+          for (const step of route.cleanup) detail.append(node("p", "Cleanup: " + step));
+        }
+        for (const url of lab.references) detail.append(safeLink(url, url));
+        item.append(detail); $("admin-labs").append(item);
+      }
+      if ($("course-review").hidden) $("materials-index").hidden = false;
+    } catch (error) {
+      if (requestEpoch !== epoch) return;
+      $("materials-status").textContent = "Materials could not be loaded. Use Load learning materials to retry.";
+      showError(error);
+    } finally { if (requestEpoch === epoch) $("materials-load").disabled = false; }
+  }
+  async function openCourse(topic, version) {
+    const current = ++courseVersion, requestEpoch = epoch;
+    $("course-review").hidden = true; $("course-review-body").replaceChildren();
+    $("materials-status").textContent = "Opening shared course reference…";
+    $("materials").scrollIntoView();
+    try {
+      if (!version) {
+        if (!materials) await loadMaterials();
+        if (current !== courseVersion || requestEpoch !== epoch || !materials) return;
+        version = materials.courses.version;
+      }
+      const data = await api("/admin/course", {topic, version});
+      if (current !== courseVersion) return;
+      const lesson = data.lesson, body = $("course-review-body");
+      const {prose, renderBlocks, lessonSection, walkthrough} = window.SkillCoachLesson;
+      $("course-review-title").textContent = lesson.title;
+      $("course-review-meta").textContent = `Version ${lesson.version} · ${lesson.review}`;
+      body.replaceChildren();
+      for (const section of lesson.sections) {
+        const element = lessonSection(section.heading); element.append(prose(section.blocks)); body.append(element);
+      }
+      if (lesson.walkthrough) body.append(walkthrough(lesson.walkthrough));
+      const exercises = lessonSection("Practice exercises");
+      for (const exercise of lesson.extension) exercises.append(node("h3", `${exercise.title} · about ${exercise.minutes} min`), prose(exercise.blocks));
+      body.append(exercises);
+      for (const note of lesson.notes) {
+        const element = lessonSection(note.heading); element.append(prose(note.blocks)); body.append(element);
+      }
+      const interview = lessonSection("Sample interview practice");
+      interview.append(prose(lesson.interview.question));
+      const points = node("ul", undefined, "prose checklist");
+      for (const point of lesson.interview.points) points.append(renderBlocks(node("li"), point));
+      interview.append(points); body.append(interview);
+      const references = lessonSection("Official references"), links = node("ul", undefined, "lesson-refs");
+      for (const url of lesson.references) { const item = node("li"); item.append(safeLink(url, url)); links.append(item); }
+      references.append(links); body.append(references);
+      $("materials-index").hidden = true; $("course-review").hidden = false;
+      $("materials-status").textContent = "Read-only preview. No learner or delivery state has changed.";
+      $("course-review-title").focus({preventScroll: true});
+    } catch (error) {
+      if (current !== courseVersion || requestEpoch !== epoch) return;
+      $("materials-status").textContent = "This reference could not be opened. Retry its review button.";
+      showError(error);
+    }
+  }
+  $("learner-select").addEventListener("change", () => loadLearner());
+  $("learner-refresh").addEventListener("click", () => loadLearner());
+  $("lessons-more").addEventListener("click", () => loadLearner("lessons"));
+  $("deliveries-more").addEventListener("click", () => loadLearner("deliveries"));
+  $("materials-load").addEventListener("click", loadMaterials);
+  for (const id of ["admin-course-search", "admin-course-module"]) {
+    $(id).addEventListener(id.endsWith("search") ? "input" : "change", () => {
+      if (materials) { courseLimit = 10; renderMaterialIndex(); }
+    });
+  }
+  $("admin-course-more").addEventListener("click", () => { courseLimit += 10; renderMaterialIndex(); });
+  $("course-review-close").addEventListener("click", () => {
+    courseVersion += 1; $("course-review").hidden = true; $("course-review-body").replaceChildren();
+    $("materials-index").hidden = !materials;
+    if (lastCourseButton && lastCourseButton.isConnected) lastCourseButton.focus();
+  });
   async function refresh() {
     if (!csrf || busy) return;
     const requestEpoch = epoch;
     $("refresh").disabled = true;
-    try { render(await api("/admin/data", {})); message(""); }
+    try { render(await api("/admin/data", {})); message(""); if ($("learner-select").value) await loadLearner(); }
     catch (error) { showError(error); }
     finally { if (requestEpoch === epoch) $("refresh").disabled = false; }
   }

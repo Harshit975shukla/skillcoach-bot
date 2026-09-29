@@ -86,13 +86,13 @@ def index():
     }
 
 
-def page(topic):
+def page(topic, version=VERSION):
     from skillcoach.formatting import md_blocks
     from skillcoach.lesson_delivery import display_name, reference_sections, review_note
     from skillcoach.resources import related_view
 
     entry = find_topic(topic)
-    package = get_package(topic)
+    package = get_package(topic, version)
     if package is None:
         return None
     lesson = package.lesson
@@ -103,7 +103,7 @@ def page(topic):
         "date": None,
         "available": True,
         "library": True,
-        "version": VERSION,
+        "version": version,
         "review": review_note(lesson),
         "sections": [
             {

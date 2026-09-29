@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -9,6 +10,25 @@ let telegramFrameEnabled = false, rejectTelegramFrame = false;
 const memoryRequests = [];
 const received = [];
 const previewId = "b286e036-b0a5-4844-b0c2-8044a20c2389";
+const learningFixture = JSON.parse(execFileSync(process.env.TEST_PYTHON || "python",
+  ["-c", "import json; from skillcoach.admin_learning import materials; from skillcoach.config import Config; " +
+   "from skillcoach.course_library import page; from skillcoach.catalog import TOPICS; " +
+   "topic=next(k for k in TOPICS if k.startswith('linux/')); " +
+   "print(json.dumps({'materials':materials(Config('postgresql://test-only','fake-token',42,'a'*32)), 'lesson':page(topic)}))"],
+  {encoding: "utf8", maxBuffer: 2 * 1024 * 1024}));
+const topic = {id: learningFixture.lesson.id, title: learningFixture.lesson.title};
+const learnerFixture = learner => ({
+  learner, learning: {shared: learner !== "u_aaaaaaaaaaaa", status: "active", streak: 2, sessions_practiced: 1},
+  upcoming: {status: learner === "u_aaaaaaaaaaaa" ? "Learner consent is required." : "Forecast only, not queued.",
+    slots: [{kind: "lesson", title: "Lesson", at: "2026-09-30T09:00:00+05:30", topic, detail: "Timing depends on worker execution."}]},
+  lessons: [{id: "0123456789abcdef0123", topic, date: "2026-09-29", source: "library", version: "2026-09-29",
+    delivered_at: null, tasks_done: 0, tasks_total: 2}],
+  lesson_next: "0123456789abcdef0123",
+  deliveries: [{title: "Lesson", status: "Partially sent", processing: "done", created_at: "2026-09-29T03:30:00Z",
+    messages: {total: 4, sent: 1, pending: 2, failed: 1, suppressed: 0}, media_sent: 0, last_sent_at: "2026-09-29T03:31:00Z"}],
+  delivery_next: "100", generated_at: new Date().toISOString(),
+  notice: "Transport records are not proof of reading or mastery.",
+});
 const fixture = {
   learners: [
     {id: "owner", name: "You (owner)", status: "active", last_interaction: "2026-09-26T05:00:00Z",
@@ -69,6 +89,17 @@ const server = createServer(async (request, response) => {
     if (!authenticated) return output(403, {error: "Owner session expired"});
     if (request.headers["x-csrf-token"] !== "synthetic-csrf") return output(403, {error: "CSRF missing"});
     if (request.url === "/admin/data") return output(200, fixture);
+    if (request.url === "/admin/materials") return output(200, learningFixture.materials);
+    if (request.url === "/admin/course") {
+      assert.deepEqual(body, {topic: topic.id, version: "2026-09-29"});
+      return output(200, {lesson: learningFixture.lesson});
+    }
+    if (request.url === "/admin/learner") {
+      const data = learnerFixture(body.learner);
+      if (body.lesson_before) { data.lessons[0].date = "2026-09-28"; data.lesson_next = null; }
+      if (body.delivery_before) { data.deliveries[0].status = "Sent to Telegram"; data.delivery_next = null; }
+      return output(200, data);
+    }
     if (request.url === "/admin/action/preview") {
       received.push(body);
       return output(200, {request_id: previewId, confirmation: "server-bound-token",
@@ -88,7 +119,7 @@ const server = createServer(async (request, response) => {
     return output(404, {error: "Unknown route"});
   }
   const file = request.url === "/admin" ? "admin.html" : request.url.replace("/static/", "");
-  if (!["admin.html", "admin.css", "admin.js", "dashboard.css"].includes(file)) {
+  if (!["admin.html", "admin.css", "admin.js", "dashboard.css", "lesson-content.js"].includes(file)) {
     response.writeHead(404).end(); return;
   }
   response.writeHead(200, {"Content-Type": file.endsWith(".js") ? "text/javascript" : file.endsWith(".css") ? "text/css" : "text/html"});
@@ -103,6 +134,7 @@ try {
     authenticated = false; approved = false; executions = 0;
     const page = await browser.newPage();
     page.on("pageerror", error => console.error("Admin browser page error:", error.message));
+    await page.emulateMediaFeatures([{name: "prefers-reduced-motion", value: "reduce"}]);
     await page.setViewport({width, height: 900, deviceScaleFactor: 1});
     await page.setRequestInterception(true);
     page.on("request", request => {
@@ -126,6 +158,72 @@ try {
       "Labs: 0 verified · 1 pending · 1 required · next week waits for required labs")));
     assert.equal(await page.evaluate(() => window.pwned), undefined);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await page.select("#learner-select", "owner");
+    await page.waitForFunction(() => !document.getElementById("learner-detail").hidden);
+    await page.evaluate(data => {
+      const original = window.fetch;
+      window.fetch = (url, options) => {
+        if (url === "/admin/learner" && JSON.parse(options.body).learner === "owner") {
+          window.fetch = original;
+          return new Promise(resolve => { window.__lateLearner = () => resolve(
+            new Response(JSON.stringify(data), {status: 200})); });
+        }
+        return original(url, options);
+      };
+    }, learnerFixture("owner"));
+    await page.click("#learner-refresh");
+    await page.waitForFunction(() => typeof window.__lateLearner === "function");
+    await page.select("#learner-select", "u_aaaaaaaaaaaa");
+    await page.waitForFunction(() => document.getElementById("learner-status").textContent.includes("consent"));
+    await page.evaluate(() => window.__lateLearner());
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(await page.$eval("#learner-detail", e => e.hidden), true);
+    assert.equal(await page.$$eval("#learner-lessons > li", e => e.length), 0);
+    await page.select("#learner-select", "owner");
+    await page.waitForFunction(() => !document.getElementById("learner-detail").hidden);
+    assert.match(await page.$eval("#learner-lessons", e => e.textContent), /No completed lesson-delivery receipt/);
+    assert.match(await page.$eval("#learner-deliveries", e => e.textContent), /Partially sent/);
+    assert.match(await page.$eval("#learner-upcoming", e => e.textContent), /09:00|9:00/);
+    await page.click("#lessons-more");
+    await page.waitForFunction(() => document.getElementById("lessons-more").hidden);
+    assert.equal(await page.$$eval("#learner-lessons > li", e => e.length), 2);
+    await page.click("#deliveries-more");
+    await page.waitForFunction(() => document.getElementById("deliveries-more").hidden);
+    assert.equal(await page.$$eval("#learner-deliveries > li", e => e.length), 2);
+    await page.select("#learner-select", "u_aaaaaaaaaaaa");
+    await page.waitForFunction(() => document.getElementById("learner-status").textContent.includes("consent"));
+    assert.equal(await page.$eval("#learner-detail", e => e.hidden), true);
+    assert.equal(await page.$$eval("#learner-lessons > li", e => e.length), 0);
+    await page.click("#materials-load");
+    await page.waitForFunction(() => !document.getElementById("materials-index").hidden);
+    assert.match(await page.$eval("#materials-status", e => e.textContent), /199 lessons/);
+    assert.equal(await page.$$eval("#admin-course-list > li", e => e.length), 10);
+    await page.click("#admin-course-more");
+    assert.equal(await page.$$eval("#admin-course-list > li", e => e.length), 20);
+    await page.select("#admin-course-module", "linux");
+    assert.equal(await page.$$eval("#admin-course-list > li", e => e.length), 8);
+    await page.type("#admin-course-search", "no-such-topic");
+    assert.match(await page.$eval("#admin-course-list", e => e.textContent), /No matching/);
+    await page.$eval("#admin-course-search", e => { e.value = ""; e.dispatchEvent(new Event("input")); });
+    await page.click("#admin-course-list button");
+    try {
+      await page.waitForFunction(() => !document.getElementById("course-review").hidden, {timeout: 5000});
+    } catch {
+      throw new Error("Course preview failed: " + await page.$eval("#materials-status", e => e.textContent)
+        + " / " + await page.$eval("#message", e => e.textContent));
+    }
+    assert.equal(await page.$eval("#course-review-title", e => e.textContent), learningFixture.lesson.title);
+    assert.match(await page.$eval("#course-review-body", e => e.textContent), /Cleanup/);
+    assert.equal(await page.$$eval("#course-review-body .course-diagram svg", e => e.length), 1);
+    await page.click("#course-review-body .course-controls button:last-child");
+    assert.match(await page.$eval("#lesson-walkthrough h3", e => e.textContent), /^2 \//);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    if (process.env.ADMIN_SCREENSHOT_DIR) {
+      await page.screenshot({path: join(process.env.ADMIN_SCREENSHOT_DIR, `admin-course-${name}.png`), fullPage: true});
+    }
+    await page.click("#course-review-close");
+    await page.select("#learner-select", "owner");
+    await page.waitForFunction(() => !document.getElementById("learner-detail").hidden);
     if (process.env.ADMIN_SCREENSHOT_DIR) {
       await page.screenshot({path: join(process.env.ADMIN_SCREENSHOT_DIR, `admin-${name}.png`), fullPage: true});
     }
@@ -160,6 +258,9 @@ try {
     await page.click("#logout");
     await page.waitForFunction(() => document.getElementById("console").hidden);
     assert.equal(await page.$$eval("#members tr", e => e.length), 0);
+    assert.equal(await page.$$eval("#learner-lessons > li", e => e.length), 0);
+    assert.equal(await page.$$eval("#admin-course-list > li", e => e.length), 0);
+    assert.equal(await page.$eval("#course-review-body", e => e.textContent), "");
     assert.equal(await page.$eval("#invite-url", e => e.value), "");
     await page.evaluate(() => window.__lateData());
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -198,6 +299,10 @@ try {
       await page.waitForFunction(() => typeof window.__lateLogin === "function");
     } else {
       await page.waitForFunction(() => !document.getElementById("console").hidden);
+      await page.click("#materials-load");
+      await page.waitForFunction(() => !document.getElementById("materials-index").hidden);
+      await page.select("#learner-select", "owner");
+      await page.waitForFunction(() => !document.getElementById("learner-detail").hidden);
       await page.evaluate(() => {
         const original = window.fetch;
         window.fetch = (url, options) => {
@@ -224,6 +329,8 @@ try {
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(await page.$eval("#console", e => e.hidden), true);
     assert.equal(await page.$$eval("#members tr", e => e.length), 0);
+    assert.equal(await page.$$eval("#admin-course-list > li", e => e.length), 0);
+    assert.equal(await page.$$eval("#learner-lessons > li", e => e.length), 0);
     await page.close();
     console.log(`Admin stale-response check passed: ${reason}.`);
   }
@@ -255,7 +362,7 @@ try {
         return;
       }
       const file = path === "/admin" ? "admin.html" : path.replace("/static/", "");
-      if (!["admin.html", "admin.css", "admin.js", "dashboard.css"].includes(file)) {
+      if (!["admin.html", "admin.css", "admin.js", "dashboard.css", "lesson-content.js"].includes(file)) {
         authRequests += 1;
         request.respond({status: 403, contentType: "application/json", body: '{"error":"No iframe authentication"}'});
       } else request.respond({status: 200,

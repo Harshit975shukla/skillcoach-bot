@@ -146,6 +146,103 @@ def test_direct_browser_is_private_and_signed_owner_cookie_is_secure(admin):
     assert post(admin, "/admin/data").status_code == 403
 
 
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        ("/admin/materials", {}),
+        ("/admin/course", {"topic": "linux/processes-and-signals", "version": "2026-09-29"}),
+        ("/admin/learner", {"learner": "owner", "lesson_before": None, "delivery_before": None}),
+    ],
+)
+def test_learning_endpoints_require_owner_origin_csrf_and_live_session(admin, path, body):
+    assert post(admin, path, body).status_code == 403
+    assert login(admin, 101).status_code == 403
+    login(admin)
+    assert post(admin, path, body, csrf=False).status_code == 403
+    assert post(admin, path, body, origin="https://evil.invalid").status_code == 403
+    assert post(admin, path, {**body, "role": "owner"}).status_code == 403
+    assert admin.client.get(path, base_url=ORIGIN).status_code == 405
+    post(admin, "/admin/logout")
+    assert post(admin, path, body).status_code == 403
+
+
+def test_owner_learning_review_is_readonly_and_scoped_to_selected_learner(admin):
+    import json
+
+    from test_journey import TOPIC, shared_journey
+
+    from skillcoach.course_library import VERSION
+
+    first, second = admin.bot.join(101), admin.bot.join(102)
+    admin.bot.save(first, lambda state: setattr(state, "journey", shared_journey(admin.clock.now)))
+    admin.bot.save(second, lambda state: setattr(state, "journey", shared_journey(admin.clock.now)))
+    admin.bot.input(101, "/learn " + TOPIC)
+    admin.bot.input(102, "/help")
+    before = (first.read(), second.read())
+    login(admin)
+    data = post(admin, "/admin/materials").json
+    assert data["courses"]["total"] == 199
+    response = post(admin, "/admin/course", {"topic": TOPIC, "version": VERSION})
+    assert response.status_code == 200 and response.json["lesson"]["id"] == TOPIC
+    response = post(admin, "/admin/course", {"topic": ["not-text"], "version": VERSION})
+    assert response.status_code == 403
+    response = post(
+        admin,
+        "/admin/learner",
+        {
+            "learner": first.learner_id,
+            "lesson_before": None,
+            "delivery_before": None,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json["lessons"][0]["topic"]["id"] == TOPIC
+    assert "private goal" not in json.dumps(response.json)
+    with first.connection() as conn:
+        expected = conn.execute(
+            "SELECT count(*) AS n FROM outbox WHERE learner_id=%s AND status='sent'",
+            (first.learner_id,),
+        ).fetchone()["n"]
+    assert sum(item["messages"]["sent"] for item in response.json["deliveries"]) == expected
+    assert before == (first.read(), second.read())
+    admin.bot.save(first, lambda state: setattr(state.journey, "consent_at", None))
+    data = post(
+        admin,
+        "/admin/learner",
+        {
+            "learner": first.learner_id,
+            "lesson_before": None,
+            "delivery_before": None,
+        },
+    ).json
+    assert not data["learning"]["shared"]
+    assert data["lessons"] == data["deliveries"] == data["upcoming"]["slots"] == []
+
+
+def test_delivery_history_pages_have_no_duplicates_or_cross_learner_rows(admin):
+    from test_journey import shared_journey
+
+    from skillcoach.admin_learning import PAGE_SIZE
+
+    scoped = admin.bot.join(101)
+    admin.bot.save(scoped, lambda state: setattr(state, "journey", shared_journey(admin.clock.now)))
+    for index in range(PAGE_SIZE + 2):
+        scoped.enqueue(f"test-history:{index}", {"type": "telegram", "text": "/help"})
+    login(admin)
+    body = {"learner": scoped.learner_id, "lesson_before": None, "delivery_before": None}
+    response = post(admin, "/admin/learner", body)
+    assert response.status_code == 200
+    data = response.json
+    assert len(data["deliveries"]) == PAGE_SIZE and data["delivery_next"]
+    scoped.enqueue("test-history:later", {"type": "telegram", "text": "/help"})
+    body["delivery_before"] = data["delivery_next"]
+    older = post(admin, "/admin/learner", body).json
+    assert older["deliveries"]
+    assert not {item["cursor"] for item in data["deliveries"]}.intersection(
+        item["cursor"] for item in older["deliveries"]
+    )
+
+
 def test_nonowner_forged_stale_and_claimed_role_cannot_sign_in(admin):
     guest = admin.bot.join(101)
     assert login(admin, 101).status_code == 403

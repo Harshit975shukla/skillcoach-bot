@@ -129,10 +129,12 @@ class Repository:
                 self._session_connection.reset(token)
 
     @contextmanager
-    def connection(self):
+    def connection(self, *, readonly=False):
         with self.session():
             conn = self._session_connection.get()
             with conn.transaction():
+                if readonly:
+                    conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
                 # Reapply within every short transaction, including with transaction poolers.
                 conn.execute(
                     "SELECT set_config('statement_timeout','5s',true), "

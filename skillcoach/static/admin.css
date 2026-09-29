@@ -64,3 +64,17 @@ textarea { min-height: 100px; resize: vertical; }
 [id="learning-plans"] > li,
 [id="learning-plans"] .task-list li { display: block; }
 [id="learning-plans"] .task-list li > p { margin-top: 8px; }
+.learner-controls { display: flex; align-items: flex-end; gap: 16px; }
+.learner-controls label { flex: 1; max-width: 540px; min-width: 0; }
+#learner-history .admin-list > li { display: block; }
+#learner-history .admin-list button { margin-top: 10px; }
+#lessons-more, #deliveries-more, #admin-course-more { margin-top: 16px; }
+#course-review { margin-top: 24px; max-width: 900px; }
+#course-review-body { min-width: 0; }
+#course-review-body .lesson-section { padding-top: 26px; }
+#materials details + details { margin-top: 20px; }
+#materials .resource-list .prose { margin-top: 12px; }
+@media (max-width: 650px) {
+  .learner-controls { align-items: stretch; flex-direction: column; }
+  .learner-controls label { max-width: none; }
+}

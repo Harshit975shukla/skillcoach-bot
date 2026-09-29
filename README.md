@@ -192,6 +192,31 @@ job descriptions, private task descriptions, questions, answers or feedback. Lea
 which participation/health summaries the owner can see. Delivery is never labelled as viewing or
 mastery.
 
+**Learning library:** choose **Load learning materials** in `/admin` to search all 199 stored lessons
+by module or topic and review the complete shared theory, exercises, safety/cleanup, official references,
+sample interview checklist and visual walkthrough/transcript. Lab templates (with placeholder tokens)
+and the 24 attributed external resources are available there too. This is a read-only preview, not a
+send, assignment, expert-review approval or library of prerecorded MP4s. Lab scenario answer keys,
+learner tokens and active assessment questions are not exposed.
+
+**Learner history:** select a learner or use their **Learning details** button to inspect all retained
+lesson records and a paginated bot-delivery log. Catalog topics, source/version, completed-delivery
+timestamps and task counts are shown only with guided-setup consent; custom topics are redacted.
+Each delivery group reports actual sent/pending/failed/suppressed message counts and media sends.
+Processing completion alone is not a successful delivery. Older imported records without receipts
+are explicitly unknown, and reviewing the versioned shared reference does not expose a learner's
+personalized message or exercises.
+
+**Upcoming work:** the learner view forecasts the next IST lesson/quiz/assessment/review opportunities
+from the existing scheduler and approved plan, including the next unprepared topic after missed days.
+It does not generate content or mutate queues. Paused/inactive/unapproved learners have no automatic
+next delivery. Quizzes and weekly assessments are conditional on lesson delivery; a forecast is not a
+queued job or promised send time. Existing **Delivery health** and the delivery log show actual queued
+work, while lab gates and learner approval still govern subsequent plans.
+
+These views use the existing owner authentication, Origin/CSRF checks, private no-store responses and
+session-expiry cleanup. They do not require a schema migration or change scheduling/delivery behavior.
+
 Actions require a server-generated preview and explicit confirmation bound to the same session,
 exact action/recipient/arguments, membership generation and five-minute expiry. Confirmation,
 job/invitation creation and audit recording share one PostgreSQL transaction; retries and concurrent

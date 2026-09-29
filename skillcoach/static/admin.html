@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="/static/dashboard.css">
   <link rel="stylesheet" href="/static/admin.css">
   <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
+  <script src="/static/lesson-content.js" defer></script>
   <script src="/static/admin.js" defer></script>
 </head>
 <body>
@@ -44,6 +45,8 @@
       </div>
       <nav class="sections" aria-label="Administration sections">
         <a href="#people">Users &amp; access</a>
+        <a href="#learner-history">Learner history</a>
+        <a href="#materials">Learning library</a>
         <a href="#actions">Actions</a>
         <a href="#operations">Delivery health</a>
         <a href="#history">Audit history</a>
@@ -67,6 +70,67 @@
         <ul id="learning-plans" class="admin-list"></ul>
         <h3>Recent invitations</h3>
         <ul id="invites" class="admin-list"></ul>
+      </section>
+      <section id="learner-history" aria-labelledby="learner-history-title">
+        <h2 id="learner-history-title">Past deliveries and what comes next</h2>
+        <p class="section-description">Select one learner. Learning details require guided-setup consent.
+          This is a read-only view; opening it never sends a lesson or changes a plan.</p>
+        <div class="learner-controls">
+          <label for="learner-select">Learner<select id="learner-select"><option value="">Choose a learner</option></select></label>
+          <button id="learner-refresh" type="button" disabled>Refresh learner</button>
+        </div>
+        <p id="learner-status" class="section-description" role="status" aria-live="polite"></p>
+        <div id="learner-detail" hidden>
+          <p id="learner-summary"></p>
+          <h3>Next scheduled opportunities · IST</h3>
+          <p id="upcoming-notice" class="section-description"></p>
+          <ul id="learner-upcoming" class="admin-list"></ul>
+          <h3>Lesson history</h3>
+          <p class="section-description">All retained lesson records, newest first. Library links review the shared reference,
+            not a copy of a learner's private, personalized message.</p>
+          <ul id="learner-lessons" class="admin-list"></ul>
+          <button id="lessons-more" type="button" hidden>Load older lessons</button>
+          <h3>Bot delivery log</h3>
+          <p id="delivery-notice" class="section-description"></p>
+          <ul id="learner-deliveries" class="admin-list"></ul>
+          <button id="deliveries-more" type="button" hidden>Load older delivery records</button>
+        </div>
+      </section>
+      <section id="materials" aria-labelledby="materials-title">
+        <div class="section-heading">
+          <h2 id="materials-title">Learning library</h2>
+          <button id="materials-load" type="button">Load learning materials</button>
+        </div>
+        <p id="materials-status" class="section-description" role="status" aria-live="polite">
+          Review stored theory, exercises, walkthroughs, lab instructions and free learning links here.
+          Previewing does not assign or send anything.</p>
+        <div id="materials-index" hidden>
+          <div class="resource-filters">
+            <label>Module<select id="admin-course-module"><option value="">All modules</option></select></label>
+            <label>Find a lesson<input id="admin-course-search" type="search" placeholder="Topic or skill" maxlength="100"></label>
+          </div>
+          <p id="admin-course-count" class="section-description" role="status"></p>
+          <ul id="admin-course-list" class="lesson-index"></ul>
+          <button id="admin-course-more" type="button" hidden>Show more lessons</button>
+          <details>
+            <summary>Hands-on lab templates</summary>
+            <p id="admin-lab-notice" class="section-description"></p>
+            <ul id="admin-labs" class="resource-list"></ul>
+          </details>
+          <details>
+            <summary>External free learning resources</summary>
+            <p id="admin-resource-notice" class="section-description"></p>
+            <ul id="admin-resources" class="resource-list"></ul>
+          </details>
+        </div>
+        <article id="course-review" class="lesson-view" hidden>
+          <button id="course-review-close" class="back" type="button">Back to materials</button>
+          <h2 id="course-review-title" tabindex="-1"></h2>
+          <p id="course-review-meta" class="lesson-meta"></p>
+          <p class="guidance">Shared curriculum review only. This does not send, assign, grade or mark a lesson reviewed.
+            Videos are rendered on demand; the preview below is the stored walkthrough and transcript.</p>
+          <div id="course-review-body"></div>
+        </article>
       </section>
       <section id="actions" aria-labelledby="actions-title">
         <h2 id="actions-title">Preview before you act</h2>

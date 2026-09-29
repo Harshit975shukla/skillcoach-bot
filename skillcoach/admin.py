@@ -25,6 +25,7 @@ from skillcoach.admin_auth import (
     start_login,
 )
 from skillcoach.catalog import TOPICS
+from skillcoach.clients import ExternalError
 from skillcoach.commands import COMMANDS
 from skillcoach.models import State
 from skillcoach.timeutil import IST, requested_quiz_payload
@@ -583,6 +584,10 @@ def register_admin(app, runtime_factory):
                 return jsonify(error=str(exc)), 403
             except AdminConflict as exc:
                 return jsonify(error=str(exc)), 409
+            except ExternalError:
+                return jsonify(
+                    error="Learning materials are unavailable. Try refreshing; no learning state was changed."
+                ), 503
             except (ConfigurationError, ValidationError, *STORAGE_ERRORS):
                 return jsonify(
                     error="Administration is temporarily unavailable. No unconfirmed action should be repeated with a new request ID."
@@ -701,6 +706,43 @@ def register_admin(app, runtime_factory):
         session, _ = authenticate(request, runtime, mutate=True)
         body = _json_body(request, {"request_id", "action", "target", "arguments"})
         return jsonify(preview_action(runtime, session, body))
+
+    @app.post("/admin/materials")
+    @endpoint
+    def materials():
+        from skillcoach.admin_learning import materials
+
+        runtime = runtime_factory()
+        authenticate(request, runtime, mutate=True)
+        _json_body(request, set())
+        return jsonify(materials(runtime.config))
+
+    @app.post("/admin/course")
+    @endpoint
+    def course():
+        from skillcoach import course_library
+
+        runtime = runtime_factory()
+        authenticate(request, runtime, mutate=True)
+        body = _json_body(request, {"topic", "version"})
+        if (
+            not isinstance(body["topic"], str)
+            or body["topic"] not in TOPICS
+            or not isinstance(body["version"], str)
+            or body["version"] not in course_library.VERSIONS
+        ):
+            raise AdminDenied("Choose an available library topic and version.")
+        return jsonify(lesson=course_library.page(body["topic"], body["version"]))
+
+    @app.post("/admin/learner")
+    @endpoint
+    def learner():
+        from skillcoach.admin_learning import learner_detail
+
+        runtime = runtime_factory()
+        authenticate(request, runtime, mutate=True)
+        body = _json_body(request, {"learner", "lesson_before", "delivery_before"})
+        return jsonify(learner_detail(runtime, **body))
 
     @app.post("/admin/action/execute")
     @endpoint

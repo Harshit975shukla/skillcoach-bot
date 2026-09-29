@@ -179,7 +179,8 @@ const server = createServer(async (request, response) => {
     return;
   }
   const names = {"/app": ["dashboard.html", "text/html"], "/static/dashboard.css": ["dashboard.css", "text/css"],
-                 "/static/dashboard.js": ["dashboard.js", "text/javascript"]};
+                 "/static/dashboard.js": ["dashboard.js", "text/javascript"],
+                 "/static/lesson-content.js": ["lesson-content.js", "text/javascript"]};
   const selected = names[request.url.split("?")[0]];
   if (!selected) { response.writeHead(404).end(); return; }
   response.writeHead(200, {"Content-Type": selected[1]});
