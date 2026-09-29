@@ -11,6 +11,9 @@
 .login-panel h2 { margin-top: 30px; }
 .button-link { display: inline-block; min-height: 44px; padding: 10px 18px; border-radius: 8px; text-decoration: none; font-weight: 650; }
 #login-code { display: block; font-size: 2rem; font-weight: 700; letter-spacing: .12em; margin: 20px 0; }
+#pin-form label { max-width: 240px; margin-top: 20px; }
+#login-pin { font-size: 1.5rem; letter-spacing: .15em; }
+#pin-form button { margin: 0 8px 8px 0; }
 .table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .table-scroll:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 table { width: 100%; border-collapse: collapse; min-width: 730px; text-align: left; }

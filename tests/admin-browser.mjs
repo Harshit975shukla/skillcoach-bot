@@ -6,6 +6,7 @@ import { join } from "node:path";
 import puppeteer from "puppeteer";
 
 let authenticated = false, approved = false, executions = 0, authRequests = 0;
+let loginChallenge = null, loginStarts = 0, statusFailures = 0;
 let telegramFrameEnabled = false, rejectTelegramFrame = false;
 const memoryRequests = [];
 const received = [];
@@ -80,11 +81,30 @@ const server = createServer(async (request, response) => {
       authRequests += 1;
       return output(authenticated ? 200 : 403, authenticated ? session() : {error: "Sign in"});
     }
-    if (request.url === "/admin/login/start") return output(200, {code: "AB12CD",
-      telegram_url: "https://t.me/SkillCoachTestBot?start=admin_login_test", expires_at: new Date(Date.now() + 300000).toISOString()});
+    if (request.url === "/admin/login/start") {
+      loginStarts += 1;
+      loginChallenge = {code: "AB12CD", telegram_url: "https://t.me/SkillCoachTestBot?start=admin_login_test",
+        expires_at: new Date(Date.now() + 300000).toISOString()};
+      return output(200, loginChallenge);
+    }
+    if (request.url === "/admin/login/pin/start") {
+      loginStarts += 1;
+      loginChallenge = {pending: true, authenticated: false, method: "pin", attempts_remaining: 3,
+        expires_at: new Date(Date.now() + 300000).toISOString(), resend_at: new Date(Date.now() + 60000).toISOString()};
+      return output(200, loginChallenge);
+    }
+    if (request.url === "/admin/login/pin/verify") {
+      if (!loginChallenge) return output(403, {error: "Request a PIN first."});
+      assert.deepEqual(Object.keys(body), ["pin"]);
+      if (body.pin !== "0042") return output(400, {error: "Incorrect PIN. 2 attempts remaining."});
+      authenticated = true; loginChallenge = null;
+      return output(200, session());
+    }
     if (request.url === "/admin/login/status") {
-      if (approved) authenticated = true;
-      return output(200, authenticated ? session() : {pending: true, authenticated: false});
+      if (statusFailures > 0) { statusFailures -= 1; return output(503, {error: "Temporary sign-in interruption"}); }
+      if (!loginChallenge) return output(403, {error: "Start a sign-in request from this browser first."});
+      if (approved) { authenticated = true; loginChallenge = null; }
+      return output(200, authenticated ? session() : {pending: true, authenticated: false, ...loginChallenge});
     }
     if (!authenticated) return output(403, {error: "Owner session expired"});
     if (request.headers["x-csrf-token"] !== "synthetic-csrf") return output(403, {error: "CSRF missing"});
@@ -131,7 +151,7 @@ const browser = await puppeteer.launch({headless: true, executablePath: process.
                                        args: process.platform === "linux" ? ["--no-sandbox"] : []});
 try {
   for (const [name, width] of [["mobile", 390], ["desktop", 1280]]) {
-    authenticated = false; approved = false; executions = 0;
+    authenticated = false; approved = false; executions = 0; loginChallenge = null;
     const page = await browser.newPage();
     page.on("pageerror", error => console.error("Admin browser page error:", error.message));
     await page.emulateMediaFeatures([{name: "prefers-reduced-motion", value: "reduce"}]);
@@ -148,9 +168,10 @@ try {
     assert.equal(await page.$eval("#console", e => e.hidden), true);
     assert.equal(await page.$$eval("#members tr", e => e.length), 0);
     await page.click("#start-login");
-    await page.waitForFunction(() => document.getElementById("login-code").textContent === "AB12CD");
-    assert.match(await page.$eval("#telegram-login-link", e => e.href), /^https:\/\/t\.me\//);
-    approved = true;
+    await page.waitForFunction(() => !document.getElementById("pin-form").hidden);
+    assert.equal(await page.$eval("#resend-pin", e => e.disabled), true);
+    await page.type("#login-pin", "0042");
+    await page.click("#verify-pin");
     await page.waitForFunction(() => !document.getElementById("console").hidden);
     assert.equal(await page.$$eval("#members tr", e => e.length), 3);
     assert.equal(await page.$$eval("#members img", e => e.length), 0);
@@ -268,6 +289,141 @@ try {
     assert.equal(await page.$$eval("#members tr", e => e.length), 0);
     await page.close();
     console.log(`Admin ${name} interaction checks passed.`);
+  }
+  for (const reason of ["reload-pending", "reload-approved", "hidden-return", "temporary-error", "hidden-exchange"]) {
+    authenticated = false; approved = false; loginChallenge = null; loginStarts = 0; statusFailures = 0;
+    const page = await browser.newPage();
+    await page.setRequestInterception(true);
+    page.on("request", request => {
+      if (request.url().startsWith("https://telegram.org/")) request.respond({status: 200, contentType: "text/javascript", body: ""});
+      else if (request.url().startsWith(origin)) request.continue();
+      else request.abort();
+    });
+    await page.goto(origin + "/admin");
+    await page.waitForFunction(() => !document.getElementById("login").hidden);
+    await page.evaluate(async () => {
+      await fetch("/admin/login/start", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    });
+    await page.reload();
+    await page.waitForFunction(() => document.getElementById("login-code").textContent === "AB12CD");
+    if (reason === "reload-pending") {
+      await page.reload();
+      await page.waitForFunction(() => document.getElementById("login-code").textContent === "AB12CD");
+      assert.equal(await page.$eval("#start-login", e => e.hidden), true);
+      assert.equal(await page.$eval("#console", e => e.hidden), true);
+    }
+    if (reason === "hidden-return") {
+      await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", {configurable: true, value: true});
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    }
+    if (reason === "temporary-error") {
+      statusFailures = 1;
+      await page.click("#check-login");
+      await page.waitForFunction(() => document.getElementById("message").textContent.includes("Temporary sign-in interruption"));
+      assert.equal(await page.$eval("#login-challenge", e => e.hidden), false);
+    }
+    if (reason === "hidden-exchange") {
+      await page.evaluate(() => {
+        const original = window.fetch;
+        window.fetch = async (url, options) => {
+          const response = await original(url, options);
+          if (url !== "/admin/login/status") return response;
+          window.fetch = original;
+          window.__exchangeSignal = options.signal;
+          return new Promise(resolve => { window.__finishExchange = () => resolve(response); });
+        };
+      });
+    }
+    approved = true;
+    if (reason === "reload-approved") await page.reload();
+    else if (reason === "hidden-return") {
+      await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", {configurable: true, value: false});
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    } else if (reason === "hidden-exchange") {
+      await page.click("#check-login");
+      await page.waitForFunction(() => typeof window.__finishExchange === "function");
+      await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", {configurable: true, value: true});
+        document.dispatchEvent(new Event("visibilitychange"));
+        window.__finishExchange();
+      });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(await page.evaluate(() => window.__exchangeSignal.aborted), false);
+      assert.equal(await page.$eval("#console", e => e.hidden), true);
+      assert.equal(await page.$$eval("#members tr", e => e.length), 0);
+      await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", {configurable: true, value: false});
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    } else if (reason !== "temporary-error") await page.click("#check-login");
+    await page.waitForFunction(() => !document.getElementById("console").hidden);
+    assert.equal(loginStarts, 1, "Recovery must not replace the approved request");
+    await page.close();
+    console.log(`Admin browser sign-in recovery passed: ${reason}.`);
+  }
+  for (const reason of ["reload", "incorrect-pin", "hidden-verification"]) {
+    authenticated = false; approved = false; loginChallenge = null; loginStarts = 0;
+    const page = await browser.newPage();
+    await page.setRequestInterception(true);
+    page.on("request", request => {
+      if (request.url().startsWith("https://telegram.org/")) request.respond({status: 200, contentType: "text/javascript", body: ""});
+      else if (request.url().startsWith(origin)) request.continue();
+      else request.abort();
+    });
+    await page.goto(origin + "/admin");
+    await page.waitForFunction(() => !document.getElementById("login").hidden);
+    await page.click("#start-login");
+    await page.waitForFunction(() => !document.getElementById("pin-form").hidden);
+    if (reason === "reload") {
+      await page.reload();
+      await page.waitForFunction(() => !document.getElementById("pin-form").hidden);
+      assert.equal(await page.$eval("#approval-challenge", e => e.hidden), true);
+    }
+    if (reason === "incorrect-pin") {
+      await page.type("#login-pin", "9999");
+      await page.click("#verify-pin");
+      await page.waitForFunction(() => document.getElementById("message").textContent.includes("Incorrect PIN"));
+      assert.equal(await page.$eval("#login-pin", e => e.value), "");
+      assert.equal(await page.$eval("#console", e => e.hidden), true);
+    }
+    if (reason === "hidden-verification") {
+      await page.evaluate(() => {
+        const original = window.fetch;
+        window.fetch = async (url, options) => {
+          const response = await original(url, options);
+          if (url !== "/admin/login/pin/verify") return response;
+          window.fetch = original; window.__exchangeSignal = options.signal;
+          return new Promise(resolve => { window.__finishExchange = () => resolve(response); });
+        };
+      });
+    }
+    await page.type("#login-pin", "0042");
+    await page.click("#verify-pin");
+    if (reason === "hidden-verification") {
+      await page.waitForFunction(() => typeof window.__finishExchange === "function");
+      await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", {configurable: true, value: true});
+        document.dispatchEvent(new Event("visibilitychange"));
+        window.__finishExchange();
+      });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      assert.equal(await page.evaluate(() => window.__exchangeSignal.aborted), false);
+      assert.equal(await page.$eval("#console", e => e.hidden), true);
+      assert.equal(await page.$eval("#login-pin", e => e.value), "");
+      await page.evaluate(() => {
+        Object.defineProperty(document, "hidden", {configurable: true, value: false});
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    }
+    await page.waitForFunction(() => !document.getElementById("console").hidden);
+    assert.equal(loginStarts, 1);
+    assert.equal(await page.$eval("#login-pin", e => e.value), "");
+    await page.close();
+    console.log(`Admin PIN sign-in passed: ${reason}.`);
   }
   for (const reason of ["expiry", "hidden", "late-login"]) {
     authenticated = true;

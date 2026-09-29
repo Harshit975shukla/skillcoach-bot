@@ -93,7 +93,7 @@ def _admin(conn, update_id, key, owner, command, argument, config, *, owner_outp
                 key,
                 owner,
                 "Open your owner-only admin dashboard inside Telegram for automatic verification - no code "
-                "to copy. The browser alternative uses a matching-code approval. "
+                "to copy. In a normal browser, request a four-digit PIN sent here and enter it to sign in. "
                 "Guest learning documents and answers are not exposed.",
                 buttons=[
                     [

@@ -1,14 +1,17 @@
-"""Owner-only browser sessions approved through Telegram or signed Mini App launch data."""
+"""Owner-only sessions using Telegram PINs, legacy approval or signed Mini App launch data."""
 
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 from datetime import timedelta
 from urllib.parse import urlsplit
 
+from skillcoach.clients import Budget, ExternalError
 from skillcoach.dashboard import MAX_AUTH_AGE, DashboardDenied, verify_init_data
 
+log = logging.getLogger(__name__)
 SESSION_COOKIE = "__Host-skillcoach-admin"
 LOGIN_COOKIE = "__Host-skillcoach-login"
 SESSION_SECONDS = 900
@@ -16,6 +19,18 @@ LOGIN_SECONDS = 300
 
 
 class AdminDenied(ValueError):
+    pass
+
+
+class PinIncorrect(AdminDenied):
+    pass
+
+
+class PinRateLimited(AdminDenied):
+    pass
+
+
+class PinDeliveryFailed(RuntimeError):
     pass
 
 
@@ -138,11 +153,149 @@ def start_login(runtime):
             "INSERT INTO admin_logins(id,verifier_hash,owner_id,display_code,expires_at) VALUES (%s,%s,%s,%s,%s)",
             (identifier, digest(verifier), runtime.config.owner_id, code, expires),
         )
+    return _challenge(runtime.config, identifier, code, expires), verifier
+
+
+def _challenge(config, identifier, code, expires):
     return {
-        "telegram_url": f"https://t.me/{runtime.config.bot_username}?start=admin_login_{identifier}",
+        "telegram_url": f"https://t.me/{config.bot_username}?start=admin_login_{identifier}",
         "code": code,
         "expires_at": expires.isoformat(),
-    }, verifier
+    }
+
+
+def _pin_challenge(row):
+    return {
+        "authenticated": False,
+        "pending": True,
+        "method": "pin",
+        "expires_at": row["expires_at"].isoformat(),
+        "resend_at": (row["requested_at"] + timedelta(seconds=60)).isoformat(),
+        "attempts_remaining": 3 - row["pin_attempts"],
+    }
+
+
+def _pin_digest(config, identifier, pin):
+    return hmac.new(
+        config.webhook_secret.encode(), f"admin-pin:{identifier}:{pin}".encode(), hashlib.sha256
+    ).hexdigest()
+
+
+def _pin_limits(conn, config, now, *, sending=False):
+    owner = conn.execute("SELECT id FROM learners WHERE id='owner' FOR UPDATE").fetchone()
+    if not owner or config.owner_id <= 0 or not config.webhook_secret:
+        raise AdminDenied("Administrator identity is not configured.")
+    counts = conn.execute(
+        "SELECT count(*) FILTER (WHERE requested_at>%s) AS hourly, count(*) AS daily, "
+        "max(requested_at) AS latest, "
+        "COALESCE(sum(pin_attempts) FILTER (WHERE pin_last_failed_at>%s),0) AS hourly_failures, "
+        "COALESCE(sum(pin_attempts),0) AS daily_failures "
+        "FROM admin_logins WHERE owner_id=%s AND pin_hash IS NOT NULL AND requested_at>%s",
+        (
+            now - timedelta(hours=1),
+            now - timedelta(hours=1),
+            config.owner_id,
+            now - timedelta(days=1, minutes=5),
+        ),
+    ).fetchone()
+    if counts["hourly_failures"] >= 5 or counts["daily_failures"] >= 10:
+        raise PinRateLimited("Too many incorrect PIN attempts. Try later or use /admin inside Telegram.")
+    if sending and (
+        counts["hourly"] >= 5
+        or counts["daily"] >= 10
+        or (counts["latest"] and counts["latest"] > now - timedelta(seconds=60))
+    ):
+        raise PinRateLimited(
+            "PIN requests are limited to one per minute, five per hour and ten per day. Try later or use /admin inside Telegram."
+        )
+
+
+def start_pin(runtime):
+    now = runtime.clock()
+    identifier, verifier = secrets.token_urlsafe(18), secrets.token_urlsafe(32)
+    pin = f"{secrets.randbelow(10000):04d}"
+    expires = now + timedelta(seconds=LOGIN_SECONDS)
+    with runtime.repo.connection() as conn:
+        _pin_limits(conn, runtime.config, now, sending=True)
+        conn.execute(
+            "UPDATE admin_logins SET status='rejected' WHERE owner_id=%s "
+            "AND pin_hash IS NOT NULL AND status='pending'",
+            (runtime.config.owner_id,),
+        )
+        row = conn.execute(
+            "INSERT INTO admin_logins(id,verifier_hash,owner_id,display_code,expires_at,pin_hash,requested_at) "
+            "VALUES (%s,%s,%s,'',%s,%s,%s) RETURNING *",
+            (
+                identifier,
+                digest(verifier),
+                runtime.config.owner_id,
+                expires,
+                _pin_digest(runtime.config, identifier, pin),
+                now,
+            ),
+        ).fetchone()
+    # Authentication delivery is a single bounded attempt, outside all DB locks. Never persist
+    # plaintext PINs in the learning outbox or retry an uncertain send with a still-valid PIN.
+    try:
+        runtime.telegram.for_chat(runtime.config.owner_id).send(
+            f"SkillCoach Admin sign-in PIN: {pin}\n\n"
+            "Enter this four-digit PIN only in the browser where you requested it. "
+            "It expires in five minutes and works once. Never share it. "
+            "If you did not request it, ignore this message.",
+            Budget(12),
+        )
+    except ExternalError as exc:
+        with runtime.repo.connection() as conn:
+            conn.execute("UPDATE admin_logins SET status='rejected' WHERE id=%s", (identifier,))
+        log.warning("admin_pin_delivery_failed code=%s", exc.code)
+        raise PinDeliveryFailed(
+            "Telegram could not confirm delivery. Any PIN from this attempt is invalid. Wait one minute, then request a new PIN."
+        ) from None
+    with runtime.repo.connection() as conn:
+        conn.execute("UPDATE admin_logins SET notified=true WHERE id=%s", (identifier,))
+    return _pin_challenge(row), verifier
+
+
+def verify_pin(runtime, verifier, pin):
+    if not isinstance(pin, str) or not re.fullmatch(r"[0-9]{4}", pin):
+        raise PinIncorrect("Enter exactly four digits from your Telegram message.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{43}", verifier or ""):
+        raise AdminDenied("Request a PIN from this browser first. Cookies must be enabled.")
+    now = runtime.clock()
+    failure = None
+    with runtime.repo.connection() as conn:
+        _pin_limits(conn, runtime.config, now)
+        row = conn.execute(
+            "SELECT * FROM admin_logins WHERE verifier_hash=%s AND owner_id=%s FOR UPDATE",
+            (digest(verifier), runtime.config.owner_id),
+        ).fetchone()
+        if (
+            not row
+            or not row["pin_hash"]
+            or row["status"] != "pending"
+            or not row["notified"]
+            or row["expires_at"] <= now
+            or row["pin_attempts"] >= 3
+        ):
+            raise AdminDenied("This PIN expired, was replaced or was already used. Request a new PIN.")
+        if hmac.compare_digest(row["pin_hash"], _pin_digest(runtime.config, row["id"], pin)):
+            conn.execute("UPDATE admin_logins SET status='consumed' WHERE id=%s", (row["id"],))
+            result = new_session(conn, runtime.config, now)
+        else:
+            remaining = 2 - row["pin_attempts"]
+            conn.execute(
+                "UPDATE admin_logins SET pin_attempts=pin_attempts+1,pin_last_failed_at=%s,status=%s WHERE id=%s",
+                (now, "rejected" if remaining == 0 else "pending", row["id"]),
+            )
+            failure = (
+                AdminDenied("PIN attempt limit reached. Request a new PIN after the cooldown.")
+                if remaining == 0
+                else PinIncorrect(f"Incorrect PIN. {remaining} attempts remaining.")
+            )
+    # A rejected guess must commit its counter before returning an error.
+    if failure:
+        raise failure
+    return result
 
 
 def exchange_login(runtime, verifier):
@@ -156,11 +309,22 @@ def exchange_login(runtime, verifier):
         if not row:
             raise AdminDenied("Sign-in expired. Start again.")
         if row["status"] == "pending":
-            return None
-        if row["status"] != "approved":
+            if row["pin_hash"]:
+                if not row["notified"]:
+                    raise AdminDenied(
+                        "PIN delivery was not confirmed. Wait one minute and request a new PIN."
+                    )
+                return _pin_challenge(row)
+            return {
+                "authenticated": False,
+                "pending": True,
+                **_challenge(runtime.config, row["id"], row["display_code"], row["expires_at"]),
+            }
+        if row["status"] != "approved" or row["pin_hash"]:
             raise AdminDenied("Sign-in was rejected or already used. Start again.")
         conn.execute("UPDATE admin_logins SET status='consumed' WHERE id=%s", (row["id"],))
-        return new_session(conn, runtime.config, runtime.clock())
+        token, expires = new_session(conn, runtime.config, runtime.clock())
+        return {"token": token, "expires_at": expires}
 
 
 def telegram_login_action(conn, key, actor, owner, payload, config):
@@ -186,7 +350,7 @@ def telegram_login_action(conn, key, actor, owner, payload, config):
         "SELECT * FROM admin_logins WHERE id=%s AND owner_id=%s AND expires_at>now() FOR UPDATE",
         (identifier, config.owner_id),
     ).fetchone()
-    if not row or row["status"] != "pending":
+    if not row or row["status"] != "pending" or row["pin_hash"]:
         _notice(conn, key, owner, "This admin sign-in request expired or has already been handled.")
         return "admin_login_closed"
     if action == "request":

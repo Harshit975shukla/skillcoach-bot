@@ -129,7 +129,7 @@ def confirm(admin, value):
 
 def test_direct_browser_is_private_and_signed_owner_cookie_is_secure(admin):
     page = admin.client.get("/admin", base_url=ORIGIN)
-    assert page.status_code == 200 and b"Sign in through Telegram" in page.data
+    assert page.status_code == 200 and b"Send PIN to Telegram" in page.data
     assert page.headers["Cache-Control"] == "no-store, private"
     assert post(admin, "/admin/data").status_code == 403
     assert admin.client.get("/admin/session", base_url=ORIGIN).status_code == 403
@@ -272,7 +272,9 @@ def test_browser_approval_is_owner_only_and_bound_to_initiating_cookie(admin):
     message, buttons = admin.bot.runtime.telegram.messages[-1]
     assert started["code"] in message
     assert "Approve only if YOU" in message
-    assert post(admin, "/admin/login/status").json["pending"]
+    pending = post(admin, "/admin/login/status")
+    assert pending.json == {"authenticated": False, "pending": True, **started}
+    assert pending.headers["Cache-Control"] == "no-store, private"
     assert admin.bot.input(999, callback=buttons[0][0]["callback_data"]) == "denied"
     other = admin.app.test_client()
     assert post(admin, "/admin/login/status", client=other).status_code == 403
@@ -292,6 +294,29 @@ def test_browser_approval_is_owner_only_and_bound_to_initiating_cookie(admin):
             conn.execute("SELECT status FROM admin_logins WHERE id=%s", (identifier,)).fetchone()["status"]
             == "consumed"
         )
+
+
+def test_browser_login_recovers_after_reopening_with_only_original_cookie(admin):
+    started = post(admin, "/admin/login/start").json
+    verifier = admin.client.get_cookie(LOGIN_COOKIE).value
+    reopened = admin.app.test_client()
+    reopened.set_cookie(LOGIN_COOKIE, verifier)
+    assert reopened.get("/admin/session", base_url=ORIGIN).status_code == 403
+    pending = post(admin, "/admin/login/status", client=reopened).json
+    assert pending == {"authenticated": False, "pending": True, **started}
+    assert post(admin, "/admin/data", client=reopened).status_code == 403
+    assert post(admin, "/admin/login/status", client=reopened, origin="https://evil.invalid").status_code == 403
+    identifier = parse_qs(urlsplit(started["telegram_url"]).query)["start"][0].removeprefix("admin_login_")
+    admin.bot.input(admin.bot.config.owner_id, callback="adminlogin:approve:" + identifier)
+    response = post(admin, "/admin/login/status", client=reopened)
+    assert response.status_code == 200 and response.json["authenticated"]
+    assert "token" not in response.json and "code" not in response.json
+    assert reopened.get_cookie(LOGIN_COOKIE) is None
+    assert reopened.get_cookie(SESSION_COOKIE) is not None
+    assert post(admin, "/admin/login/status").status_code == 403
+    with admin.bot.repo.connection() as conn:
+        assert conn.execute("SELECT count(*) AS n FROM admin_logins").fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) AS n FROM admin_sessions").fetchone()["n"] == 1
 
 
 def test_rejected_or_expired_browser_challenge_cannot_create_session(admin):

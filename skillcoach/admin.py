@@ -17,12 +17,17 @@ from skillcoach.admin_auth import (
     SESSION_COOKIE,
     SESSION_SECONDS,
     AdminDenied,
+    PinDeliveryFailed,
+    PinIncorrect,
+    PinRateLimited,
     authenticate,
     csrf_token,
     exchange_login,
     login_from_telegram,
     same_origin,
     start_login,
+    start_pin,
+    verify_pin,
 )
 from skillcoach.catalog import TOPICS
 from skillcoach.clients import ExternalError
@@ -580,6 +585,12 @@ def register_admin(app, runtime_factory):
         def handled(*args, **kwargs):
             try:
                 return function(*args, **kwargs)
+            except PinIncorrect as exc:
+                return jsonify(error=str(exc)), 400
+            except PinRateLimited as exc:
+                return jsonify(error=str(exc)), 429
+            except PinDeliveryFailed as exc:
+                return jsonify(error=str(exc)), 503
             except AdminDenied as exc:
                 return jsonify(error=str(exc)), 403
             except AdminConflict as exc:
@@ -670,9 +681,33 @@ def register_admin(app, runtime_factory):
         _json_body(request, set())
         runtime = runtime_factory()
         result = exchange_login(runtime, request.cookies.get(LOGIN_COOKIE, ""))
-        if result is None:
-            return jsonify(authenticated=False, pending=True)
-        response = session_response(runtime, *result)
+        if result.get("pending"):
+            return jsonify(result)
+        response = session_response(runtime, result["token"], result["expires_at"])
+        response.delete_cookie(LOGIN_COOKIE, secure=True, httponly=True, samesite="Strict", path="/")
+        return response
+
+    @app.post("/admin/login/pin/start")
+    @endpoint
+    def begin_pin():
+        same_origin(request)
+        _json_body(request, set())
+        runtime = runtime_factory()
+        data, verifier = start_pin(runtime)
+        response = jsonify(data)
+        response.set_cookie(
+            LOGIN_COOKIE, verifier, max_age=300, secure=True, httponly=True, samesite="Strict", path="/"
+        )
+        return response
+
+    @app.post("/admin/login/pin/verify")
+    @endpoint
+    def finish_pin():
+        same_origin(request)
+        body = _json_body(request, {"pin"})
+        runtime = runtime_factory()
+        token, expires = verify_pin(runtime, request.cookies.get(LOGIN_COOKIE, ""), body["pin"])
+        response = session_response(runtime, token, expires)
         response.delete_cookie(LOGIN_COOKIE, secure=True, httponly=True, samesite="Strict", path="/")
         return response
 

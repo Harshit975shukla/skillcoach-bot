@@ -44,6 +44,7 @@
     if (!keepLogin) {
       pendingLogin = null; $("login-challenge").hidden = true;
       $("login-code").textContent = ""; $("telegram-login-link").removeAttribute("href");
+      $("login-expiry").textContent = "";
     }
     clearTimeout(sessionTimer);
     $("console").hidden = true; $("login").hidden = false;
@@ -55,7 +56,9 @@
       $(id).replaceChildren();
     }
     $("invite-url").value = "";
-    $("start-login").disabled = false; $("preview-action").disabled = false;
+    $("login-pin").value = ""; $("verify-pin").disabled = false;
+    $("start-login").disabled = false; $("start-login").hidden = Boolean(pendingLogin);
+    $("check-login").disabled = false; $("preview-action").disabled = false;
   }
   function showError(error) {
     if (error instanceof StaleRequest) return;
@@ -67,7 +70,12 @@
   }
   async function api(path, body, method = "POST", csrfOverride, telegramOverride) {
     const requestEpoch = epoch, controller = new AbortController();
-    controllers.add(controller);
+    const loginExchange = ["/admin/login/status", "/admin/login/pin/start", "/admin/login/pin/verify"].includes(path);
+    // Let an exchange finish setting its HttpOnly cookie if the user switches to Telegram.
+    // Epoch checks still prevent its response from rendering on a hidden/stale page.
+    if (!loginExchange) controllers.add(controller);
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 20000);
     const memoryToken = telegramOverride || telegramSession;
     const options = {method, cache: "no-store",
       credentials: memoryToken || (telegram && telegram.initData) ? "omit" : "same-origin",
@@ -86,9 +94,12 @@
       response = await fetch(path, options);
       data = await response.json();
     } catch {
-      if (requestEpoch !== epoch || controller.signal.aborted) throw new StaleRequest();
-      throw new Error("Connection interrupted. Do not create a new action; retry the same confirmation to check its result.");
+      if (requestEpoch !== epoch || (controller.signal.aborted && !timedOut)) throw new StaleRequest();
+      throw new Error(path.startsWith("/admin/login/") || path.endsWith("/session") || path.endsWith("/telegram-session")
+        ? "Sign-in connection interrupted. Refresh this page to recover the request or check whether you signed in."
+        : "Connection interrupted. Do not create a new action; retry the same confirmation to check its result.");
     } finally {
+      clearTimeout(timeout);
       controllers.delete(controller);
     }
     if (requestEpoch !== epoch || controller.signal.aborted) throw new StaleRequest();
@@ -121,13 +132,15 @@
         try { session = await api("/admin/session", null, "GET"); }
         catch (error) {
           if (error instanceof StaleRequest || error.status !== 403) throw error;
-          clearPrivate(); message("Owner sign-in is required."); return;
+          await resumeLogin(); return;
         }
       }
       establish(session); await refresh();
     } catch (error) {
       if (!(error instanceof StaleRequest)) {
-        clearPrivate(); message(error.message, true);
+        if (!pendingLogin) clearPrivate();
+        message(error.message, true);
+        if (pendingLogin) pollLogin();
         if (framed || (telegram && telegram.initData)) browserFallback(error.message);
       }
     }
@@ -606,39 +619,93 @@
       if (requestEpoch === epoch) { $("invite-url").focus(); $("invite-url").select(); message("Copy is unavailable. Select and copy the invitation field manually."); }
     }
   });
+  function restoreLogin(data) {
+    pendingLogin = data;
+    $("login").hidden = false;
+    const pin = data.method === "pin";
+    $("pin-form").hidden = !pin; $("approval-challenge").hidden = pin;
+    if (!pin) {
+      $("login-code").textContent = data.code; $("telegram-login-link").href = data.telegram_url;
+    }
+    $("login-expiry").textContent = `This request expires ${date(data.expires_at)} IST.`;
+    if (pin) $("login-expiry").textContent += ` ${data.attempts_remaining} attempts remaining. A new PIN can be sent after ${date(data.resend_at)} IST.`;
+    $("login-challenge").hidden = false; $("start-login").hidden = true;
+    $("resend-pin").disabled = !pin || Date.now() < new Date(data.resend_at).getTime();
+    message(pin ? "PIN sent to your Telegram. Enter it below to sign in."
+      : "Approve this matching code in Telegram, then return here. Waiting for approval.");
+  }
+  async function resumeLogin() {
+    if (loginPollBusy || document.hidden) return;
+    const requestEpoch = epoch;
+    loginPollBusy = true; $("check-login").disabled = true;
+    try {
+      const session = await api("/admin/login/status", {});
+      if (session.authenticated) { establish(session); await refresh(); }
+      else { restoreLogin(session); pollLogin(); }
+    } catch (error) {
+      if (error instanceof StaleRequest) return;
+      if (error.status === 403) {
+        const wasPending = Boolean(pendingLogin);
+        clearPrivate();
+        message(wasPending ? error.message : "Owner sign-in is required. Send a PIN to your Telegram to continue.");
+      } else {
+        message(error.message, true);
+        if (pendingLogin) pollLogin();
+      }
+    } finally {
+      if (requestEpoch === epoch) { loginPollBusy = false; $("check-login").disabled = false; }
+    }
+  }
   function pollLogin() {
     clearInterval(poll);
     poll = setInterval(async () => {
       if (document.hidden || !pendingLogin || loginPollBusy) return;
       if (Date.now() >= new Date(pendingLogin.expires_at).getTime()) {
-        clearInterval(poll); poll = null; pendingLogin = null; message("Sign-in expired. Start again."); return;
+        clearPrivate(); message("Sign-in expired. Request a new PIN to continue."); return;
       }
-      const requestEpoch = epoch;
-      loginPollBusy = true;
-      try {
-        const session = await api("/admin/login/status", {});
-        if (session.authenticated) { establish(session); await refresh(); }
-      } catch (error) {
-        if (!(error instanceof StaleRequest)) { clearInterval(poll); poll = null; showError(error); }
-      } finally {
-        if (requestEpoch === epoch) loginPollBusy = false;
+      if (pendingLogin.method === "pin") {
+        $("resend-pin").disabled = Date.now() < new Date(pendingLogin.resend_at).getTime();
+        return;
       }
+      await signIn();
     }, 3000);
   }
-  $("start-login").addEventListener("click", async () => {
+  async function requestPin() {
     signedOut = false;
+    const previous = pendingLogin;
     clearPrivate();
     const requestEpoch = epoch;
     $("start-login").disabled = true;
     try {
-      const data = await api("/admin/login/start", {});
-      $("login-code").textContent = data.code; $("telegram-login-link").href = data.telegram_url;
-      $("login-challenge").hidden = false;
-      pendingLogin = data; pollLogin();
-      message("Open the request in Telegram and approve only the matching code.");
-    } catch (error) { showError(error); }
+      const data = await api("/admin/login/pin/start", {});
+      restoreLogin(data); pollLogin();
+      $("login-pin").focus();
+    } catch (error) {
+      if (error.status === 429 && previous && new Date(previous.expires_at).getTime() > Date.now()) {
+        restoreLogin(previous); pollLogin();
+      }
+      showError(error);
+    }
     finally { if (requestEpoch === epoch) $("start-login").disabled = false; }
+  }
+  $("start-login").addEventListener("click", requestPin);
+  $("resend-pin").addEventListener("click", requestPin);
+  $("pin-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    if ($("verify-pin").disabled) return;
+    const pin = $("login-pin").value;
+    if (!/^[0-9]{4}$/.test(pin)) { message("Enter exactly four digits from Telegram.", true); return; }
+    const requestEpoch = epoch;
+    $("login-pin").value = ""; $("verify-pin").disabled = true;
+    try {
+      const session = await api("/admin/login/pin/verify", {pin});
+      establish(session); await refresh();
+    } catch (error) {
+      showError(error);
+      if (requestEpoch === epoch) $("login-pin").focus();
+    } finally { if (requestEpoch === epoch) $("verify-pin").disabled = false; }
   });
+  $("check-login").addEventListener("click", signIn);
   $("refresh").addEventListener("click", refresh);
   $("open-browser").addEventListener("click", event => {
     if (telegram && typeof telegram.openLink === "function") {
@@ -667,7 +734,6 @@
   }
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) clearPrivate(true);
-    else if (pendingLogin) pollLogin();
     else if (!signedOut && (!framed || (telegram && telegram.initData))) signIn();
   });
   function browserFallback(errorText) {
@@ -676,7 +742,7 @@
     $("open-browser").hidden = false;
     $("open-browser").href = new URL("/admin", location.href).href;
     message((errorText ? errorText + " " : "") +
-      "Reopen using /admin in Telegram for a fresh owner login, or use the browser approval option.", Boolean(errorText));
+      "Reopen using /admin in Telegram for a fresh owner login, or open your browser to sign in with a Telegram PIN.", Boolean(errorText));
   }
   if (framed && !(telegram && telegram.initData)) browserFallback();
   else signIn();

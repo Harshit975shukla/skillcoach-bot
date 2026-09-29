@@ -167,9 +167,22 @@ data and the server verifies the configured owner automatically. No code needs t
 An **Open in browser** alternative is also available. It is not a public GitHub Pages data file and does not require a paid
 authentication provider.
 
-In a normal browser, select **Sign in through Telegram**. A five-minute request is bound to a
-high-entropy HttpOnly browser cookie. Open the bot link and approve only if the six-character code
-matches the browser you started. The link identifier alone cannot claim a login: only that browser's
+In a normal browser, select **Send PIN to Telegram**, then enter the four-digit PIN sent to the
+configured owner's private bot chat and select **Sign in**. Each PIN expires after five minutes,
+works once, and is bound to a high-entropy HttpOnly cookie in the requesting browser. Refreshing or
+reopening `/admin` in that browser resumes an unexpired request. Cookies must be enabled; a different
+browser or private window cannot finish the request.
+
+PINs have three attempts each, with owner-wide limits of five incorrect attempts per hour and ten per
+day. Sending is limited to one PIN per minute, five per hour and ten per day; a new PIN replaces earlier
+PINs. Limits persist in PostgreSQL and are serialized across concurrent requests. Only a keyed PIN hash
+is stored, never the plaintext PIN in the database, learning history or logs. Telegram delivery is a
+single bounded attempt outside DB locks; an uncertain/failed send invalidates that PIN and reports
+the failure. It is never automatically resent. One-tap `/admin` access in Telegram remains available
+even when browser PIN requests are throttled.
+
+Existing matching-code approvals remain supported for already-open older pages. The link identifier
+alone cannot claim a login: only that browser's
 private verifier can exchange the owner-approved request, once. Reject unexpected requests.
 The cookie-free Telegram flow also works in embedded Telegram Web frames. It creates a distinct
 short-lived session token stored only in JavaScript memory. Each request sends that token plus
