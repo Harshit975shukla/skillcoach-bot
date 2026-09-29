@@ -89,6 +89,16 @@ code { font-family: ui-monospace, "Cascadia Mono", monospace; font-size: .875em;
 .resource-list .resource-cost { font-size: .94rem; }
 #resource-more { margin-top: 16px; }
 #resource-count { margin-bottom: 4px; }
+#course-count { margin: 16px 0 4px; }
+#course-more { margin-top: 16px; }
+.course-diagram { margin: 16px 0; overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+.course-diagram:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.course-diagram svg { display: block; width: 100%; min-width: 680px; font-family: inherit; }
+.course-controls { display: flex; gap: 12px; margin-top: 16px; }
+.course-controls button:disabled { cursor: default; }
+.course-paths, .course-transcript { list-style: decimal; padding-left: 1.4em; max-width: 70ch; }
+.course-paths li, .course-transcript li { margin-top: 10px; overflow-wrap: anywhere; }
+#lesson-walkthrough > p { max-width: 70ch; margin-top: 10px; }
 #lab-count { white-space: nowrap; color: var(--muted); font-size: .875rem; }
 .lab-state { display: inline-block; margin-top: 8px; padding: 2px 9px; border-radius: 5px; font-size: .82rem;
   font-weight: 650; background: var(--soft); color: var(--ink); }

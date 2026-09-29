@@ -9,9 +9,13 @@
   let documentCsrf = "", uploadId = null, uploadPreview = null, uploadBusy = false, uploadController;
   let labBusy = false, labController, labRequests = {};
   let resourceCatalog = [], resourceLimit = 6;
+  let courseModules = [], courseLimit = 10, lastLessonButton = null;
   const LESSON = /^[0-9a-f]{20}$/;
+  const TOPIC = /^[a-z0-9-]+\/[a-z0-9-]+$/;
   const linked = new URLSearchParams(location.search).get("lesson");
-  let wantedLesson = linked && LESSON.test(linked) ? linked : null, shownLesson = null, lessonController;
+  const linkedTopic = new URLSearchParams(location.search).get("topic");
+  let wantedLesson = linkedTopic && TOPIC.test(linkedTopic) ? "course:" + linkedTopic
+    : linked && LESSON.test(linked) ? linked : null, shownLesson = null, lessonController;
   const node = (tag, value, className) => {
     const element = document.createElement(tag);
     if (value !== undefined) element.textContent = String(value);
@@ -28,6 +32,9 @@
     documentCsrf = ""; uploadId = null; uploadPreview = null; uploadBusy = false;
     labBusy = false; labRequests = {};
     resourceCatalog = []; resourceLimit = 6;
+    courseModules = []; courseLimit = 10; lastLessonButton = null;
+    $("course-search").value = ""; $("course-module").replaceChildren(node("option", "All modules"));
+    $("course-module").firstChild.value = ""; $("course-more").hidden = true;
     $("resource-search").value = ""; $("resource-group").value = ""; $("resource-no-account").checked = false;
     $("resource-more").hidden = true;
     $("document-file").value = ""; $("document-preview").hidden = true;
@@ -39,7 +46,7 @@
                       "done", "streak", "minutes", "graded", "preferences", "updated", "task-count",
                       "plan-status", "plan-rationale", "lab-items", "lab-catalog", "lab-count", "lab-status",
                       "lab-cost", "lab-gate", "lesson-list", "resource-list", "resource-count",
-                      "resource-notice", "resource-rights"]) {
+                      "resource-notice", "resource-rights", "course-list", "course-count", "course-notice"]) {
       $(id).replaceChildren();
     }
     $("lab-gate").hidden = true;
@@ -127,17 +134,120 @@
     $("lesson-view").hidden = true; $("lesson-page").hidden = true;
     if (app && app.BackButton) app.BackButton.hide();
   }
+  function renderCourses() {
+    const group = $("course-module").value;
+    const words = $("course-search").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const topics = courseModules.flatMap(module => module.topics.map(topic => ({...topic, module})))
+      .filter(topic => (!group || topic.module.id === group)
+        && words.every(word => (topic.title + " " + topic.module.title).toLowerCase().includes(word)));
+    const list = $("course-list"); list.replaceChildren();
+    for (const topic of topics.slice(0, courseLimit)) {
+      const item = node("li"), detail = node("div"), button = node("button", "Read lesson");
+      detail.append(node("span", topic.title, "plan-topic"), node("p", topic.module.title, "task-meta"));
+      button.type = "button"; button.setAttribute("aria-label", `Read ${topic.title}`);
+      button.addEventListener("click", () => { lastLessonButton = button; openLesson("course:" + topic.id); });
+      item.append(detail, button); list.append(item);
+    }
+    if (!topics.length) empty("course-list", "No matching lessons. Try another topic or choose All modules.");
+    $("course-count").textContent = `Showing ${Math.min(courseLimit, topics.length)} of ${topics.length} stored lessons`;
+    $("course-more").hidden = topics.length <= courseLimit;
+  }
+  function walkthrough(story) {
+    const element = lessonSection("Visual walkthrough", "lesson-walkthrough");
+    element.append(node("p", "A prewritten diagram and explanation, not a prerecorded video. Animated video is available through /learn in Telegram.",
+                        "section-description"));
+    const ns = "http://www.w3.org/2000/svg";
+    const svgNode = (tag, attributes, text) => {
+      const result = document.createElementNS(ns, tag);
+      for (const [key, value] of Object.entries(attributes || {})) result.setAttribute(key, value);
+      if (text !== undefined) result.textContent = text;
+      return result;
+    };
+    const figure = node("figure", undefined, "course-diagram");
+    const svg = svgNode("svg", {viewBox: `0 0 780 ${story.actors.length > 3 ? 420 : 240}`, role: "img",
+                               "aria-label": story.title});
+    figure.tabIndex = 0; figure.setAttribute("role", "region"); figure.setAttribute("aria-label", "Scrollable lesson diagram");
+    figure.append(svg);
+    const title = node("h3"), caption = node("p"), narration = node("p"), paths = node("ul", undefined, "course-paths");
+    title.setAttribute("aria-live", "polite");
+    const controls = node("div", undefined, "course-controls");
+    const previous = node("button", "Previous step"), next = node("button", "Next step");
+    previous.type = next.type = "button"; controls.append(previous, next);
+    let sceneIndex = 0;
+    const positions = Object.fromEntries(story.actors.map((actor, i) => [actor.id, story.actors.length <= 3
+      ? [story.actors.length === 2 ? 195 + 390 * i : 135 + 255 * i, 110]
+      : [135 + 255 * (i % 3), 100 + 210 * Math.floor(i / 3)]]));
+    function draw() {
+      const scene = story.scenes[sceneIndex];
+      svg.replaceChildren(); paths.replaceChildren();
+      const defs = svgNode("defs"), marker = svgNode("marker", {
+        id: "course-arrow", viewBox: "0 0 10 10", refX: "9", refY: "5",
+        markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse",
+      });
+      marker.append(svgNode("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--accent)"}));
+      defs.append(marker); svg.append(defs);
+      for (const edge of story.edges) {
+        const [ax, ay] = positions[edge.source], [bx, by] = positions[edge.target];
+        const dx = bx - ax, dy = by - ay, ratio = Math.min(dx ? 105 / Math.abs(dx) : Infinity, dy ? 44 / Math.abs(dy) : Infinity);
+        const active = scene.active_edges.includes(edge.id);
+        svg.append(svgNode("line", {x1: ax + dx * ratio, y1: ay + dy * ratio,
+          x2: bx - dx * ratio, y2: by - dy * ratio, stroke: active ? "var(--accent)" : "var(--muted)",
+          "stroke-width": active ? 3 : 1, "marker-end": "url(#course-arrow)"}));
+        if (active) {
+          const source = story.actors.find(a => a.id === edge.source).label;
+          const target = story.actors.find(a => a.id === edge.target).label;
+          paths.append(node("li", `${source} → ${target}${edge.label ? ": " + edge.label : ""}`));
+        }
+      }
+      for (const actor of story.actors) {
+        const [x, y] = positions[actor.id], active = scene.highlights.includes(actor.id);
+        svg.append(svgNode("rect", {x: x - 105, y: y - 44, width: 210, height: 88, rx: 8,
+          fill: active ? "var(--soft)" : "var(--surface)", stroke: active ? "var(--accent)" : "var(--line)",
+          "stroke-width": active ? 2 : 1}));
+        const lines = []; let current = "";
+        for (const word of actor.label.split(/\s+/)) {
+          if (current && (current + " " + word).length > 22) { lines.push(current); current = word; }
+          else current = (current + " " + word).trim();
+        }
+        if (current) lines.push(current);
+        lines.forEach((line, i) => svg.append(svgNode("text", {x, y: y - (lines.length - 1) * 10 + i * 20,
+          "text-anchor": "middle", "dominant-baseline": "middle", fill: "var(--ink)", "font-size": 15}, line)));
+        if (scene.states[actor.id]) svg.append(svgNode("text", {x, y: y + 66, "text-anchor": "middle",
+          fill: "var(--muted)", "font-size": 14}, scene.states[actor.id]));
+      }
+      title.textContent = `${sceneIndex + 1} / ${story.scenes.length} · ${scene.title}`;
+      caption.textContent = scene.caption; narration.textContent = scene.narration;
+      previous.disabled = sceneIndex === 0; next.disabled = sceneIndex === story.scenes.length - 1;
+    }
+    previous.addEventListener("click", () => { sceneIndex--; draw(); });
+    next.addEventListener("click", () => { sceneIndex++; draw(); });
+    const transcript = node("details"), script = node("ol", undefined, "course-transcript");
+    transcript.append(node("summary", "Read the complete transcript"));
+    for (const scene of story.scenes) script.append(node("li", scene.title + ": " + scene.narration));
+    transcript.append(script);
+    element.append(figure, title, caption, narration, paths, controls, transcript); draw();
+    return element;
+  }
   function renderLesson(lesson) {
     $("lesson-title").textContent = lesson.title;
-    $("lesson-meta").textContent = [day(lesson.date), lesson.review].filter(Boolean).join(" · ");
+    $("lesson-meta").textContent = [day(lesson.date), lesson.library ? "Course version " + lesson.version : "", lesson.review].filter(Boolean).join(" · ");
     const body = $("lesson-body"), jump = $("lesson-jump");
     body.replaceChildren(); jump.replaceChildren();
     const anchor = (label, id) => { const link = node("a", label); link.href = "#" + id; jump.append(link); };
+    if (lesson.library) {
+      const note = node("p", undefined, "guidance");
+      note.append(document.createTextNode("Browse freely; this does not change your plan, tasks or lab progress. For tracked practice and a video, send "),
+                  node("code", lesson.learn_command), document.createTextNode(" in Telegram."));
+      body.append(note);
+    }
     if (!lesson.available) {
       body.append(node("p", "The full text of this older lesson was not kept. Its tracked exercises are below.", "guidance"));
     }
     for (const section of lesson.sections || []) {
       const element = lessonSection(section.heading); element.append(prose(section.blocks)); body.append(element);
+    }
+    if (lesson.walkthrough) {
+      anchor("Walkthrough", "lesson-walkthrough"); body.append(walkthrough(lesson.walkthrough));
     }
     if (lesson.exercises.length) {
       anchor("Exercises", "lesson-exercises");
@@ -148,8 +258,9 @@
       element.append(list); body.append(element);
     }
     if (lesson.extension && lesson.extension.length) {
-      const element = lessonSection("Optional extension practice");
-      element.append(node("p", "Outside today's time target and not tracked.", "section-description"));
+      const element = lessonSection(lesson.library ? "Practice on your own" : "Optional extension practice");
+      element.append(node("p", lesson.library ? "Untracked exercises. Use /learn in the bot to assign practice."
+        : "Outside today's time target and not tracked.", "section-description"));
       for (const extra of lesson.extension) {
         element.append(node("h3", `${extra.title} · about ${extra.minutes} min`), prose(extra.blocks));
       }
@@ -196,12 +307,13 @@
     $("lesson-feedback").textContent = lesson.feedback in ratings
       ? `You rated this lesson “${ratings[lesson.feedback]}”. You can change it with the buttons at the end of the lesson in Telegram.`
       : "Rate this lesson with the buttons at the end of the lesson in Telegram. Only the button you pick is stored.";
-    $("lesson-feedback").hidden = !lesson.available;
+    $("lesson-feedback").hidden = !lesson.available || lesson.library;
     $("lesson-status").hidden = true;
     $("lesson-page").hidden = false;
   }
   async function openLesson(id) {
-    if (!authenticated || !app || !app.initData || !LESSON.test(id)) return;
+    const isCourse = id.startsWith("course:"), topic = isCourse ? id.slice(7) : null;
+    if (!authenticated || !app || !app.initData || (isCourse ? !TOPIC.test(topic) : !LESSON.test(id))) return;
     wantedLesson = id; shownLesson = null;
     if (lessonController) lessonController.abort();
     const token = lessonController = new AbortController(), requestEpoch = epoch;
@@ -210,10 +322,10 @@
     if (app.BackButton) app.BackButton.show();
     window.scrollTo(0, 0);
     try {
-      const response = await fetch("/app/lesson", {
+      const response = await fetch(isCourse ? "/app/course" : "/app/lesson", {
         method: "POST", cache: "no-store", credentials: "omit", signal: token.signal,
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({init_data: app.initData, lesson: id}),
+        body: JSON.stringify(isCourse ? {init_data: app.initData, topic} : {init_data: app.initData, lesson: id}),
       });
       const data = await response.json();
       if (requestEpoch !== epoch || token.signal.aborted) return;
@@ -221,6 +333,7 @@
       shownLesson = id;
       if (!response.ok) { lessonStatus(data.error || "This lesson could not be opened.", true); return; }
       renderLesson(data.lesson);
+      $("lesson-title").tabIndex = -1; $("lesson-title").focus({preventScroll: true});
     } catch (error) {
       if (requestEpoch === epoch && error.name !== "AbortError") {
         lessonStatus("Could not load this lesson. Check your connection, then tap Refresh.", true);
@@ -232,6 +345,7 @@
     if (lessonController) lessonController.abort();
     hideLesson();
     if (authenticated) { $("content").hidden = false; $("lessons").scrollIntoView(); }
+    if (lastLessonButton && lastLessonButton.isConnected) lastLessonButton.focus({preventScroll: true});
   }
   function labRoute(lab, route) {
     const details = node("details");
@@ -419,6 +533,18 @@
     $("resource-notice").textContent = data.resources ? data.resources.notice : "";
     $("resource-rights").textContent = data.resources ? data.resources.rights : "";
     renderResourceLibrary();
+    const selectedModule = $("course-module").value;
+    courseModules = data.courses ? data.courses.modules : [];
+    $("course-module").replaceChildren(node("option", "All modules"));
+    $("course-module").firstChild.value = "";
+    for (const module of courseModules) {
+      const option = node("option", `${module.title} (${module.topics.length})`);
+      option.value = module.id; $("course-module").append(option);
+    }
+    $("course-module").value = courseModules.some(m => m.id === selectedModule) ? selectedModule : "";
+    $("course-notice").textContent = data.courses ? data.courses.notice
+      : "The stored library is unavailable. Try Refresh shortly.";
+    renderCourses();
     $("document-preview-button").disabled = !documentCsrf || !data.documents || !data.documents.can_update;
     if (!uploadBusy && !uploadPreview) {
       $("document-status").textContent = data.documents
@@ -476,6 +602,10 @@
     });
   }
   $("resource-more").addEventListener("click", () => { resourceLimit += 6; renderResourceLibrary(); });
+  for (const id of ["course-search", "course-module"]) {
+    $(id).addEventListener(id === "course-search" ? "input" : "change", () => { courseLimit = 10; renderCourses(); });
+  }
+  $("course-more").addEventListener("click", () => { courseLimit += 10; renderCourses(); });
   async function refresh() {
     if (uploadBusy || labBusy) return;
     if (!app || !app.initData) {

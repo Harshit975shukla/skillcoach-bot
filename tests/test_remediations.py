@@ -46,7 +46,6 @@ def test_approved_pacing_sets_real_core_work_and_keeps_full_reference(harness, m
     plan.minutes = minutes
     plan.sessions[0].objective = "APPROVED-OBJECTIVE"
     plan.sessions[0].practice = "APPROVED-PRACTICE"
-    h.ai.responses.append(core_guide(minutes))
     h.repo.enqueue(
         "day1",
         {
@@ -67,28 +66,29 @@ def test_approved_pacing_sets_real_core_work_and_keeps_full_reference(harness, m
     bodies = [o["body"] for o in h.repo.outbox.values()]
     assert len([b for b in bodies if b["kind"] == "media"]) == 1
     assert sum(b["kind"] == "text" and "APPROVED-OBJECTIVE" in b["text"] for b in bodies) >= 1
-    assert f"Total target: {minutes}" in h.ai.calls[0][0]
+    assert not h.ai.calls
 
 
-def test_invalid_pacing_never_creates_tasks(harness):
+def test_invalid_dynamic_pacing_is_rejected(harness):
+    from types import SimpleNamespace
+
+    from lesson_content import LESSONS
+    from skillcoach.clients import Budget
+    from skillcoach.models import Lesson
+    from skillcoach.pacing import build_session
+
     h = harness
     h.clock.now = datetime(2026, 9, 28, 8, tzinfo=IST)
     active(h)
     invalid = core_guide()
     invalid["tasks"][0]["minutes"] = 90
     h.ai.responses.append(invalid)
-    h.repo.enqueue(
-        "day1",
-        {
-            "type": "journey",
-            "journey_id": h.repo.state.journey.id,
-            "action": "lesson",
-            "plan_id": "plan-test",
-            "date": h.clock.now.date().isoformat(),
-        },
+    service = SimpleNamespace(
+        structured=lambda key, prompt, model, validate: h.ai.structured(prompt, model, Budget(), validate)
     )
-    h.runtime.recover(media=False)
-    assert h.repo.jobs["day1"]["status"] == "failed"
+    plan = h.repo.state.journey.plans["plan-test"]
+    with pytest.raises(ValueError, match="Core exercise count and estimated minutes"):
+        build_session(service, Lesson.model_validate(LESSONS["ec2"]), plan.sessions[0], plan, "EC2")
     assert not h.repo.state.tasks and not h.repo.state.lessons
 
 

@@ -8,6 +8,7 @@ import puppeteer from "puppeteer";
 
 let denied = false;
 let uploadPreviews = 0, uploadConfirms = 0, dataRequests = 0, labFailOnce = false, lessonRequests = 0, lessonDenied = false;
+let courseRequests = 0, courseDenied = false;
 const labSubmits = [];
 const LAB_TOKEN = "SC-TEST-TOKN";
 const LESSON_ID = "0123456789abcdef0123";
@@ -16,6 +17,10 @@ const spans = text => [{t: "text", v: text}];
 const resources = JSON.parse(execFileSync(process.env.TEST_PYTHON || "python",
   ["-c", "import json; from skillcoach.resources import library_view; print(json.dumps(library_view()))"],
   {encoding: "utf8"}));
+const courses = JSON.parse(execFileSync(process.env.TEST_PYTHON || "python",
+  ["-c", "import json; from skillcoach.course_library import index, page; from skillcoach.catalog import TOPICS; " +
+   "topic=next(k for k in TOPICS if k.startswith('linux/')); print(json.dumps({'index':index(),'lesson':page(topic)}))"],
+  {encoding: "utf8", maxBuffer: 2 * 1024 * 1024}));
 const lessonFixture = {
   id: LESSON_ID, title: "CI pipeline design: stages, artifacts and caching", date: "2026-09-29", available: true,
   review: "Reviewed lesson · 2026-09-28",
@@ -45,6 +50,7 @@ const lessonFixture = {
 };
 const fixture = {
   resources,
+  courses: courses.index,
   profile: {name: "Synthetic learner", target_role: "Platform engineer", level: "intermediate", setup_complete: true},
   stats: {done: 4, pending: 2, total: 6, streak: 2, minutes_practiced: 65, answers_graded: 1},
   preferences: {paused: false, media: "video"},
@@ -158,6 +164,20 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify(payload));
     return;
   }
+  if (request.url === "/app/course") {
+    assert.equal(request.method, "POST");
+    assert.equal(request.headers.cookie, undefined);
+    let raw = ""; for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    assert.deepEqual(Object.keys(body).sort(), ["init_data", "topic"]);
+    assert.equal(body.init_data, "synthetic-signed-launch");
+    assert.equal(body.topic, courses.lesson.id);
+    courseRequests++;
+    response.writeHead(courseDenied ? 403 : 200, {"Content-Type": "application/json", "Cache-Control": "no-store"});
+    response.end(JSON.stringify(courseDenied ? {error: "Access was revoked."}
+      : {lesson: courses.lesson, auth_expires_at: fixture.auth_expires_at, private: true}));
+    return;
+  }
   const names = {"/app": ["dashboard.html", "text/html"], "/static/dashboard.css": ["dashboard.css", "text/css"],
                  "/static/dashboard.js": ["dashboard.js", "text/javascript"]};
   const selected = names[request.url.split("?")[0]];
@@ -194,6 +214,45 @@ try {
     assert.equal(await page.$eval("#plan-bot-link", e => e.href), "https://t.me/SkillCoachTestBot?start=plan");
     assert.equal(await page.evaluate(() => document.body.classList.contains("telegram-light")), true);
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    assert.equal(await page.$$eval("#course-module option", e => e.length), 24);
+    assert.equal(await page.$$eval("#course-list > li", e => e.length), 10);
+    await page.click("#course-more");
+    assert.equal(await page.$$eval("#course-list > li", e => e.length), 20);
+    const coursesBeforeSearch = courseRequests;
+    await page.type("#course-search", "no-matching-topic-here");
+    assert.match(await page.$eval("#course-list", e => e.textContent), /No matching lessons/);
+    await page.$eval("#course-search", e => { e.value = ""; e.dispatchEvent(new Event("input")); });
+    await page.select("#course-module", "linux");
+    assert.equal(await page.$$eval("#course-list > li", e => e.length),
+      courses.index.modules.find(module => module.id === "linux").topics.length);
+    assert.equal(courseRequests, coursesBeforeSearch, "course filtering is local");
+    await page.click("#course-list button");
+    await page.waitForFunction(() => !document.getElementById("lesson-page").hidden);
+    assert.equal(await page.$eval("#lesson-title", e => e.textContent), courses.lesson.title);
+    assert.match(await page.$eval("#lesson-meta", e => e.textContent), /AI-generated offline/);
+    assert.equal(await page.$eval("#lesson-body", e => e.textContent.includes("/complete ")), false);
+    assert.equal(await page.$eval("#lesson-feedback", e => e.hidden), true);
+    assert.ok(await page.$("#lesson-walkthrough svg"));
+    assert.ok(await page.$$eval("#lesson-walkthrough svg rect", nodes => nodes.every((node, i) => !i ||
+      Number(nodes[i - 1].getAttribute("x")) + Number(nodes[i - 1].getAttribute("width")) < Number(node.getAttribute("x")))));
+    const firstStep = await page.$eval("#lesson-walkthrough > h3", e => e.textContent);
+    await page.click(".course-controls button:last-child");
+    assert.notEqual(await page.$eval("#lesson-walkthrough > h3", e => e.textContent), firstStep);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    if (process.env.DASHBOARD_SCREENSHOT_DIR) {
+      await page.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, `course-${label}.png`), fullPage: true});
+    }
+    await page.click("#lesson-back");
+    assert.equal(await page.$eval("#content", e => e.hidden), false);
+    courseDenied = true;
+    await page.click("#course-list button");
+    await page.waitForFunction(() => document.getElementById("content").hidden && !document.getElementById("notice").hidden);
+    assert.equal(await page.$eval("#lesson-body", e => e.textContent), "");
+    assert.equal(await page.$$eval("#course-list > li", e => e.length), 0);
+    courseDenied = false;
+    await page.click("#refresh");
+    await page.waitForFunction(() => !document.getElementById("lesson-page").hidden);
+    await page.click("#lesson-back");
     assert.equal(await page.$$eval("#resource-list > li", e => e.length), 6);
     await page.click("#resource-more");
     assert.equal(await page.$$eval("#resource-list > li", e => e.length), 12);

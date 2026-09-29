@@ -7,6 +7,7 @@ import math
 import re
 from urllib.parse import parse_qsl
 
+from skillcoach.clients import ExternalError
 from skillcoach.export import skill_summary, stats
 from skillcoach.lab_flow import lab_view
 from skillcoach.models import State
@@ -82,6 +83,7 @@ def authorize_learner(repo, actor: int, issued: int, auth_hash: str):
 
 
 def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narration_enabled=False, config=None):
+    from skillcoach.course_library import index
     from skillcoach.formatting import md_blocks
     from skillcoach.lesson_delivery import recent_lessons
     from skillcoach.resources import library_view
@@ -134,6 +136,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
         "skills": skill_summary(state, public=False),
         "lessons": recent_lessons(state),
         "resources": library_view(),
+        "courses": index(),
         "recent_interviews": [
             {
                 "question": i.question.question,
@@ -218,8 +221,32 @@ def register_dashboard(app, runtime_factory):
             return jsonify(data)
         except DashboardDenied as exc:
             return jsonify(error=str(exc)), 403
-        except (ConfigurationError, ValidationError, *STORAGE_ERRORS):
+        except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
             return jsonify(error="Private progress is temporarily unavailable. Try Refresh shortly."), 503
+
+    @app.post("/app/course")
+    def dashboard_course():
+        from skillcoach.catalog import TOPICS
+        from skillcoach.course_library import page
+
+        try:
+            runtime = runtime_factory()
+            body = request.get_json(silent=True)
+            if request.args or not isinstance(body, dict) or set(body) != {"init_data", "topic"}:
+                raise DashboardDenied("Open this course from the bot.")
+            actor, issued = verify_init_data(
+                body["init_data"], runtime.config.telegram_token, int(runtime.clock().timestamp())
+            )
+            digest = hashlib.sha256(body["init_data"].encode()).hexdigest()
+            with runtime.repo.session():
+                authorize_learner(runtime.repo, actor, issued, digest)
+            if not isinstance(body["topic"], str) or body["topic"] not in TOPICS:
+                return jsonify(error="Choose a topic from the lesson library."), 404
+            return jsonify(lesson=page(body["topic"]), auth_expires_at=issued + MAX_AUTH_AGE, private=True)
+        except DashboardDenied as exc:
+            return jsonify(error=str(exc)), 403
+        except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
+            return jsonify(error="This stored course is unavailable. Try again shortly."), 503
 
     @app.post("/app/lesson")
     def dashboard_lesson():
@@ -244,7 +271,7 @@ def register_dashboard(app, runtime_factory):
             return jsonify(lesson=data, auth_expires_at=issued + MAX_AUTH_AGE, private=True)
         except DashboardDenied as exc:
             return jsonify(error=str(exc)), 403
-        except (ConfigurationError, ValidationError, *STORAGE_ERRORS):
+        except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
             return jsonify(error="This lesson is temporarily unavailable. Try again shortly."), 503
 
     def document_identity(runtime):

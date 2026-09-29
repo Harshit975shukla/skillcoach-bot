@@ -123,7 +123,19 @@ def create_app(runtime=None):
             if current.config.owner_id <= 0:
                 return jsonify(error="not_configured"), 503
             current.repo.read()
-            return jsonify(service="skillcoach", ready=True, private_storage=True)
+            from skillcoach.course_library import index
+
+            courses = index()
+            return jsonify(
+                service="skillcoach",
+                ready=True,
+                private_storage=True,
+                courses={
+                    "version": courses["version"],
+                    "topics": courses["total"],
+                    "modules": len(courses["modules"]),
+                },
+            )
         except ConfigurationError:
             log.error("configuration_unavailable")
             return jsonify(error="not_configured"), 503
@@ -133,6 +145,9 @@ def create_app(runtime=None):
         except ValidationError:
             log.error("private_state_invalid")
             return jsonify(error="state_unavailable"), 503
+        except ExternalError:
+            log.error("course_content_unavailable")
+            return jsonify(error="course_content_unavailable"), 503
 
     @app.post("/")
     @app.post("/api/webhook")

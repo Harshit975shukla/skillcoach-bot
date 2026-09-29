@@ -205,13 +205,15 @@ def canonical_response(text):
     return json.dumps(body)
 
 
-def asset_key(storyboard: Storyboard, learner_id: str, *, voice: bool, shared_reviewed=False):
+def asset_key(
+    storyboard: Storyboard, learner_id: str, *, voice: bool, shared_reviewed=False, shared_library=False
+):
     data = {
         "storyboard": storyboard.model_dump(),
         "voice": voice,
         "renderer": RENDERER_VERSION,
         "narrator": NARRATOR_VERSION,
-        "scope": "shared-reviewed" if shared_reviewed else learner_id,
+        "scope": "shared-reviewed" if shared_reviewed else "shared-library" if shared_library else learner_id,
     }
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 

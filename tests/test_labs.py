@@ -211,7 +211,7 @@ def test_approved_lesson_assigns_required_lab_and_grandfathered_plans_get_none(h
     h = harness
     h.clock.now = datetime(2026, 9, 28, 8, tzinfo=IST)
     from test_flows import READINESS
-    from test_journey import core_guide, setup
+    from test_journey import setup
 
     setup(h)
     for index in range(4):
@@ -227,7 +227,6 @@ def test_approved_lesson_assigns_required_lab_and_grandfathered_plans_get_none(h
     if grandfathered:
         # Plans approved before labs existed deserialize with labs_enabled=False.
         h.repo.state.journey.plans[ident].labs_enabled = False
-    h.ai.responses.append(core_guide())
     callback(h, f"plan:{ident}:now")
     state = h.repo.state
     assert state.lessons

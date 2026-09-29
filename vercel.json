@@ -5,7 +5,8 @@
   },
   "functions": {
     "api/webhook.py": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "includeFiles": "skillcoach/course_data/**"
     }
   },
   "crons": [

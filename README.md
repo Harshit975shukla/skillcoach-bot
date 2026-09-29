@@ -1,5 +1,39 @@
 # SkillCoach Bot
 
+## Prewritten Cloud and DevOps library
+
+The 199-topic syllabus is bundled with the application as versioned JSON lesson packages in
+`skillcoach/course_data/2026-09-29/`. It is a maintained curriculum, not a claim to cover every vendor
+product. The private dashboard's **Lessons** section searches all modules and opens theory immediately;
+**My assigned lessons** keeps personal delivery history separate. `/read <topic_id>` reads the stored
+reference without creating tasks, grading answers, marking a lab complete or changing a plan.
+`/topics <module_id>` lists the IDs; `/learn <topic_id>` assigns the lesson's tracked exercises and video.
+
+Each package contains four concepts, worked practice, prerequisites/objectives, an end-to-end flow,
+cost/safety/cleanup, official references, interview practice and a subject-specific diagram/storyboard
+with its transcript. New content is **AI-assisted and not independently expert-reviewed**, explicitly
+labelled in the app. Previously reviewed exact-topic lessons retain their existing provenance. Links
+and technical examples should be checked against current vendor documentation; hypothetical exercises
+are not claims that a real deployment was performed. No roadmap.sh articles or diagrams are copied.
+
+Catalog-topic theory, core session pacing and storyboards require **no runtime AI or GitHub fetch**.
+Personalized planning, quizzes, feedback and free-form questions still use the configured AI providers.
+Legacy topic aliases and historical authored/AI lessons remain supported. New delivered library lessons
+record their topic ID and version; do not edit a released version in place or delete it while history
+references it. Publish a new version and retain the old content when revising a course.
+Keep prior IDs in `course_library.VERSIONS` when changing the default version.
+
+The diagram/transcript browser is not a prerecorded MP4 library. Animated Telegram videos remain the
+default and use the existing local renderer and delivery cache; Git holds their scripts, not video
+binaries. No new media-hosting service, paid account, database migration or scheduler change is needed.
+Once a bundled walkthrough is delivered, its bot-specific Telegram media ID is reusable across learners
+with the same voice/mode settings. Sharing a public course asset does not mark it expert-reviewed;
+personalized AI media stays learner-scoped.
+Course content in this public repository is public; private progress, answers and documents never belong
+in course packages. Opening the dashboard still requires current approved Telegram access.
+Authenticated readiness checks validate every bundled module and report the installed curriculum
+version/counts, so a partial course-data upload cannot pass the deployment readiness gate.
+
 ## Safe learning updates and missed lessons
 
 `/recoverlesson` (or the specific unfinished-day button in `/plan`) explicitly resumes only unsent

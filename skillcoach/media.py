@@ -136,6 +136,8 @@ def deliver_storyboard(telegram, body, budget, *, before_send, cached=None):
     caption += (
         "\nReviewed authored explanation."
         if body.get("shared_reviewed")
+        else "\nPrewritten AI-assisted explanation; not independently expert-reviewed."
+        if body.get("shared_library")
         else "\nAI-generated explanation; verify against the lesson references."
     )
     caption += (

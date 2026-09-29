@@ -441,6 +441,8 @@ class Service:
         from skillcoach import lesson_delivery as delivery
         from skillcoach.catalog import find_topic
         from skillcoach.content_checks import CURRENT_ACTIONS, finalize_lesson, lesson_validator
+        from skillcoach.course_library import VERSION, get_package
+        from skillcoach.curriculum import reviewed_entry
         from skillcoach.lessons import architecture
         from skillcoach.storyboard import Storyboard, reviewed_architecture
 
@@ -459,10 +461,13 @@ class Service:
             )
             return
         authored = get_lesson(topic)
+        package = get_package(entry[0]) if entry and reviewed_entry(topic) is None else None
         fallback = module.reference if module else None
         level = study_plan.level if study_plan else (self.state.profile.level if self.state.profile else None)
         lesson = (
-            Lesson.model_validate(authored)
+            package.lesson
+            if package
+            else Lesson.model_validate(authored)
             if authored
             else finalize_lesson(
                 self.structured(
@@ -507,14 +512,26 @@ class Service:
         if session is not None and study_plan is not None:
             from skillcoach.pacing import build_session
 
-            guide, reading = build_session(self, lesson, session, study_plan, topic)
+            guide, reading = build_session(self, lesson, session, study_plan, topic, package=package)
             tasks = guide.tasks
         self.say(
             delivery.mission(lesson, day, guide, reading, session, study_plan),
             md=True,
             buttons=delivery.open_buttons(self.config.private_dashboard_url, ident),
         )
-        if self.state.media == "static":
+        if package:
+            self.messages.append(
+                {
+                    "kind": "media",
+                    "mode": self.state.media,
+                    "voice": self.state.voice and self.config.narration_enabled,
+                    "caption": "Prewritten walkthrough: " + lesson.title,
+                    "storyboard": package.storyboard.model_dump(mode="json"),
+                    "shared_reviewed": False,
+                    "shared_library": True,
+                }
+            )
+        elif self.state.media == "static":
             self.messages.append(
                 {
                     "kind": "media",
@@ -576,11 +593,12 @@ class Service:
         self.state.lessons[key] = {
             "topic": topic,
             "date": day.isoformat(),
-            "source": "authored" if authored else "AI",
+            "source": "library" if package else "authored" if authored else "AI",
             "prepared_at": self.now.isoformat(),
             "delivered_at": None,
             "id": ident,
             "job_id": self.job["id"],
+            **({"topic_id": entry[0], "library_version": VERSION} if package else {}),
         }
         self.messages[-1]["lesson_key"] = key
 
@@ -911,6 +929,10 @@ class Service:
             from skillcoach.resources import resources_text
 
             self.say(resources_text(arg))
+        elif cmd == "read":
+            from skillcoach.course_library import read_text
+
+            self.say(read_text(arg), md=True)
         elif cmd == "nextweek":
             if not arg:
                 self.say("Use /nextweek <preference>. Applies to the next week not already planned.")

@@ -291,4 +291,5 @@ def test_readiness_authenticates_before_reading_private_storage(harness, monkeyp
         "/health/ready", headers={"X-Telegram-Bot-Api-Secret-Token": harness.runtime.config.webhook_secret}
     )
     assert response.status_code == 200 and response.json["private_storage"] is True
+    assert response.json["courses"] == {"version": "2026-09-29", "topics": 199, "modules": 23}
     assert len(reads) == 1 and "profile" not in response.json

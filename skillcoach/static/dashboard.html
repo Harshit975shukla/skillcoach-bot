@@ -43,9 +43,26 @@
         <ol id="tasks" class="task-list"></ol>
       </section>
       <section id="lessons" aria-labelledby="lessons-heading">
-        <h2 id="lessons-heading">Recent lessons</h2>
-        <p class="section-description">Reread any lesson you received: every concept, the end-to-end flow, the exercises,
-          the interview answer checklist and the official references.</p>
+        <h2 id="lessons-heading">Your lesson library</h2>
+        <p class="section-description">Ready-to-read Cloud and DevOps courses. Explore ahead without waiting for a
+          daily delivery. Reading does not complete a tracked task or lab.</p>
+        <div class="resource-filters">
+          <div>
+            <label for="course-module">Module</label>
+            <select id="course-module"><option value="">All modules</option></select>
+          </div>
+          <div>
+            <label for="course-search">Find a lesson</label>
+            <input id="course-search" type="search" maxlength="160" autocomplete="off"
+              placeholder="e.g. Linux, routing, Kubernetes" aria-controls="course-list">
+          </div>
+        </div>
+        <p id="course-count" class="task-meta" role="status" aria-live="polite"></p>
+        <ol id="course-list" class="lesson-index"></ol>
+        <button id="course-more" type="button" hidden>Show more lessons</button>
+        <p id="course-notice" class="section-description"></p>
+        <h3>My assigned lessons</h3>
+        <p class="section-description">Your recent deliveries, with their original tracked exercises and completion status.</p>
         <ol id="lesson-list" class="lesson-index"></ol>
       </section>
       <section id="labs" aria-labelledby="labs-heading">

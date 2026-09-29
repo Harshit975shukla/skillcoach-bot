@@ -64,6 +64,8 @@ def feedback_buttons(ident: str):
 
 def review_note(lesson) -> str:
     if lesson.reviewed_at.startswith("AI-generated"):
+        if lesson.reviewed_at.startswith("AI-generated offline"):
+            return lesson.reviewed_at
         return (
             "AI-generated from official documentation prompts and automatically checked; not human-reviewed."
         )
@@ -96,7 +98,9 @@ def mission(lesson, day, guide=None, reading=None, session=None, plan=None) -> s
 def exercise_detail(task, session=None) -> str:
     detail = f"**Goal:** {task.goal}\n" + "\n".join(f"{i}. {step}" for i, step in enumerate(task.steps, 1))
     if session is not None:
-        detail = f"Approved objective: {session.objective}\nApproved practice: {session.practice}\n\n" + detail
+        detail = (
+            f"Approved objective: {session.objective}\nApproved practice: {session.practice}\n\n" + detail
+        )
     return detail
 
 
@@ -153,7 +157,8 @@ def full_reference(lesson, extension=(), *, topic="") -> str:
         parts.append(
             "**Optional extension practice** (outside today's time target; not tracked)\n\n"
             + "\n\n".join(
-                f"**{display_name(t.name)}**\n{t.goal}\n" + "\n".join(f"{i}. {s}" for i, s in enumerate(t.steps, 1))
+                f"**{display_name(t.name)}**\n{t.goal}\n"
+                + "\n".join(f"{i}. {s}" for i, s in enumerate(t.steps, 1))
                 for t in extension
             )
         )
@@ -177,6 +182,11 @@ def stored_lesson(repo, key, record):
     from skillcoach.content_checks import finalize_lesson
     from skillcoach.models import Lesson
 
+    if record.get("source") == "library":
+        from skillcoach.course_library import get_package
+
+        package = get_package(record["topic_id"], record["library_version"])
+        return package.lesson if package else None
     if record.get("source") == "authored":
         authored = get_lesson(record.get("topic", ""))
         return Lesson.model_validate(authored) if authored else None
@@ -199,6 +209,25 @@ def extension_tasks(lesson, tasks):
     return [t for t in lesson.tasks if t.name not in tracked]
 
 
+def reference_sections(lesson):
+    sections = [
+        {"heading": "Why it matters", "blocks": md_blocks(lesson.why)},
+        {"heading": "What it is", "blocks": md_blocks(lesson.what)},
+        *(
+            {"heading": f"{i}. {c.name}", "blocks": md_blocks(c.body)}
+            for i, c in enumerate(lesson.concepts, 1)
+        ),
+        {
+            "heading": "End to end",
+            "blocks": md_blocks("\n".join(f"{i}. {s}" for i, s in enumerate(lesson.e2e, 1))),
+        },
+        {"heading": "Key terms", "blocks": md_blocks("\n".join(f"- {t}" for t in lesson.key_terms))},
+        {"heading": "Cost and safety", "blocks": md_blocks(lesson.safety)},
+    ]
+    notes = [{"heading": "Cleanup", "blocks": md_blocks("\n".join(f"- {s}" for s in lesson.cleanup))}]
+    return sections, notes
+
+
 def page(repo, state, ident, now):
     from skillcoach.resources import related_view
 
@@ -216,21 +245,7 @@ def page(repo, state, ident, now):
             "exercises": [exercise_view(t) for t in tasks],
             "resources": related_view(record.get("topic", "")) if record.get("topic") else [],
         }
-    sections = [
-        {"heading": "Why it matters", "blocks": md_blocks(lesson.why)},
-        {"heading": "What it is", "blocks": md_blocks(lesson.what)},
-        *(
-            {"heading": f"{i}. {c.name}", "blocks": md_blocks(c.body)}
-            for i, c in enumerate(lesson.concepts, 1)
-        ),
-        {
-            "heading": "End to end",
-            "blocks": md_blocks("\n".join(f"{i}. {s}" for i, s in enumerate(lesson.e2e, 1))),
-        },
-        {"heading": "Key terms", "blocks": md_blocks("\n".join(f"- {t}" for t in lesson.key_terms))},
-        {"heading": "Cost and safety", "blocks": md_blocks(lesson.safety)},
-    ]
-    notes = [{"heading": "Cleanup", "blocks": md_blocks("\n".join(f"- {s}" for s in lesson.cleanup))}]
+    sections, notes = reference_sections(lesson)
     extension = extension_tasks(lesson, tasks)
     return {
         "id": ident,

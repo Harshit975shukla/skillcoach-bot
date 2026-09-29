@@ -156,9 +156,14 @@ def test_asset_cache_keys_separate_private_learners_and_voice_preferences():
     assert asset_key(story, "a", voice=True, shared_reviewed=True) == asset_key(
         story, "b", voice=True, shared_reviewed=True
     )
+    shared = asset_key(story, "a", voice=True, shared_library=True)
+    assert shared == asset_key(story, "b", voice=True, shared_library=True)
+    assert shared != asset_key(story, "a", voice=True, shared_reviewed=True)
+    assert shared != asset_key(story, "a", voice=True)
+    assert shared != asset_key(story, "a", voice=False, shared_library=True)
 
 
-def test_voice_controls_topics_and_generated_topic_storyboards(harness):
+def test_voice_controls_topics_and_stored_topic_storyboards(harness):
     from test_flows import command
 
     command(harness, "/voice off")
@@ -166,15 +171,12 @@ def test_voice_controls_topics_and_generated_topic_storyboards(harness):
     assert not harness.repo.state.voice
     assert any("Kubernetes" in text for text, _ in harness.telegram.messages)
     topic_id = next(key for key in TOPICS if key.startswith("automation/"))
-    lesson = json.loads(json.dumps(LESSONS["ec2"]))
-    lesson["title"] = TOPICS[topic_id][1]
-    lesson["reviewed_at"] = "AI-generated; not independently reviewed"
-    harness.ai.responses.extend([lesson, reviewed_architecture("ec2").model_dump()])
     command(harness, "/learn " + topic_id)
-    assert len(harness.repo.state.tasks) == 3
+    assert len(harness.repo.state.tasks) == 4
     media = [item["body"] for item in harness.repo.outbox.values() if item["body"]["kind"] == "media"]
     assert len(media) == 1 and all(not item["voice"] and not item["shared_reviewed"] for item in media)
-    assert any("storyboard:architecture" in key[1] for key in harness.repo.cache_data)
+    assert media[0]["shared_library"] and not harness.ai.calls
+    assert not any("storyboard:architecture" in key[1] for key in harness.repo.cache_data)
     assert not any("storyboard:concept" in key[1] for key in harness.repo.cache_data)
 
 
@@ -360,5 +362,7 @@ def test_private_media_cache_is_scoped_and_reviewed_assets_can_be_reused(pg_repo
         assert b.media_asset("private-key") is None
         a.save_media_asset("reviewed-key", asset, token, shared_reviewed=True)
         assert b.media_asset("reviewed-key")["file_id"] == "fake-private-video"
+        a.save_media_asset("library-key", asset, token, shared_library=True)
+        assert b.media_asset("library-key")["file_id"] == "fake-private-video"
     finally:
         pg_repo.release("delivery", token)

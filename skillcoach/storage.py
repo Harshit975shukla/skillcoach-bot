@@ -620,7 +620,9 @@ class Repository:
             ).fetchone()
             return row
 
-    def save_media_asset(self, key: str, artifact: dict, token: str, *, shared_reviewed=False):
+    def save_media_asset(
+        self, key: str, artifact: dict, token: str, *, shared_reviewed=False, shared_library=False
+    ):
         with self.connection() as conn:
             self._fence(conn, "delivery", token)
             self._ensure_access(conn)
@@ -629,7 +631,7 @@ class Repository:
                 "ON CONFLICT(asset_key) DO NOTHING",
                 (
                     key,
-                    None if shared_reviewed else self.learner_id,
+                    None if shared_reviewed or shared_library else self.learner_id,
                     artifact["file_id"],
                     artifact["kind"],
                     Jsonb(artifact["metadata"]),

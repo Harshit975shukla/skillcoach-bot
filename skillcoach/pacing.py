@@ -32,13 +32,15 @@ def reviewed_session(entry, lesson, count, practice):
     )
 
 
-def build_session(service, lesson, session, plan, topic=None):
+def build_session(service, lesson, session, plan, topic=None, *, package=None):
     from skillcoach.content_checks import CURRENT_ACTIONS, upgrade_model, validate_guide
     from skillcoach.curriculum import reviewed_entry
 
     minutes = plan.minutes
     reading, count, text_limit = PACING[minutes]
     practice = minutes - reading
+    if package is not None:
+        return reviewed_session({"core": package.core}, lesson, count, practice), reading
     entry = reviewed_entry(topic or lesson.title)
     if entry is not None and len(lesson.tasks) >= count:
         return reviewed_session(entry, lesson, count, practice), reading

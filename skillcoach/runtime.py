@@ -196,6 +196,7 @@ class Runtime:
                             scoped.learner_id,
                             voice=body.get("voice", False) and body["mode"] == "video",
                             shared_reviewed=body.get("shared_reviewed", False),
+                            shared_library=body.get("shared_library", False),
                         )
                         key += ":" + body["mode"]
                         cached = scoped.media_asset(key)
@@ -209,7 +210,11 @@ class Runtime:
                             raise
                         if not cached:
                             scoped.save_media_asset(
-                                key, artifact, token, shared_reviewed=body.get("shared_reviewed", False)
+                                key,
+                                artifact,
+                                token,
+                                shared_reviewed=body.get("shared_reviewed", False),
+                                shared_library=body.get("shared_library", False),
                             )
                     else:
                         deliver_media(telegram, body, budget, before_send=authorize_send)
