@@ -269,7 +269,14 @@ def test_learner_view_only_queries_selected_recipient_and_obeys_consent(config, 
     assert calls[0][1] == ("u_abcdef123456",)
     assert len(calls) == (2 if consent else 1)
     if consent:
-        assert calls[1][1] == ("u_abcdef123456", "100", "100", PAGE_SIZE + 1, "u_abcdef123456")
+        assert calls[1][1] == (
+            "u_abcdef123456",
+            "u_abcdef123456",
+            "100",
+            "100",
+            PAGE_SIZE + 1,
+            "u_abcdef123456",
+        )
     assert "private goal" not in json.dumps(response)
     assert response["learning"]["shared"] is consent
 

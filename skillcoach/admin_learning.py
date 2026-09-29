@@ -234,8 +234,10 @@ def learner_detail(runtime, learner, lesson_before, delivery_before):
         result["lessons"], result["lesson_next"] = lesson_history(state, lesson_before)
         rows = conn.execute(
             "WITH recent AS (SELECT id,sequence,status AS job_status,created_at,available_at,"
-            "payload->>'type' AS kind,payload->>'kind' AS scheduled_kind FROM jobs "
-            "WHERE learner_id=%s AND (%s::bigint IS NULL OR sequence<%s::bigint) "
+            "payload->>'type' AS kind,payload->>'kind' AS scheduled_kind FROM jobs j "
+            "WHERE (learner_id=%s OR EXISTS (SELECT 1 FROM outbox recipient "
+            "WHERE recipient.job_id=j.id AND recipient.learner_id=%s)) "
+            "AND (%s::bigint IS NULL OR sequence<%s::bigint) "
             "ORDER BY sequence DESC LIMIT %s) "
             "SELECT j.*,count(o.id) AS total,count(o.id) FILTER (WHERE o.status='sent') AS sent,"
             "count(o.id) FILTER (WHERE o.status='pending') AS pending,"
@@ -246,7 +248,7 @@ def learner_detail(runtime, learner, lesson_before, delivery_before):
             "FROM recent j LEFT JOIN outbox o ON o.job_id=j.id AND o.learner_id=%s "
             "GROUP BY j.id,j.sequence,j.job_status,j.created_at,j.available_at,j.kind,j.scheduled_kind "
             "ORDER BY j.sequence DESC",
-            (learner, delivery_before, delivery_before, PAGE_SIZE + 1, learner),
+            (learner, learner, delivery_before, delivery_before, PAGE_SIZE + 1, learner),
         ).fetchall()
         result["deliveries"] = [delivery_view(row) for row in rows[:PAGE_SIZE]]
         if len(rows) > PAGE_SIZE:

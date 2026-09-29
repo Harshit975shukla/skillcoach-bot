@@ -203,6 +203,12 @@ def test_owner_learning_review_is_readonly_and_scoped_to_selected_learner(admin)
             "SELECT count(*) AS n FROM outbox WHERE learner_id=%s AND status='sent'",
             (first.learner_id,),
         ).fetchone()["n"]
+        routed = conn.execute(
+            "SELECT count(*) AS n FROM outbox o JOIN jobs j ON j.id=o.job_id "
+            "WHERE o.learner_id=%s AND j.learner_id<>o.learner_id AND o.status='sent'",
+            (first.learner_id,),
+        ).fetchone()["n"]
+    assert routed > 0  # The owner's approval job sends a welcome notice to the learner.
     assert sum(item["messages"]["sent"] for item in response.json["deliveries"]) == expected
     assert before == (first.read(), second.read())
     admin.bot.save(first, lambda state: setattr(state.journey, "consent_at", None))
