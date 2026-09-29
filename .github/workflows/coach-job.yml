@@ -25,6 +25,10 @@ on:
         required: false
         type: string
         default: ""
+      not_before:
+        required: false
+        type: string
+        default: ""
 permissions:
   contents: read
   actions: read
@@ -34,7 +38,8 @@ concurrency:
 jobs:
   coach:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Slot-triggered runs start up to 100 minutes early and sleep until the exact IST slot.
+    timeout-minutes: ${{ inputs.not_before != '' && 125 || 20 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -83,6 +88,24 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python tests/verify_storytelling.py
+      - name: Wait for the exact IST slot
+        if: inputs.not_before != ''
+        env:
+          NOT_BEFORE: ${{ inputs.not_before }}
+        run: |
+          if ! [[ "$NOT_BEFORE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+            echo "::error::not_before must be a UTC instant such as 2026-09-29T03:30:00Z"
+            exit 1
+          fi
+          WAIT=$(( $(date -u -d "$NOT_BEFORE" +%s) - $(date -u +%s) ))
+          if [ "$WAIT" -gt 6000 ]; then
+            echo "::error::not_before is more than 100 minutes ahead"
+            exit 1
+          fi
+          if [ "$WAIT" -gt 0 ]; then
+            echo "Waiting ${WAIT}s until $NOT_BEFORE"
+            sleep "$WAIT"
+          fi
       - name: Capture intended run timestamp
         env:
           GH_TOKEN: ${{ github.token }}

@@ -204,9 +204,11 @@ Cutover verification on 2026-09-25 passed 73 tests including real PostgreSQL int
 | Weekly review and next plan | Sunday 10:00 | `30 4 * * 0` | `sunday_plan.py` |
 | Pending work recovery | Every five minutes | `*/5 * * * *` | `python -m skillcoach.cli recover` |
 
+**On-time trigger.** GitHub's `schedule:` events have started this repository's runs 5-7 hours late (a Monday 18:00 quiz ran after midnight). Vercel crons in `vercel.json` therefore call the authenticated `GET /cron/<lesson|quiz|weekly|review>` endpoint once a day during the hour before each slot (`0 2 * * 1-5`, `0 11 * * 1-5`, `0 2 * * 6`, `0 3 * * 0` UTC; Hobby fires anywhere within that hour). The endpoint reads no learner state: it verifies `Authorization: Bearer <CRON_SECRET>`, then dispatches the matching workflow on `main` with the slot's IST `date` and a `not_before` UTC instant. The worker installs its tools, sleeps until exactly the slot (refusing waits over 100 minutes), then runs. The GitHub crons above remain as a backup: every per-learner schedule key is idempotent, so whichever run is second is a no-op. Vercel crons run only for the production deployment and are not retried, so a missed cron still falls back to the delayed GitHub run. The waiting runner time is free on this public repository.
+
 These are intended times, not delivery guarantees. GitHub can delay/drop scheduled runs; schedules run only from the default branch and public-repository schedules can be disabled after 60 days without repository activity. Dashboard-repository commits do **not** keep this bot's workflows enabled. Monitor/re-enable workflows and use manual recovery when needed. Five-minute recovery consumes Actions minutes; browser installation/video encoding can be significant. Empty/no-media work avoids the browser installation.
 
-Each schedule has a unique local-date receipt. Workflow reruns use the original run creation timestamp; weekend operations are selected explicitly, never from the runner's current weekday. An operation-specific concurrency group keeps recovery from evicting a queued lesson. Messages from an earlier local date are suppressed rather than replayed as today's learning. If a schedule was dropped before GitHub created a run, select the intended date manually; a past-date run does not replay old notifications.
+Each schedule has a unique local-date receipt. A run without an explicit date takes the IST date of the latest slot at or before its original creation timestamp, so reruns and late runs keep their own slot: a quiz created after midnight is a stale no-op for the previous day instead of consuming the next day's quiz receipt; weekend operations are selected explicitly, never from the runner's current weekday. An operation-specific concurrency group keeps recovery from evicting a queued lesson. Messages from an earlier local date are suppressed rather than replayed as today's learning. If a schedule was dropped before GitHub created a run, select the intended date manually; a past-date run does not replay old notifications.
 
 ## Architecture and delivery semantics
 
@@ -500,6 +502,8 @@ See `.env.example`; environment variables are loaded at operation startup, not n
 | `DASHBOARD_REPO`, `DASHBOARD_PATH`, `DASHBOARD_URL` | Configured destination; no hard-coded personal repository or identity |
 | `LABS_ENABLED`, `LABS_TEMPLATE_REPO` | Hands-on labs kill switch (default `true`) and the public `owner/repository` code-lab template |
 | `LABS_GITHUB_TOKEN` | Optional secret: a fine-grained token with no repository permissions, used only for rate limits; never `GH_PAT` |
+| `CRON_SECRET` | Vercel-only secret (at least 32 random characters) that Vercel sends as `Authorization: Bearer ...` to `/cron/*`; unset or short fails closed |
+| `SCHEDULER_REPO`, `SCHEDULER_GITHUB_TOKEN` | Vercel-only: this bot's `owner/repository` and a token allowed to dispatch its workflows (Actions: write). The token falls back to `GITHUB_TOKEN` |
 
 At least one AI provider is needed for generated coaching. Model quotas/free tiers are not promised. GitHub `DASHBOARD_*` and model settings are repository variables; database/Telegram/AI/PAT values are secrets. No secrets are needed for offline tests.
 

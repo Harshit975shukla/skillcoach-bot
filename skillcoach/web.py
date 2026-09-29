@@ -104,6 +104,13 @@ def create_app(runtime=None):
     def health():
         return jsonify(service="skillcoach", live=True)
 
+    @app.get("/cron/<kind>")
+    def cron(kind):
+        from skillcoach.scheduler import trigger
+
+        body, status = trigger(kind, request.headers.get("Authorization", ""))
+        return jsonify(body), status
+
     @app.get("/health/ready")
     def readiness():
         try:

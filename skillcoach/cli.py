@@ -14,8 +14,9 @@ from skillcoach.clients import Budget, ExternalError
 from skillcoach.config import ConfigurationError
 from skillcoach.migration import dry_run, load_snapshot
 from skillcoach.runtime import STORAGE_ERRORS, Runtime
+from skillcoach.scheduler import slot_date
 from skillcoach.storage import MembershipChanged, Repository
-from skillcoach.timeutil import IST, now_ist, requested_quiz_payload
+from skillcoach.timeutil import now_ist, requested_quiz_payload
 from skillcoach.web import authorized_update
 
 
@@ -185,7 +186,13 @@ def main(argv=None):
         elif args.command == "schedule":
             if args.at and args.at.tzinfo is None:
                 raise ValueError("--at must include a timezone")
-            intended = args.date or (args.at.astimezone(IST).date() if args.at else now_ist().date())
+            if args.date:
+                intended = args.date
+            elif args.at:
+                # A late scheduled run keeps its slot's date; it never claims the next slot's key.
+                intended = slot_date(args.kind, args.at)
+            else:
+                intended = now_ist().date()
             schedule(runtime, args.kind, intended, media=not args.no_media)
         counts = runtime.repo.status(all_learners=True)
         print(json.dumps(counts))

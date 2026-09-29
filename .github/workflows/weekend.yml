@@ -14,7 +14,10 @@ on:
         type: choice
         options: [weekly, review]
       date:
-        description: "Intended IST date YYYY-MM-DD (blank uses run creation date)"
+        description: "Intended IST date YYYY-MM-DD (blank: latest slot at or before run creation)"
+        required: false
+      not_before:
+        description: "Internal: UTC instant to wait for, set by the Vercel slot trigger"
         required: false
 jobs:
   assessment:
@@ -23,6 +26,7 @@ jobs:
     with:
       kind: weekly
       intended_date: ${{ inputs.date || '' }}
+      not_before: ${{ inputs.not_before || '' }}
     secrets: inherit
   review:
     if: github.event.schedule == '30 4 * * 0' || (github.event_name == 'workflow_dispatch' && inputs.kind == 'review')
@@ -30,4 +34,5 @@ jobs:
     with:
       kind: review
       intended_date: ${{ inputs.date || '' }}
+      not_before: ${{ inputs.not_before || '' }}
     secrets: inherit

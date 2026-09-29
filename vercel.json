@@ -7,5 +7,11 @@
     "api/webhook.py": {
       "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    { "path": "/cron/lesson", "schedule": "0 2 * * 1-5" },
+    { "path": "/cron/quiz", "schedule": "0 11 * * 1-5" },
+    { "path": "/cron/weekly", "schedule": "0 2 * * 6" },
+    { "path": "/cron/review", "schedule": "0 3 * * 0" }
+  ]
 }

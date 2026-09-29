@@ -8,7 +8,10 @@ on:
   workflow_dispatch:
     inputs:
       date:
-        description: "Intended IST date YYYY-MM-DD (blank uses run creation date)"
+        description: "Intended IST date YYYY-MM-DD (blank: latest slot at or before run creation)"
+        required: false
+      not_before:
+        description: "Internal: UTC instant to wait for, set by the Vercel slot trigger"
         required: false
 jobs:
   lesson:
@@ -16,4 +19,5 @@ jobs:
     with:
       kind: lesson
       intended_date: ${{ inputs.date || '' }}
+      not_before: ${{ inputs.not_before || '' }}
     secrets: inherit

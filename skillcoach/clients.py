@@ -109,7 +109,10 @@ class HTTP:
                         if size > 2_000_000:
                             raise ExternalError("response_too_large", retryable=False)
                         chunks.append(chunk)
-                    return response.status_code, json.loads(b"".join(chunks))
+                    body = b"".join(chunks)
+                    if response.status_code == 204 and not body:
+                        return 204, None
+                    return response.status_code, json.loads(body)
             except requests.RequestException:
                 error = ExternalError("network_unavailable")
             except (ValueError, UnicodeError):
