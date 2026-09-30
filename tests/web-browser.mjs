@@ -177,8 +177,15 @@ try {
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => document.querySelector("#feed .message.mine.failed .retry"));
     assert.equal(await page.$eval("#message", e => e.value), "");
+    // The retry must be visible, not hidden behind the docked composer and its shortcuts.
+    assert.equal(await page.evaluate(() => {
+      const retry = document.querySelector("#feed .message.mine.failed .retry"), box = retry.getBoundingClientRect();
+      return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === retry;
+    }), true, "Try again is covered");
+    const sendsBeforeRetry = state.sends.length;
     await page.click("#feed .message.mine.failed .retry");
     await page.waitForFunction(() => document.getElementById("feed").textContent.includes("Reply to /today"));
+    assert.equal(state.sends.length, sendsBeforeRetry + 1);
     const [failed, retried] = state.sends.slice(-2);
     assert.equal(failed.request_id, retried.request_id);
     assert.deepEqual(retried, {request_id: failed.request_id, text: "/today"});

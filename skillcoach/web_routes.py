@@ -18,7 +18,6 @@ def register_web(app, runtime_factory):
         WebCodeIncorrect,
         WebDenied,
         WebLimited,
-        WebUnavailable,
         accept_web,
         authenticate,
         csrf_token,
@@ -46,8 +45,6 @@ def register_web(app, runtime_factory):
                 return jsonify(error=str(exc)), 429
             except WebDenied as exc:
                 return jsonify(error=str(exc)), 403
-            except WebUnavailable as exc:
-                return jsonify(error=str(exc)), 503
             except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
                 return jsonify(error="SkillCoach is temporarily unavailable. Try again shortly."), 503
 

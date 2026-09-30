@@ -11,6 +11,7 @@ import hmac
 import logging
 import re
 import secrets
+import time
 from datetime import timedelta
 from urllib.parse import parse_qsl, urlsplit
 
@@ -23,6 +24,10 @@ LOGIN_COOKIE = "__Host-skillcoach-web-login"
 SESSION_SECONDS = 14 * 24 * 3600
 CODE_SECONDS = 600
 CODE_ATTEMPTS = 5
+# Every sign-in request takes at least this long, covering a typical SMTP send.
+START_FLOOR_SECONDS = 4.0
+MAX_SENDS_PER_HOUR = 60
+MAX_UNKNOWN_PER_HOUR = 500
 FEED_PAGE = 40
 TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
 REQUEST_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -48,10 +53,6 @@ class WebCodeIncorrect(WebDenied):
 
 
 class WebLimited(WebDenied):
-    pass
-
-
-class WebUnavailable(RuntimeError):
     pass
 
 
@@ -106,9 +107,19 @@ def code_email(code: str, config) -> str:
     )
 
 
+def pad_response(started: float, floor: float, sleep=time.sleep):
+    """Give every sign-in request the same minimum duration, so timing does not reveal whether an
+    address is registered (an email is only sent for registered ones)."""
+    remaining = floor - (time.monotonic() - started)
+    if remaining > 0:
+        sleep(remaining)
+
+
 def start_login(runtime, raw_email):
-    """Create a browser-bound login and email a six-digit code. Unknown addresses get the same
-    response and no email, so the form does not reveal who is registered."""
+    """Create a browser-bound login and email a six-digit code. Every valid address gets the same
+    answer after at least the same time, with the same limits, and only registered, active
+    learners receive an email, so the form does not reveal who is registered."""
+    started = time.monotonic()
     config, now = runtime.config, runtime.clock()
     email = normalize_email(raw_email)
     if email is None:
@@ -117,23 +128,19 @@ def start_login(runtime, raw_email):
     identifier, verifier = secrets.token_urlsafe(18), secrets.token_urlsafe(32)
     code = f"{secrets.randbelow(10**6):06d}"
     expires = now + timedelta(seconds=CODE_SECONDS)
+    hour = now - timedelta(hours=1)
     with runtime.repo.connection() as conn:
         # Serializes rate-limit checks across concurrent requests; no network call happens here.
         conn.execute("SELECT id FROM learners WHERE id='owner' FOR UPDATE")
+        conn.execute("DELETE FROM web_logins WHERE requested_at<%s", (now - timedelta(days=2),))
         counts = conn.execute(
             "SELECT count(*) FILTER (WHERE email_hash=%s AND requested_at>%s) AS hourly, "
             "count(*) FILTER (WHERE email_hash=%s) AS daily, "
             "max(requested_at) FILTER (WHERE email_hash=%s) AS latest, "
-            "count(*) FILTER (WHERE requested_at>%s) AS everyone "
+            "count(*) FILTER (WHERE requested_at>%s AND notified) AS sent, "
+            "count(*) FILTER (WHERE requested_at>%s AND learner_id IS NULL) AS unknown "
             "FROM web_logins WHERE requested_at>%s",
-            (
-                email_hash,
-                now - timedelta(hours=1),
-                email_hash,
-                email_hash,
-                now - timedelta(hours=1),
-                now - timedelta(days=1),
-            ),
+            (email_hash, hour, email_hash, email_hash, hour, hour, now - timedelta(days=1)),
         ).fetchone()
         if (
             (counts["latest"] and counts["latest"] > now - timedelta(seconds=60))
@@ -143,9 +150,17 @@ def start_login(runtime, raw_email):
             raise WebLimited(
                 "Codes are limited to one a minute, five an hour and ten a day. Try again later."
             )
-        if counts["everyone"] >= 60:
+        if counts["unknown"] >= MAX_UNKNOWN_PER_HOUR:
+            # Bounds storage during a flood of made-up addresses. Every address gets this answer, so
+            # it reveals nothing; browsers that are already signed in keep working.
+            log.warning("web_sign_in_flood_limit_reached")
             raise WebLimited("Too many sign-in requests right now. Try again in a few minutes.")
         member = learner_for_email(conn, config, email)
+        # Only real sends count toward the overall email limit, so made-up addresses cannot use it
+        # up. Past it, registered addresses get the usual answer but no email until it frees up.
+        send = bool(member) and counts["sent"] < MAX_SENDS_PER_HOUR
+        if member and not send:
+            log.warning("web_code_send_limit_reached")
         conn.execute(
             "UPDATE web_logins SET status='rejected' WHERE email_hash=%s AND status='pending'", (email_hash,)
         )
@@ -157,24 +172,24 @@ def start_login(runtime, raw_email):
                 email_hash,
                 member["id"] if member else None,
                 digest(verifier),
-                keyed(config, "code", f"{identifier}:{code}") if member else None,
+                keyed(config, "code", f"{identifier}:{code}") if send else None,
                 now,
                 expires,
             ),
         )
-    if member:
-        # One bounded send outside all DB locks. A failed send invalidates the code; never resend it.
+    if send:
+        # One bounded send outside all DB locks. A failed send invalidates the code and is never
+        # retried; the response stays the same so a failure does not reveal the address.
         try:
             runtime.email.send(email, "Your SkillCoach sign-in code", code_email(code, config), Budget(15))
         except ExternalError as exc:
             with runtime.repo.connection() as conn:
                 conn.execute("UPDATE web_logins SET status='rejected' WHERE id=%s", (identifier,))
             log.warning("web_code_delivery_failed code=%s", exc.code)
-            raise WebUnavailable(
-                "The sign-in email could not be sent. Wait a minute and ask for a new code."
-            ) from None
-        with runtime.repo.connection() as conn:
-            conn.execute("UPDATE web_logins SET notified=true WHERE id=%s", (identifier,))
+        else:
+            with runtime.repo.connection() as conn:
+                conn.execute("UPDATE web_logins SET notified=true WHERE id=%s", (identifier,))
+    pad_response(started, START_FLOOR_SECONDS)
     return {
         "pending": True,
         "expires_at": expires.isoformat(),
@@ -216,9 +231,9 @@ def verify_login(runtime, verifier, code):
             token = secrets.token_urlsafe(32)
             expires = now + timedelta(seconds=SESSION_SECONDS)
             conn.execute(
-                "INSERT INTO web_sessions(token_hash,learner_id,access_generation,expires_at) "
-                "VALUES (%s,%s,%s,%s)",
-                (digest(token), member["id"], member["generation"], expires),
+                "INSERT INTO web_sessions(token_hash,learner_id,access_generation,email_hash,expires_at) "
+                "VALUES (%s,%s,%s,%s,%s)",
+                (digest(token), member["id"], member["generation"], row["email_hash"], expires),
             )
             result = token, expires, member
         else:
@@ -246,12 +261,16 @@ def authenticate(request, runtime, *, mutate=False):
         raise WebDenied("Sign in with your email to continue.")
     with runtime.repo.connection() as conn:
         row = conn.execute(
-            "SELECT s.learner_id,s.expires_at,s.access_generation,l.status,l.generation,l.display_name "
-            "FROM web_sessions s JOIN learners l ON l.id=s.learner_id "
+            "SELECT s.learner_id,s.expires_at,s.access_generation,s.email_hash,l.email,l.status,"
+            "l.generation,l.display_name FROM web_sessions s JOIN learners l ON l.id=s.learner_id "
             "WHERE s.token_hash=%s AND s.expires_at>%s",
             (digest(token), runtime.clock()),
         ).fetchone()
     if not row or row["status"] != "active" or row["generation"] != row["access_generation"]:
+        raise WebDenied("Your session ended. Sign in again with your email.")
+    # A session only lasts while the address it signed in with is still the learner's address.
+    address = runtime.config.owner_email if row["learner_id"] == "owner" else row["email"]
+    if not address or not hmac.compare_digest(row["email_hash"], keyed(runtime.config, "email", address)):
         raise WebDenied("Your session ended. Sign in again with your email.")
     if mutate:
         same_origin(request)
@@ -399,7 +418,10 @@ def feed_item(row, config) -> dict:
     from skillcoach.formatting import md_blocks
 
     body = row["body"]
-    item = {"id": row["sequence"], "at": row["delivered_at"].isoformat() if row["delivered_at"] else None}
+    item = {
+        "id": row["delivered_seq"],
+        "at": row["delivered_at"].isoformat() if row["delivered_at"] else None,
+    }
     if body.get("kind") == "media":
         return {**item, "kind": "text", "text": MEDIA_NOTE, "buttons": []}
     text = str(body.get("text", ""))
@@ -420,21 +442,26 @@ def feed_item(row, config) -> dict:
 
 
 def feed(repo, session, config, *, after=None, before=None) -> dict:
-    """The learner's delivered messages in order, from the current access generation only."""
+    """The learner's delivered messages in delivery order, from the current access generation
+    only. Cursors are delivery positions, so a message that is retried or recovered after newer
+    ones still appears after the cursor the browser already has."""
     params = [session["learner_id"], session["access_generation"]]
-    where = "learner_id=%s AND access_generation=%s AND status='sent' AND body->>'kind' IN ('text','media')"
+    where = (
+        "learner_id=%s AND access_generation=%s AND status='sent' AND delivered_seq IS NOT NULL "
+        "AND body->>'kind' IN ('text','media')"
+    )
     with repo.connection(readonly=True) as conn:
         if after is not None:
             rows = conn.execute(
-                f"SELECT sequence,body,delivered_at FROM outbox WHERE {where} AND sequence>%s "
-                "ORDER BY sequence LIMIT %s",
+                f"SELECT delivered_seq,body,delivered_at FROM outbox WHERE {where} AND delivered_seq>%s "
+                "ORDER BY delivered_seq LIMIT %s",
                 (*params, after, FEED_PAGE),
             ).fetchall()
         else:
             rows = conn.execute(
-                f"SELECT sequence,body,delivered_at FROM outbox WHERE {where} "
-                + ("AND sequence<%s " if before is not None else "")
-                + "ORDER BY sequence DESC LIMIT %s",
+                f"SELECT delivered_seq,body,delivered_at FROM outbox WHERE {where} "
+                + ("AND delivered_seq<%s " if before is not None else "")
+                + "ORDER BY delivered_seq DESC LIMIT %s",
                 (*params, *([before] if before is not None else []), FEED_PAGE),
             ).fetchall()[::-1]
         working = conn.execute(

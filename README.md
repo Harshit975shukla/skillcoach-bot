@@ -806,15 +806,21 @@ only the transport changes:
 
 - **Sign-in:** learners open `WEB_APP_URL/web`, enter the email their coach registered and type the
   six-digit code sent to it. Codes expire in 10 minutes, work once in the requesting browser, allow
-  five attempts and are limited to one a minute, five an hour and ten a day per address (60 an hour
-  overall). Unknown addresses get the same response and no email. Only keyed hashes of codes and
-  addresses are stored. Sessions last 14 days in a `__Host-` HttpOnly, Secure, SameSite=Strict cookie,
-  are bound to the learner's access generation (revocation ends them at once) and every change needs
-  the page's CSRF token and a same-origin request.
+  five attempts and are limited to one a minute, five an hour and ten a day per address. Every valid
+  address gets the same answer, with the same limits, after at least four seconds, and only registered
+  learners get an email, so the form does not reveal who is registered. Past 60 sign-in emails an hour,
+  registered addresses get the same answer without an email until the hour frees up; a flood of more
+  than 500 unknown addresses in an hour pauses new sign-ins for everyone (signed-in browsers keep
+  working), which bounds storage. A failed email invalidates that code. Only keyed hashes of codes and
+  addresses are stored, and sign-in records are deleted after two days. Sessions last 14 days in a
+  `__Host-` HttpOnly, Secure, SameSite=Strict cookie and end at once when the learner's access is
+  revoked or the address they signed in with changes (including `OWNER_EMAIL`). Every change needs the
+  page's CSRF token and a same-origin request.
 - **Conversation:** the page is the bot. Messages the coach would have sent to Telegram are shown in a
-  private inbox, with the same buttons: quiz answers stay bound to the current question, and a retry
-  reuses its request ID so nothing is processed twice. Typed commands and answers work as in Telegram.
-  Admin commands such as `/invite` are refused in the conversation; use the admin console.
+  private inbox, in the order they were delivered, so a message sent again by `/retry` or lesson
+  recovery also appears. Buttons work as in Telegram: quiz answers stay bound to the current question,
+  and a retry reuses its request ID so nothing is processed twice. Typed commands and answers work as in
+  Telegram. Admin commands such as `/invite` are refused in the conversation; use the admin console.
 - **Lessons:** "Open lesson page" shows the full lesson, exercises and step-by-step walkthrough in the
   browser. Web mode never renders video, so scheduled workers skip installing the renderer.
 - **Email:** each scheduled lesson, quiz, Saturday assessment, Sunday review and mentor note sends one
@@ -828,11 +834,15 @@ only the transport changes:
 Not included: new learners joining while in web mode (invitation links are Telegram links), the
 Telegram Mini App dashboard (use `/today`, `/progress` and `/quizzes` in the conversation), and video.
 
-**Switching on** needs migration `011_web_email_channel.sql` (learner emails, sign-in codes and web
-sessions; additive), the settings above in Vercel and GitHub (Gmail works with an app password on port
-587), a release of this code, then `python -m skillcoach.cli email-test` to confirm the owner receives
-mail. **Switching back** is `DELIVERY_CHANNEL=telegram` and a redeploy; web sessions simply stop working
-and Telegram delivery resumes, with nothing replayed.
+**Before deploying this code in either mode**, apply migrations `010_usage_counters.sql` and
+`011_web_email_channel.sql` (both additive). Migration 011 adds learner emails, sign-in codes, web
+sessions and the delivery order that every delivery now records, Telegram included, so this code must
+not run against an older schema.
+
+**Switching on** needs the settings above in Vercel and GitHub (Gmail works with an app password on
+port 587), a release of this code, then `python -m skillcoach.cli email-test` to confirm the owner
+receives mail. **Switching back** is `DELIVERY_CHANNEL=telegram` and a redeploy; web sessions simply
+stop working and Telegram delivery resumes, with nothing replayed.
 
 ## Private import and privacy-safe dashboard
 

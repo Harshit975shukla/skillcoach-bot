@@ -544,12 +544,15 @@ class Repository:
     def delivery_result(self, key: str, token: str, status: str, code: str | None = None):
         with self.connection() as conn:
             self._fence(conn, "delivery", token)
+            # delivered_seq records delivery order (one delivery lease runs at a time, so it is
+            # monotonic); the web inbox pages by it so retried and recovered messages still appear.
             updated = conn.execute(
                 "UPDATE outbox SET status=%s, error_code=%s, attempts=attempts+1, "
                 "available_at=now()+interval '5 minutes', "
-                "delivered_at=CASE WHEN %s='sent' THEN now() ELSE NULL END WHERE id=%s AND learner_id=%s "
-                "AND status IN ('pending','failed') RETURNING id",
-                (status, code, status, key, self.learner_id),
+                "delivered_at=CASE WHEN %s='sent' THEN now() ELSE NULL END, "
+                "delivered_seq=CASE WHEN %s='sent' THEN nextval('outbox_delivery_order') ELSE delivered_seq END "
+                "WHERE id=%s AND learner_id=%s AND status IN ('pending','failed') RETURNING id",
+                (status, code, status, status, key, self.learner_id),
             ).fetchone()
             if not updated:
                 return

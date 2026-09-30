@@ -1,20 +1,32 @@
 import re
 import smtplib
+import time
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from conftest import FakeEmail
 
+from skillcoach import web_channel
 from skillcoach.cli import email_test, main
 from skillcoach.clients import Budget, ExternalError
 from skillcoach.config import Config, ConfigurationError, normalize_email
 from skillcoach.email_client import Email
 from skillcoach.reengage import ENCOURAGEMENTS
 from skillcoach.web import create_app
-from skillcoach.web_channel import LOGIN_COOKIE, WEB_COOKIE, feed_item, notification, web_button, web_payload
+from skillcoach.web_channel import (
+    LOGIN_COOKIE,
+    MAX_SENDS_PER_HOUR,
+    MAX_UNKNOWN_PER_HOUR,
+    WEB_COOKIE,
+    feed_item,
+    notification,
+    pad_response,
+    web_button,
+    web_payload,
+)
 
 ORIGIN = "https://localhost"
 WEB_ENV = (
@@ -292,7 +304,7 @@ def test_buttons_map_to_safe_web_actions(config):
     ):
         assert web_button(raw, settings) is None
     row = {
-        "sequence": 7,
+        "delivered_seq": 7,
         "delivered_at": datetime(2026, 10, 1, 3, 30, tzinfo=timezone.utc),
         "body": {
             "kind": "text",
@@ -304,8 +316,18 @@ def test_buttons_map_to_safe_web_actions(config):
     item = feed_item(row, settings)
     assert item["id"] == 7 and item["blocks"] and "text" not in item
     assert item["buttons"] == [[{"kind": "callback", "text": "A", "data": "a"}]]
-    media = feed_item({"sequence": 8, "delivered_at": None, "body": {"kind": "media"}}, settings)
+    media = feed_item({"delivered_seq": 8, "delivered_at": None, "body": {"kind": "media"}}, settings)
     assert "Open lesson page" in media["text"] and media["buttons"] == []
+
+
+def test_sign_in_requests_share_a_minimum_duration():
+    slept = []
+    pad_response(time.monotonic(), 4.0, slept.append)
+    assert len(slept) == 1 and 3.5 < slept[0] <= 4.0
+    slept.clear()
+    pad_response(time.monotonic() - 5, 4.0, slept.append)
+    assert slept == []
+    assert web_channel.START_FLOOR_SECONDS >= 3
 
 
 def test_browser_payloads_are_strict():
@@ -358,9 +380,11 @@ def test_web_routes_are_off_in_telegram_mode(harness):
 
 
 @pytest.fixture
-def web(pg_repo, config):
+def web(pg_repo, config, monkeypatch):
     from test_multiuser import Bot
 
+    # The response-time floor is covered by its own test; skip the real wait here.
+    monkeypatch.setattr(web_channel, "START_FLOOR_SECONDS", 0)
     bot = Bot(pg_repo, config)
     learner, silent = bot.join(101), bot.join(102)
     with pg_repo.connection() as conn:
@@ -416,7 +440,9 @@ def test_email_code_sign_in_is_private_rate_limited_and_single_use(web):
     assert [mail["to"] for mail in web.email.sent] == ["learner@example.test"]
     assert web.email.sent[0]["subject"] == "Your SkillCoach sign-in code"
     code = emailed_code(web)
+    # Repeats are limited the same way whether or not the address is registered.
     assert post(web, "/web/login/start", {"email": "learner@example.test"}).status_code == 429
+    assert post(web, "/web/login/start", {"email": "nobody@example.test"}).status_code == 429
     wrong = "000000" if code != "000000" else "111111"
     failed = post(web, "/web/login/verify", {"code": wrong})
     assert failed.status_code == 400 and "4 attempts remaining" in failed.json["error"]
@@ -445,6 +471,96 @@ def test_email_code_sign_in_is_private_rate_limited_and_single_use(web):
         post(web, "/web/login/start", {"email": "a@example.test"}, origin="https://evil.invalid").status_code
         == 403
     )
+
+
+def add_logins(web, prefix, count, *, learner=None, notified=False):
+    with web.bot.repo.connection() as conn:
+        conn.execute(
+            "INSERT INTO web_logins(id,email_hash,learner_id,verifier_hash,notified,requested_at,expires_at) "
+            "SELECT %s::text||n, %s::text||n, %s, %s::text||n, %s, %s, %s FROM generate_series(1,%s) n",
+            (
+                prefix,
+                prefix + "-address-",
+                learner,
+                prefix + "-verifier-",
+                notified,
+                web.clock.now,
+                web.clock.now + timedelta(minutes=10),
+                count,
+            ),
+        )
+
+
+@pytest.mark.postgres
+def test_sign_in_limits_bound_floods_and_answer_every_address_the_same(web):
+    signed_in = web.app.test_client()
+    sign_in(web, "learner@example.test", client=signed_in)
+    add_logins(web, "flood", MAX_UNKNOWN_PER_HOUR)
+    sent = len(web.email.sent)
+    for email in ("nobody@example.test", "owner@example.test"):
+        flooded = post(web, "/web/login/start", {"email": email}, client=web.app.test_client())
+        assert flooded.status_code == 429 and "Too many sign-in requests" in flooded.json["error"]
+    assert len(web.email.sent) == sent
+    assert signed_in.get("/web/session", base_url=ORIGIN).status_code == 200
+    # An hour later the flood no longer counts. A failed send gets the usual answer and no code.
+    web.clock.now += timedelta(minutes=61)
+    web.email.fail = True
+    owner = web.app.test_client()
+    failed = post(web, "/web/login/start", {"email": "owner@example.test"}, client=owner)
+    assert failed.status_code == 200 and set(failed.json) == {"pending", "expires_at", "resend_at"}
+    with web.bot.repo.connection() as conn:
+        row = conn.execute("SELECT status, notified FROM web_logins WHERE learner_id='owner'").fetchone()
+    assert row["status"] == "rejected" and not row["notified"]
+    # Past the hourly email limit, registered addresses get the usual answer but no email.
+    web.email.fail = False
+    web.clock.now += timedelta(seconds=61)
+    add_logins(web, "sent", MAX_SENDS_PER_HOUR, learner=web.silent.learner_id, notified=True)
+    capped = post(web, "/web/login/start", {"email": "owner@example.test"}, client=owner)
+    assert capped.status_code == 200 and len(web.email.sent) == sent
+    with web.bot.repo.connection() as conn:
+        latest = conn.execute(
+            "SELECT code_hash, notified FROM web_logins WHERE learner_id='owner' AND status='pending'"
+        ).fetchone()
+    assert latest["code_hash"] is None and not latest["notified"]
+    assert post(web, "/web/login/verify", {"code": "123456"}, client=owner).status_code == 400
+
+
+@pytest.mark.postgres
+def test_sessions_end_when_the_sign_in_address_changes(web):
+    owner = web.app.test_client()
+    sign_in(web, "owner@example.test", client=owner)
+    sign_in(web, "learner@example.test")
+    assert owner.get("/web/session", base_url=ORIGIN).status_code == 200
+    assert web.client.get("/web/session", base_url=ORIGIN).status_code == 200
+    web.bot.runtime.config = replace(web.bot.runtime.config, owner_email="new-owner@example.test")
+    assert owner.get("/web/session", base_url=ORIGIN).status_code == 403
+    with web.bot.repo.connection() as conn:
+        conn.execute("UPDATE learners SET email='moved@example.test' WHERE id=%s", (web.learner.learner_id,))
+    assert web.client.get("/web/session", base_url=ORIGIN).status_code == 403
+    assert post(web, "/web/feed").status_code == 403
+
+
+@pytest.mark.postgres
+def test_inbox_follows_delivery_order_when_an_old_message_is_sent_again(web):
+    sign_in(web, "learner@example.test")
+    assert send(web, text="/help").json["status"] == "queued"
+    cursor = post(web, "/web/feed").json["messages"][-1]["id"]
+    with web.bot.repo.connection() as conn:
+        old = conn.execute(
+            "SELECT id, sequence FROM outbox WHERE learner_id=%s AND status='sent' "
+            "AND body->>'kind'='text' ORDER BY sequence LIMIT 1",
+            (web.learner.learner_id,),
+        ).fetchone()
+        newest = conn.execute(
+            "SELECT max(sequence) AS n FROM outbox WHERE learner_id=%s", (web.learner.learner_id,)
+        ).fetchone()["n"]
+        assert old["sequence"] < newest
+        # As after a failed send that /retry queues again.
+        conn.execute("UPDATE outbox SET status='failed', available_at=now() WHERE id=%s", (old["id"],))
+    web.bot.runtime.recover(media=False)
+    later = post(web, "/web/feed", {"after": cursor}).json["messages"]
+    assert len(later) == 1 and later[0]["id"] > cursor
+    assert post(web, "/web/feed").json["messages"][-1]["id"] == later[0]["id"]
 
 
 @pytest.mark.postgres

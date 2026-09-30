@@ -311,7 +311,9 @@
           try { await attempt(); } finally { if (requestEpoch === epoch) { sending = false; updateControls(); } }
         });
         mine.append(again);
-        mine.scrollIntoView({block: "nearest"});
+        // Keep the retry clear of the docked composer: at the end of the page the composer sits below the feed.
+        if (mine === $("feed").lastElementChild) toBottom();
+        else mine.scrollIntoView({block: "nearest"});
       }
     };
     try { await attempt(); }
