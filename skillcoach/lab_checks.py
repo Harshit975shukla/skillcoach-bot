@@ -197,6 +197,8 @@ CODES = {
     "cleanup_mismatch": "That is not the link you verified for this lab.",
     "bucket_exists": "The bucket still exists. Empty and delete it (aws s3 rb), then confirm again.",
     "cleaned": "Cleanup confirmed.",
+    "capstone_files_missing": "Some required project files are missing. Check the capstone brief.",
+    "ci_missing": "No GitHub Actions run exists for the latest commit. Add a workflow, push, then submit again.",
 }
 
 
@@ -352,10 +354,11 @@ class LabChecker:
             return {"code": "cleaned", "checks": ["token-not-served"]}
         return {"code": "unreachable", "status": status}
 
-    def github(self, lab, protected, url, token, budget: Budget):
+    def _github_getter(self, url, budget: Budget):
+        """(get, error) for a public github.com repository URL; get(path) returns decoded JSON or raises Stop."""
         match = GITHUB.fullmatch(url) if isinstance(url, str) else None
         if not match or match.group(2) in (".", ".."):
-            return {"code": "url_not_allowed"}
+            return None, "url_not_allowed"
         base = f"https://api.github.com/repos/{match.group(1)}/{match.group(2)}"
         headers = {
             "Accept": "application/vnd.github+json",
@@ -406,17 +409,68 @@ class LabChecker:
             except ValueError:
                 raise Stop("unreachable") from None
 
+        return get, None
+
+    def _head_tree(self, get):
+        repo = get("")
+        if not isinstance(repo, dict) or repo.get("private") is not False:
+            raise Stop("repo_not_found")
+        branch = get("/branches/" + quote(str(repo.get("default_branch", "")), safe=""))
+        commit = branch["commit"]["sha"]
+        tree_sha = branch["commit"]["commit"]["tree"]["sha"]
+        tree = get(f"/git/trees/{quote(tree_sha, safe='')}?recursive=1")
+        if tree.get("truncated"):
+            raise Stop("too_large")
+        blobs = {e.get("path"): e.get("sha") for e in tree.get("tree", []) if e.get("type") == "blob"}
+        return commit, blobs
+
+    def capstone(self, capstone, url, token, budget: Budget):
+        """Public repo, token file, the required project files and a passing CI run on the latest commit."""
+        get, error = self._github_getter(url, budget)
+        if error:
+            return {"code": error}
         try:
-            repo = get("")
-            if not isinstance(repo, dict) or repo.get("private") is not False:
-                return {"code": "repo_not_found"}
-            branch = get("/branches/" + quote(str(repo.get("default_branch", "")), safe=""))
-            commit = branch["commit"]["sha"]
-            tree_sha = branch["commit"]["commit"]["tree"]["sha"]
-            tree = get(f"/git/trees/{quote(tree_sha, safe='')}?recursive=1")
-            if tree.get("truncated"):
-                return {"code": "too_large"}
-            blobs = {e.get("path"): e.get("sha") for e in tree.get("tree", []) if e.get("type") == "blob"}
+            commit, blobs = self._head_tree(get)
+            if blobs.get(f".skillcoach/capstone-{capstone.id}.token") not in token_blob_shas(token):
+                return {"code": "token_file_missing"}
+            missing = [
+                label for label, pattern in capstone.required if not any(pattern.search(p) for p in blobs)
+            ]
+            if missing:
+                return {"code": "capstone_files_missing", "missing": missing}
+            runs = get(f"/actions/runs?head_sha={quote(commit, safe='')}&per_page=30").get(
+                "workflow_runs", []
+            )
+            runs = [
+                run
+                for run in runs
+                if run.get("head_sha") == commit
+                and run.get("event") in ("push", "workflow_dispatch", "pull_request")
+            ]
+            if not runs:
+                return {"code": "ci_missing"}
+            if any(run.get("status") != "completed" for run in runs):
+                return {"code": "run_in_progress"}
+            if not any(run.get("conclusion") == "success" for run in runs) or any(
+                run.get("conclusion") in ("failure", "timed_out") for run in runs
+            ):
+                return {"code": "run_failed"}
+            return {
+                "code": "verified",
+                "checks": ["public-repo", "token-file", "required-files", "ci-success"],
+            }
+        except Stop as stop:
+            return {"code": stop.code}
+        except (KeyError, TypeError, AttributeError, ValueError):
+            return {"code": "unreachable"}
+
+    def github(self, lab, protected, url, token, budget: Budget):
+        get, error = self._github_getter(url, budget)
+        if error:
+            return {"code": error}
+
+        try:
+            commit, blobs = self._head_tree(get)
             for path, sha in protected.items():
                 if blobs.get(path) != sha:
                     return {"code": "workflow_modified" if path == WORKFLOW_PATH else "tests_modified"}

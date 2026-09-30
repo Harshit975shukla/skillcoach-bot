@@ -10,15 +10,15 @@ from psycopg.types.json import Jsonb
 from skillcoach.clients import chunks
 
 ADMIN_COMMANDS = {
-    "admin": "Open the owner-only administration dashboard",
-    "invite": "[label] create a one-use invite, valid for 24 hours",
+    "admin": "Open the admin dashboard",
+    "invite": "[label] one-use invite (24 hours)",
     "invites": "List open invitations",
     "revokeinvite": "<invite_id> cancel an unused invitation",
     "requests": "List learners waiting for your approval",
     "approve": "<learner_id> approve a pending learner",
     "reject": "<learner_id> reject a pending request",
-    "revoke": "<learner_id> revoke access and cancel queued coaching",
-    "members": "List learner access status (not private learning content)",
+    "revoke": "<learner_id> revoke access",
+    "members": "Learner access status",
 }
 INVITE_TOKEN = re.compile(r"invite_([A-Za-z0-9_-]{32})\Z")
 

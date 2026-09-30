@@ -168,6 +168,12 @@ class Repository:
                 raise MembershipChanged("Learner state is unavailable")
             return row["revision"], State.model_validate(row["body"])
 
+    def record_usage(self, event: str, now) -> None:
+        from skillcoach.adoption import record_usage
+
+        with self.connection() as conn:
+            record_usage(conn, self.learner_id, event, now)
+
     def enqueue(self, key: str, payload: dict, *, available_at=None) -> bool:
         if available_at is not None and (available_at.tzinfo is None or available_at.utcoffset() is None):
             raise ValueError("Scheduled work requires a timezone-aware due time")

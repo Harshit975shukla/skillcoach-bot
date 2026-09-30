@@ -3,6 +3,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
+from skillcoach.capstones import CapstoneRecord, Portfolio
 from skillcoach.journey_models import Journey
 from skillcoach.models_base import Model, Short, Text
 
@@ -94,7 +95,7 @@ class Answer(Model):
 
 class Assessment(Model):
     id: str
-    kind: Literal["daily", "weekly", "review", "practice"]
+    kind: Literal["daily", "weekly", "review", "practice", "cert"]
     date: date
     week: str
     status: Literal["active", "completed", "expired", "cancelled"] = "active"
@@ -266,6 +267,15 @@ class State(Model):
     ask_session: str | None = None
     review: dict[str, ReviewCard] = Field(default_factory=dict)
     review_backfilled: bool = False
+    # Re-engagement: a week-long pause ends by itself; nudges are rate-limited.
+    pause_until: datetime | None = None
+    nudged_at: datetime | None = None
+    pace_offer_at: datetime | None = None
+    # When coaching last switched back on after a pause: paused days never count as missed days.
+    resumed_at: datetime | None = None
+    cert_track: str | None = None
+    capstones: dict[str, CapstoneRecord] = Field(default_factory=dict)
+    portfolio: Portfolio | None = None
 
     def target(self) -> dict | None:
         if self.focus == "ask" and self.ask_session:

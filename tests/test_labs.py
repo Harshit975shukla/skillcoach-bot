@@ -32,6 +32,7 @@ from skillcoach.labs import (
     url_digest,
 )
 from skillcoach.models import LabAssignment, Profile
+from skillcoach.module_labs import MODULE_OF
 from skillcoach.timeutil import IST
 
 REAL_SEND = requests.adapters.HTTPAdapter.send
@@ -78,7 +79,10 @@ def test_catalog_topics_routes_and_protected_template_pins():
         assert lab.routes[0] == "scenario" and len(lab.scenario) == 4
         for step in lab.scenario:
             assert len(set(step.options)) == 4 and step.explanation and step.prompt
-        assert lab.references and all(r.startswith("https://docs.aws.amazon.com/") for r in lab.references)
+        if lab.id not in MODULE_OF:  # Per-module labs cite their own official docs (test_module_labs.py).
+            assert lab.references and all(
+                r.startswith("https://docs.aws.amazon.com/") for r in lab.references
+            )
         if lab.aws:
             assert lab.aws.cleanup and any("{token}" in step for step in lab.aws.steps)
     assert set(CODE_LABS) == {lab.id for lab in LABS.values() if lab.code} == set(EXPECTED)

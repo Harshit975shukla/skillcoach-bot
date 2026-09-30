@@ -1,6 +1,7 @@
 import copy
 import os
 import re
+from collections import Counter
 from contextlib import nullcontext
 from datetime import datetime
 from types import SimpleNamespace
@@ -111,10 +112,18 @@ class MemoryRepository:
         self.learner_id = "owner"
         self.owner_id = 42
         self.ai_reservations = []
+        self.usage = Counter()
 
     def for_learner(self, learner_id):
         assert learner_id == "owner", "Use real PostgreSQL tests for multi-learner persistence"
         return self
+
+    def record_usage(self, event, now):
+        from skillcoach.adoption import USAGE_EVENTS
+        from skillcoach.timeutil import study_day
+
+        assert event in USAGE_EVENTS
+        self.usage[(study_day(now).isoformat(), event)] += 1
 
     def session(self):
         return nullcontext()

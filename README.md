@@ -208,7 +208,7 @@ mastery.
 **Learning library:** choose **Load learning materials** in `/admin` to search all 199 stored lessons
 by module or topic and review the complete shared theory, exercises, safety/cleanup, official references,
 sample interview checklist and visual walkthrough/transcript. Lab templates (with placeholder tokens)
-and the 24 attributed external resources are available there too. This is a read-only preview, not a
+and the 30 attributed external resources are available there too. This is a read-only preview, not a
 send, assignment, expert-review approval or library of prerecorded MP4s. Lab scenario answer keys,
 learner tokens and active assessment questions are not exposed.
 
@@ -230,6 +230,26 @@ work. Learner plan choices govern subsequent weeks; required labs carry forward 
 These views use the existing owner authentication, Origin/CSRF checks, private no-store responses and
 session-expiry cleanup. They do not require a schema migration or change scheduling/delivery behavior.
 
+**Adoption and retention:** **Load adoption** shows a learner funnel (joined, approved, finished setup,
+plan started, first lesson, first quiz, 3+ study days in the first week), each learner's weekly
+retention for their first four weeks from the join date, active unpaused learners who missed two or
+more scheduled Monday-Saturday days with the reasons (open quizzes, due reviews, a waiting plan
+proposal), and seven-day feature use. Feature use is derived from job types, button prefixes and
+command names only (never arguments or typed text) plus daily counters for dashboard launches,
+lesson pages and library pages in the private `usage_daily` table. A dashboard launch is counted once
+per signed Telegram launch, not per refresh. Counting is best-effort: a failed counter never blocks
+the page. The view contains counts and dates only, and opening something is not proof of reading.
+
+**Mentor encouragement:** **Send encouragement** on an at-risk learner (or the **Send encouragement**
+action) previews one of four prepared messages (progress, check-in, weekly goal, welcome back) sent
+with a button for the learner's next step. There is no free text. It is refused for paused learners
+and when that learner received encouragement in the last 20 hours. Like every action it needs a
+preview, explicit confirmation and an audit record.
+
+Schema migration `010_usage_counters.sql` adds only the `usage_daily` counter table and grants the
+restricted runtime role access. Apply it with the guarded release procedure before deploying code
+that counts usage.
+
 Actions require a server-generated preview and explicit confirmation bound to the same session,
 exact action/recipient/arguments, membership generation and five-minute expiry. Confirmation,
 job/invitation creation and audit recording share one PostgreSQL transaction; retries and concurrent
@@ -237,7 +257,7 @@ double-clicks return the same result. Stale recipients, expired previews, unknow
 unexpected fields are rejected.
 
 Available controls are invitations/approval/rejection/revocation, one-recipient lesson or quiz
-requests, pause/unpause, cancel/retry, and an allowlisted **own-chat** bot-command panel. There is no
+requests, prepared encouragement messages, pause/unpause, cancel/retry, and an allowlisted **own-chat** bot-command panel. There is no
 shell, SQL, bulk-send or grade editor. Submit quiz/interview answers, complete tasks and edit private
 setup/resume data in Telegram, not through the admin console. Scheduling a quiz cannot overwrite an
 existing request for that learner/date. Queued commands retain normal learner limits and routing.
@@ -461,6 +481,39 @@ and more rewarding:
   explanations of the tempting wrong option. The weekly assessment points to `/interview` for a graded
   written explanation.
 
+### Gentle re-engagement
+
+- **Nudge after two missed days.** When an active, unpaused learner has not studied for two scheduled
+  Monday-Saturday days (Sundays are rest days), the next quiz or weekly run sends one short, guilt-free
+  message with a button for their next step. Nudges repeat at most every two days.
+- **Pace offer after five missed days.** Instead of more nudges, the bot offers **Lighter plan**
+  (15-minute sessions from the next weekly plan; this week stays unchanged), **Pause for a week** or
+  **Keep my plan**, at most every 14 days. Progress is always kept.
+- **Week-long pause ends automatically.** A pause chosen from that offer lasts until 04:00 IST on the
+  same study day next week; the first scheduled run after that unpauses and welcomes the learner back.
+  `/unpause` ends it earlier; a normal `/pause` stays until `/unpause`.
+- **Paused days are never missed days.** After any pause ends (automatically or with `/unpause`),
+  missed days, nudges, pace offers and the owner's at-risk list count only from the day coaching
+  resumed.
+- **Owner encouragement** comes from a person, through the admin console (see Owner administration).
+
+### Certification prep
+
+`/cert` (or the dashboard's **Certification prep** section) sets an optional exam goal: AWS Certified
+Cloud Practitioner (CLF-C02), AWS Certified Solutions Architect - Associate (SAA-C03), Certified
+Kubernetes Administrator and Application Developer (curriculum v1.35), HashiCorp Terraform Associate
+(004) and Linux Foundation Certified System Administrator. Domains and weights follow the official
+exam guides as checked on 2026-09-30; each domain maps to catalog topics and labs. HashiCorp publishes
+no domain weights, and exam details can change, so learners are told to check the official guide.
+
+Each practice set is five original exam-style questions (never reproduced exam content) validated like
+any quiz and answered with the same question-bound buttons. Readiness per domain is practice accuracy
+and topics started (Not started, Building, Needs work, Strong in practice), explicitly **not** a
+prediction of an exam result or an endorsement by the exam provider. Certification answers never change
+quiz scores or accuracy; missed questions join spaced review. The goal and its weakest domains are
+included in the AI context used for plans, quizzes and tutoring. `/cert off` clears the goal and keeps
+practice history.
+
 Help is generated from `skillcoach/commands.py`. `/profile` displays the private profile or enters setup; `/profile setup` replaces it only after successful validation.
 
 | Commands | Behavior |
@@ -485,6 +538,9 @@ Help is generated from `skillcoach/commands.py`. `/profile` displays the private
 | `/labs`, `/lab <id>` | Your labs, what is pending, and the steps for each free or optional route |
 | `/submitlab <id> <link>`, `/labcleanup <id> <link>` | Verify a code or AWS lab link; confirm that AWS resources were deleted |
 | `/labcarry` | Explains that unfinished required labs now carry forward automatically and lists open ones |
+| `/cert [off]` | Choose an exam goal, see per-domain practice readiness and practise five exam-style questions |
+| `/capstone [id]`, `/submitcapstone <id> <repo link>` | Portfolio-sized projects verified from a public GitHub repository |
+| `/portfolio [on\|off\|name <name>\|repos on\|off]` | Opt-in public page of verified labs and capstones; turning it off retires the link |
 
 Plans use the actual target role, level, gaps, prior topics, task evidence and recent incorrect answers. Delivered/prepared lessons are not treated as mastery. Only completed, correctly dated weekly assessments enter a weekly score report. Missing or unfinished attempts remain unavailable. Practice on one study day contributes one streak day (see the daily learning loop below).
 
@@ -492,17 +548,19 @@ Resume/JD alignment scores are explicitly provisional document-based estimates. 
 
 ## Free learning library
 
-`/resources` and **Free resources** in the private dashboard expose 24 curated links across cloud,
-DevOps and Linux. Search by provider, keyword, syllabus module/topic ID, or resource ID. Telegram
+`/resources` and **Free resources** in the private dashboard expose 30 curated links across cloud,
+DevOps and Linux, with at least one link for every syllabus module. Search by provider, keyword,
+syllabus module/topic ID, or resource ID. Telegram
 shows four results at a time (`/resources linux --page 2`); the dashboard supports area/search and
 no-account-to-read filters. Each entry includes attribution, level, format, a suggested starting
-point, account requirements, cost caveats and its link/access review date (initially 2026-09-29).
+point, account requirements, cost caveats and its link/access review date (last checked 2026-09-30).
 This is a link/access review, **not** an expert audit of entire courses or a permanent price guarantee.
 
 Sources include AWS Educate and service documentation, Microsoft Learn, Google Cloud documentation,
 Pro Git, GitHub Actions, Docker, Kubernetes, Terraform's local Docker track, Ansible, Prometheus,
-Google SRE books, Killercoda, Argo CD, Helm, Ubuntu, GNU Bash, LinuxCommand.org, Debian, systemd and
-MIT's Missing Semester. Related resources appear on the full lesson page, in the chat full-reference
+Google SRE books, Killercoda, Argo CD, Helm, OWASP cheat sheets, Backstage, PostgreSQL, Apache
+Kafka, MLflow, the Azure Architecture Center's API design guide, Ubuntu, GNU Bash, LinuxCommand.org,
+Debian, systemd and MIT's Missing Semester. Related resources appear on the full lesson page, in the chat full-reference
 view and with lab steps. Older lesson records are not rewritten. Full daily lessons and animated
 videos remain unchanged; resources supplement rather than replace them.
 
@@ -531,15 +589,24 @@ There is no dependency, environment, database migration, scheduler or public-das
 
 ## Hands-on labs
 
-Approved lessons on eight AWS topics come with a hands-on lab. The labs cover S3 presigned access, Lambda Function URLs, IAM policy evaluation, API Gateway health routes, CloudFront private origins, DynamoDB conditional writes, SQS idempotent consumers and VPC subnet routing.
+Every syllabus module has at least one hands-on lab (25 in total), and an approved lesson whose topic
+has a lab offers it with the lesson. Eight AWS labs cover S3 presigned access, Lambda Function URLs,
+IAM policy evaluation, API Gateway health routes, CloudFront private origins, DynamoDB conditional
+writes, SQS idempotent consumers and VPC subnet routing. Seventeen module labs cover the other modules,
+for example process signals, git bisect, a JSON-checking CLI, offline Bicep validation, the Pub/Sub
+emulator, multi-stage Docker images, Kubernetes readiness probes, OpenTofu drift, GitHub Actions
+permissions, Helm values, Prometheus self-scraping, SLO error budgets, Backstage ownership metadata,
+MLflow runs, cost allocation from a CSV and an API decision record.
 
-Each lab carries a per-learner token and offers up to three routes:
+Each lab carries a per-learner token. AWS labs offer the first three routes below; module labs offer
+the in-app scenario plus free local practice:
 
 | Route | Cost | How it is verified |
 |---|---|---|
 | In-app scenario | Free, no account | Four decisions with explanations inside the bot. You pass with 3 of 4, and you get 3 attempts per day. |
 | Code lab | Free on a personal GitHub account | You create a public repository from the template repo [`skillcoach-labs`](https://github.com/Harshit975shukla/skillcoach-labs) and edit only the starter file. You can work in Codespaces or locally. The tests use `moto` fakes, not real AWS. SkillCoach verifies the lab when three things hold: the `lab-<id>` Actions job passed on the default-branch head, the protected tests, workflow and requirements match pinned Git blob hashes, and your token file is present. |
 | Your own AWS account | **Optional and may cost money** | You submit the S3 presigned, Lambda, API Gateway or CloudFront HTTPS link. SkillCoach checks three things: the host is a public AWS endpoint, there is no redirect, and the response contains your token. `/labcleanup` then confirms that the same link no longer serves the token. |
+| Practice locally | Free, on your own machine | Step-by-step practice with free local tools, ending with cleanup steps. It is self-checked: nothing is deployed, charged or submitted, and the in-app scenario verifies the lab. |
 
 **When required labs are due.** Pace sets the number: 15–30 minute plans require 1 lab a week, and 45–60 minute plans require 2. Further labs are optional.
 
@@ -549,13 +616,32 @@ Each lab carries a per-learner token and offers up to three routes:
 
 **Where to track labs.** Pending labs, tokens, steps and official references appear in `/labs` and in the dashboard's Labs section. The dashboard also accepts a link.
 
-**Kill switch.** `LABS_ENABLED=false` stops new assignments, checks and the review gate. Lessons and quizzes continue. A gate that is already waiting releases at the next scheduled lesson, quiz or review job. Set the same value in the Vercel environment and the GitHub Actions `LABS_ENABLED` repository variable, because the webhook and the scheduled worker read their own copies.
+**Kill switch.** `LABS_ENABLED=false` stops new lab assignments, lab and capstone checks and the review gate. Lessons and quizzes continue. A gate that is already waiting releases at the next scheduled lesson, quiz or review job. Set the same value in the Vercel environment and the GitHub Actions `LABS_ENABLED` repository variable, because the webhook and the scheduled worker read their own copies.
 
 **Limits and privacy.** There are 12 link checks per learner per day, and only one lab check can be queued at a time. Checks are idempotent by request ID: a retried job reuses its cached result and never runs the check again. Submitted links are removed from job payloads and command text once the job finishes. An AWS-verified lab keeps only a keyed digest of the link so that cleanup can be confirmed. The owner console shows only counts: verified, pending, required, and whether the gate is blocking.
 
 This is a **practice-integrity check, not proctoring**. A passing check shows that the artifact behaves as specified and is linked to the learner's token. It does not prove who did the work. Never share AWS keys, passwords or console screenshots. SkillCoach never asks for them.
 
 `LABS_GITHUB_TOKEN` is optional. Use it only to raise GitHub's unauthenticated API rate limit, with a fine-grained token that has **no repository permissions** (public read only). Never reuse `GH_PAT`. Maintainer references for the code labs live in `tests/lab_reference/`. CI runs every lab twice: against the starter, which must fail, and against the reference, which must pass the exact expected test count.
+
+### Capstone projects and public portfolio
+
+`/capstone` lists five portfolio-sized projects (3-8 hours each): a containerized service with CI, a
+Kubernetes release with probes and validated manifests, a tested Terraform/OpenTofu module, an
+instrumented service with SLO alerting, and a safe Linux automation task. `/capstone <id>` gives the
+brief, official references and a per-learner token. `/submitcapstone <id> <public repository link>`
+verifies, through GitHub's public API, that the default-branch head contains the required project
+files, a README, tests, a workflow and `.skillcoach/capstone-<id>.token`, and that the GitHub Actions
+runs for that commit have finished with a success and no failures. This confirms structure and a green pipeline; it is **not** a code review or proof
+of authorship. Checks share the 12-per-day lab limit and are cached per request, so retries never
+re-run a finished check.
+
+`/portfolio on` creates an unguessable public page at `/portfolio/<16-character link>` showing only
+the chosen display name (default "SkillCoach learner"), verified capstones (with repository links
+unless `/portfolio repos off`), verified labs, lesson and study-day counts and topics remembered after
+spaced review. It never shows answers, scores, documents, the learner's Telegram identity or chat
+history. The page is `noindex` and `no-store`; `/portfolio off` disables it and retires the link, so a
+later `/portfolio on` issues a new one. Revoked learners' pages stop working.
 
 ## Full lessons and media
 

@@ -5,6 +5,7 @@ import hmac
 import json
 import math
 import re
+from datetime import UTC, datetime
 from urllib.parse import parse_qsl
 
 from skillcoach.clients import ExternalError
@@ -72,11 +73,16 @@ def authorize_learner(repo, actor: int, issued: int, auth_hash: str):
         if row["id"] != "owner" and issued < math.ceil(row["updated_at"].timestamp()):
             raise DashboardDenied("Access changed. Close and reopen the dashboard from Telegram.")
         conn.execute("DELETE FROM dashboard_sessions WHERE expires_at<now()")
-        conn.execute(
+        launched = conn.execute(
             "INSERT INTO dashboard_sessions(auth_hash,learner_id,access_generation,expires_at) "
-            "VALUES (%s,%s,%s,to_timestamp(%s)) ON CONFLICT DO NOTHING",
+            "VALUES (%s,%s,%s,to_timestamp(%s)) ON CONFLICT DO NOTHING RETURNING auth_hash",
             (auth_hash, row["id"], row["generation"], issued + LEARNER_AUTH_AGE),
-        )
+        ).fetchone()
+        if launched:
+            from skillcoach.adoption import record_usage
+
+            # Counted once per Telegram launch; refreshes reuse the same launch.
+            record_usage(conn, row["id"], "dashboard_open", datetime.fromtimestamp(issued, UTC))
         session = conn.execute(
             "SELECT learner_id,access_generation FROM dashboard_sessions WHERE auth_hash=%s", (auth_hash,)
         ).fetchone()
@@ -86,6 +92,8 @@ def authorize_learner(repo, actor: int, issued: int, auth_hash: str):
 
 
 def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narration_enabled=False, config=None):
+    from skillcoach.capstones import CAPSTONES
+    from skillcoach.certifications import cert_view
     from skillcoach.course_library import index
     from skillcoach.formatting import md_blocks
     from skillcoach.lesson_delivery import display_name, recent_lessons
@@ -125,6 +133,26 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
         "progress": summary(state, now),
         "today": today_view(state, now),
         "mastery": mastery_view(state, now),
+        "certification": cert_view(state, now),
+        "capstones": [
+            {
+                "id": c.id,
+                "title": c.title,
+                "hours": c.hours,
+                "goal": c.goal,
+                "status": state.capstones[c.id].status if c.id in state.capstones else "not_started",
+                "verified_at": state.capstones[c.id].verified_at.isoformat()
+                if c.id in state.capstones and state.capstones[c.id].verified_at
+                else None,
+            }
+            for c in CAPSTONES.values()
+        ],
+        "portfolio": {
+            "enabled": bool(state.portfolio and state.portfolio.enabled and state.portfolio.slug),
+            "path": f"/portfolio/{state.portfolio.slug}"
+            if state.portfolio and state.portfolio.enabled and state.portfolio.slug
+            else None,
+        },
         "preferences": {
             "paused": state.paused,
             "media": state.media,
@@ -242,6 +270,9 @@ def register_dashboard(app, runtime_factory):
         except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
             return jsonify(error="Private progress is temporarily unavailable. Try Refresh shortly."), 503
 
+    def count_open(runtime, learner, event):
+        runtime.repo.for_learner(learner).record_usage(event, runtime.clock())
+
     @app.post("/app/course")
     def dashboard_course():
         from skillcoach.catalog import TOPICS
@@ -260,9 +291,10 @@ def register_dashboard(app, runtime_factory):
             )
             digest = hashlib.sha256(body["init_data"].encode()).hexdigest()
             with runtime.repo.session():
-                authorize_learner(runtime.repo, actor, issued, digest)
-            if not isinstance(body["topic"], str) or body["topic"] not in TOPICS:
-                return jsonify(error="Choose a topic from the lesson library."), 404
+                learner, _ = authorize_learner(runtime.repo, actor, issued, digest)
+                if not isinstance(body["topic"], str) or body["topic"] not in TOPICS:
+                    return jsonify(error="Choose a topic from the lesson library."), 404
+                count_open(runtime, learner, "course_page")
             return jsonify(
                 lesson=page(body["topic"]), auth_expires_at=issued + LEARNER_AUTH_AGE, private=True
             )
@@ -292,8 +324,9 @@ def register_dashboard(app, runtime_factory):
             with runtime.repo.session():
                 learner, state = authorize_learner(runtime.repo, actor, issued, digest)
                 data = page(runtime.repo.for_learner(learner), state, body["lesson"], runtime.clock())
-            if data is None:
-                return jsonify(error="This lesson is not in your learning history."), 404
+                if data is None:
+                    return jsonify(error="This lesson is not in your learning history."), 404
+                count_open(runtime, learner, "lesson_page")
             return jsonify(lesson=data, auth_expires_at=issued + LEARNER_AUTH_AGE, private=True)
         except DashboardDenied as exc:
             return jsonify(error=str(exc)), 403
@@ -453,10 +486,36 @@ def register_dashboard(app, runtime_factory):
         except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
             return jsonify(error="Exercise update temporarily unavailable. Retry the same tap."), 503
 
+    @app.get("/portfolio/<slug>")
+    def public_portfolio(slug):
+        from skillcoach.capstones import portfolio_data, portfolio_html
+
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16}", slug):
+            return "Not found", 404
+        try:
+            runtime = runtime_factory()
+            with runtime.repo.connection() as conn:
+                row = conn.execute(
+                    "SELECT c.body FROM learners l JOIN coach_state c ON c.learner_id=l.id "
+                    "WHERE l.status='active' AND c.body->'portfolio'->>'slug'=%s "
+                    "AND c.body->'portfolio'->>'enabled'='true'",
+                    (slug,),
+                ).fetchone()
+            if row is None:
+                return "Not found", 404
+            state = State.model_validate(row["body"])
+            return (
+                portfolio_html(portfolio_data(state, runtime.clock())),
+                200,
+                {"Content-Type": "text/html; charset=utf-8"},
+            )
+        except (ConfigurationError, ValidationError, *STORAGE_ERRORS):
+            return "Portfolio temporarily unavailable.", 503
+
     @app.after_request
     def private_headers(response):
         if request.path.startswith(
-            ("/app", "/admin", "/join", "/static/join", "/static/dashboard", "/static/admin")
+            ("/app", "/admin", "/join", "/static/join", "/static/dashboard", "/static/admin", "/portfolio")
         ):
             response.headers["Cache-Control"] = "no-store, private"
             response.headers["Pragma"] = "no-cache"

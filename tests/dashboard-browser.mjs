@@ -22,6 +22,20 @@ const courses = JSON.parse(execFileSync(process.env.TEST_PYTHON || "python",
   ["-c", "import json; from skillcoach.course_library import index, page; from skillcoach.catalog import TOPICS; " +
    "topic=next(k for k in TOPICS if k.startswith('linux/')); print(json.dumps({'index':index(),'lesson':page(topic)}))"],
   {encoding: "utf8", maxBuffer: 2 * 1024 * 1024}));
+// Real server-side shapes: the certification view and capstone briefs come from the Python modules.
+const growth = JSON.parse(execFileSync(process.env.TEST_PYTHON || "python",
+  ["-c", "import json; from datetime import datetime; from skillcoach.models import State; " +
+   "from skillcoach.certifications import cert_view; from skillcoach.capstones import CAPSTONES; " +
+   "from skillcoach.timeutil import IST; " +
+   "print(json.dumps({'certification': cert_view(State(cert_track='cka'), datetime(2026, 9, 29, 10, tzinfo=IST)), " +
+   "'capstones': [{'id': c.id, 'title': c.title, 'hours': c.hours, 'goal': c.goal, 'status': 'not_started', " +
+   "'verified_at': None} for c in CAPSTONES.values()]}))"],
+  {encoding: "utf8"}));
+Object.assign(growth.certification.track.domains[0], {practice_answers: 10, practice_accuracy: 90, label: "Strong in practice"});
+Object.assign(growth.certification.track.domains[1], {practice_answers: 5, practice_accuracy: 40, label: "Needs work"});
+Object.assign(growth.certification.track, {overall: 65, covered_domains: 2});
+Object.assign(growth.capstones[0], {status: "verified", verified_at: "2026-09-27T10:00:00+05:30"});
+Object.assign(growth.capstones[1], {status: "needs_fix", title: "<img src=x onerror='window.pwnedCapstone=true'>"});
 const lessonFixture = {
   id: LESSON_ID, title: "CI pipeline design: stages, artifacts and caching", date: "2026-09-29", available: true,
   review: "Reviewed lesson · 2026-09-28",
@@ -121,6 +135,8 @@ const fixture = {
           {route: "aws", label: "Your own AWS account", steps: ["Create a private bucket."],
             cleanup: ["Delete the object and bucket."], submit: "/submitlab s3-private-presigned <presigned link>",
             accepts_link: true},
+          {route: "local", label: "Practice locally (free, self-checked)", steps: ["Create a scratch folder."],
+            cleanup: ["Delete the scratch folder."], submit: "", accepts_link: false},
         ],
         resources: resources.items.filter(r => r.id === "aws-s3-guide"),
         references: ["https://docs.aws.amazon.com/AmazonS3/latest/userguide/ShareObjectPreSignedURL.html",
@@ -137,6 +153,9 @@ const fixture = {
       {lab_id: "vpc-subnet-routing", title: "VPC subnet routing", minutes: 30, routes: ["scenario", "code"]},
     ],
   },
+  certification: growth.certification,
+  capstones: growth.capstones,
+  portfolio: {enabled: true, path: "/portfolio/Ab3dEfGh1jKlMn0p"},
 };
 const server = createServer(async (request, response) => {
   if (request.url === "/app/labs/submit") {
@@ -480,6 +499,44 @@ try {
     assert.match(await page.$eval("#lab-cost", e => e.textContent), /may cost money/);
     assert.equal(await page.$$eval(".lab-input", e => e.length), 1);
     assert.equal(await page.evaluate(() => window.pwnedLab), undefined);
+    // A local route is self-checked practice: cleanup and a no-submit note, never a link input.
+    const localRoute = await page.$$eval("#lab-items > li:first-child details", nodes => {
+      const local = nodes.find(d => d.querySelector("summary").textContent.startsWith("Practice locally"));
+      return local ? local.textContent : "";
+    });
+    assert.match(localRoute, /Cleanup when you finish/);
+    assert.match(localRoute, /nothing is deployed, charged or submitted/);
+    assert.doesNotMatch(localRoute, /Submit:/);
+    // Certification: the chosen exam, per-domain practice evidence, deep links and the other exams.
+    assert.equal(await page.$eval("#cert-selected", e => e.hidden), false);
+    assert.match(await page.$eval("#cert-title", e => e.textContent), /Certified Kubernetes Administrator/);
+    assert.match(await page.$eval("#cert-overall", e => e.textContent), /65% across 2 practised domains/);
+    assert.equal(await page.$eval("#cert-guide", e => e.href), growth.certification.track.source);
+    const certDomains = await page.$$eval("#cert-domains > li", items => items.map(li => ({
+      text: li.textContent, link: li.querySelector("a") ? li.querySelector("a").href : null})));
+    assert.equal(certDomains.length, growth.certification.track.domains.length);
+    assert.match(certDomains[0].text, /Strong in practice/);
+    assert.match(certDomains[1].text, /40% of 5 practice answers.*Needs work/);
+    assert.equal(certDomains[1].link, "https://t.me/SkillCoachTestBot?start=cert_cka_1");
+    const otherExams = await page.$$eval("#cert-tracks > li", items => items.map(li => li.textContent));
+    assert.equal(otherExams.length, growth.certification.tracks.length - 1);
+    assert.ok(otherExams.every(text => !text.includes("Certified Kubernetes Administrator")));
+    assert.match(await page.$eval("#cert-disclaimer", e => e.textContent),
+                 /does not predict your exam result.*checked 2026-09-30/);
+    // Capstones: statuses, escaped titles and the opt-in portfolio link.
+    const capstoneItems = await page.$$eval("#capstone-list > li", items => items.map(li => li.textContent));
+    assert.equal(capstoneItems.length, growth.capstones.length);
+    assert.match(capstoneItems[0], /Verified/);
+    assert.match(capstoneItems[1], /<img src=x.*Needs a fix/);
+    assert.equal(await page.$$eval("#capstone-list img", e => e.length), 0);
+    assert.equal(await page.evaluate(() => window.pwnedCapstone), undefined);
+    assert.equal(await page.$eval("#portfolio-status a", e => new URL(e.href).pathname), "/portfolio/Ab3dEfGh1jKlMn0p");
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    if (process.env.DASHBOARD_SCREENSHOT_DIR) {
+      for (const section of ["certification", "labs"]) {
+        await (await page.$("#" + section)).screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, `${section}-${label}.png`)});
+      }
+    }
     const submitsBefore = labSubmits.length;
     await page.$eval(".lab-input", e => { e.value = "http://example.com/not-https"; });
     await page.click(".lab-button");
@@ -554,6 +611,9 @@ try {
     await page.waitForFunction(() => document.getElementById("content").hidden);
     assert.equal(await page.$$eval("#tasks > li", e => e.length), 0);
     assert.equal(await page.$$eval("#lab-items > li", e => e.length), 0);
+    assert.equal(await page.$$eval("#cert-domains > li, #cert-tracks > li, #capstone-list > li", e => e.length), 0);
+    assert.equal(await page.$eval("#cert-selected", e => e.hidden), true);
+    assert.equal(await page.$eval("#portfolio-status", e => e.textContent), "");
     assert.equal(await page.$eval("#plan-rationale", e => e.textContent), "");
     assert.match(await page.$eval("#notice", e => e.textContent), /revoked/);
     denied = false;

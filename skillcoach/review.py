@@ -16,6 +16,8 @@ from skillcoach.timeutil import study_day, week_key
 INTERVALS = (1, 3, 7, 14, 30)
 SESSION_SIZE = 5
 QUIZ_KINDS = ("daily", "weekly")
+# Missed certification-practice questions come back too; correct ones do not need a card.
+REVIEW_KINDS = (*QUIZ_KINDS, "cert")
 
 
 class Practice(Model):
@@ -38,7 +40,7 @@ def schedule_answer(state, session, index, correct, when):
 
     Due dates count from when the question was answered, so older answers keep their real spacing.
     """
-    if session.kind not in QUIZ_KINDS:
+    if session.kind not in REVIEW_KINDS:
         return
     ident = card_id(session.id, index)
     if ident in state.review or (correct and session.kind != "daily"):

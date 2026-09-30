@@ -32,6 +32,7 @@ TABLES = (
     "admin_requests",
     "admin_audit",
     "learner_document_requests",
+    "usage_daily",
 )
 log = logging.getLogger(__name__)
 

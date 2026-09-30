@@ -89,7 +89,7 @@ def lab_view(state, config, now):
                     "steps": steps,
                     "cleanup": cleanup,
                     "submit": submit,
-                    "accepts_link": route != "scenario",
+                    "accepts_link": route not in ("scenario", "local"),
                 }
             )
         items.append(
@@ -275,7 +275,7 @@ class LabFlow:
         lab = LABS[item.lab_id]
         routes = ", ".join(ROUTE_LABELS[r] for r in lab.routes)
         status = (
-            "REQUIRED LAB — verify it before Sunday's review so next week's plan can be prepared."
+            "REQUIRED LAB — it carries forward if unfinished; your plan never waits for it."
             if item.required
             else "OPTIONAL LAB — extra practice; it does not block your plan."
         )
@@ -283,9 +283,13 @@ class LabFlow:
             ("HANDS-ON LAB\n" if lesson else "")
             + f"{lab.title} (~{lab.minutes} min)\n{status}\n\nGoal: {lab.goal}\n"
             f"Your lab token: {item.token}\nChoose any one route: {routes}.\n"
-            "The in-app scenario is free and needs no cloud account. Code labs run free on GitHub. "
-            "Your own AWS account is optional and may cost money.\n"
-            "Quizzes are sent whether or not you finish labs.\n"
+            "The in-app scenario is free, needs no cloud account and verifies the lab. "
+            + (
+                "Practice locally repeats it hands-on with free tools on your own machine (self-checked).\n"
+                if lab.local
+                else "Code labs run free on GitHub. Your own AWS account is optional and may cost money.\n"
+            )
+            + "Quizzes are sent whether or not you finish labs.\n"
             f"Details and progress: /lab {lab.id} or the Labs section of /dashboard.",
             buttons=self.route_buttons(item),
         )
@@ -296,6 +300,7 @@ class LabFlow:
             "scenario": "Start in-app scenario",
             "code": "Code lab steps",
             "aws": "My AWS account steps",
+            "local": "Practice locally (free)",
         }
         return [[{"text": labels[r], "callback_data": f"lab:{item.id}:{r}"}] for r in lab.routes]
 
@@ -409,6 +414,20 @@ class LabFlow:
         text = f"{lab.title} — {ROUTE_LABELS[route]}\n\n" + "\n".join(
             f"{i}. {step}" for i, step in enumerate(steps, 1)
         )
+        if route == "local":
+            text += (
+                "\n\nCLEANUP\n"
+                + "\n".join(f"- {step}" for step in cleanup)
+                + "\n\nThis route is self-checked practice on your own machine: nothing is deployed, charged or "
+                "submitted. Verify the lab with the in-app scenario."
+                + "\n\nOfficial references:\n"
+                + "\n".join(lab.references)
+            )
+            self.s.say(
+                text,
+                buttons=[[{"text": "Start in-app scenario", "callback_data": f"lab:{item.id}:scenario"}]],
+            )
+            return
         if route == "aws":
             text += (
                 "\n\n"

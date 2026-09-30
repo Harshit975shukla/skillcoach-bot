@@ -8,7 +8,11 @@ URL that contains the learner's lab token. SkillCoach never asks for AWS credent
 import hashlib
 import hmac
 import secrets
-from dataclasses import dataclass, field
+
+from skillcoach.lab_models import AwsRoute, CodeRoute, Lab, LocalRoute, Step
+from skillcoach.module_labs import MODULE_LABS
+
+__all__ = ["AwsRoute", "CodeRoute", "Lab", "LocalRoute", "Step"]
 
 LAB_CATALOG_VERSION = "2026-09-28"
 REVIEWED = "2026-09-28 (checked against the linked official AWS documentation)"
@@ -19,45 +23,8 @@ ROUTE_LABELS = {
     "scenario": "In-app scenario",
     "code": "Code lab (GitHub Actions)",
     "aws": "Your own AWS account",
+    "local": "Practice locally (free, self-checked)",
 }
-
-
-@dataclass(frozen=True)
-class Step:
-    prompt: str
-    options: tuple[str, str, str, str]  # The first option is correct; attempts shuffle the display order.
-    explanation: str
-
-
-@dataclass(frozen=True)
-class AwsRoute:
-    kind: str
-    steps: tuple[str, ...]
-    cleanup: tuple[str, ...]
-    submit: str
-
-
-@dataclass(frozen=True)
-class CodeRoute:
-    steps: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class Lab:
-    id: str
-    title: str
-    topics: tuple[str, ...]
-    minutes: int
-    goal: str
-    references: tuple[str, ...]
-    scenario: tuple[Step, Step, Step, Step]
-    aws: AwsRoute | None = None
-    code: CodeRoute | None = None
-    routes: tuple[str, ...] = field(init=False)
-
-    def __post_init__(self):
-        routes = ["scenario"] + (["code"] if self.code else []) + (["aws"] if self.aws else [])
-        object.__setattr__(self, "routes", tuple(routes))
 
 
 COST = (
@@ -639,6 +606,10 @@ LABS = {
 }
 
 
+# One or more labs for every catalog module: the per-module labs add free local practice routes.
+LABS.update({lab.id: lab for lab in MODULE_LABS})
+
+
 def labs_for_topic(title):
     return [lab for lab in LABS.values() if title in lab.topics]
 
@@ -697,4 +668,6 @@ def lab_steps(lab, route, token, repo):
     if route == "code" and lab.code:
         steps = [s.format(repo=repo, lab=lab.id, token=token) for s in lab.code.steps]
         return steps, [], f"/submitlab {lab.id} https://github.com/<you>/<repository>"
+    if route == "local" and lab.local:
+        return ["Free tools: " + lab.local.tools, *lab.local.steps], list(lab.local.cleanup), ""
     return [], [], ""

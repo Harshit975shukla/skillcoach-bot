@@ -34,7 +34,7 @@ def test_materials_are_complete_public_references_without_lab_secrets(config):
     data = materials(config)
     assert data["courses"]["total"] == 199
     assert len(data["courses"]["modules"]) == 23
-    assert len(data["resources"]["items"]) == 24
+    assert len(data["resources"]["items"]) == 30
     assert data["labs"]["items"]
     encoded = json.dumps(data["labs"])
     for forbidden in ("scenario", "options", "explanation", "correct", "answer_keys"):

@@ -66,6 +66,10 @@ class Service:
             from skillcoach.exercises import Exercises
 
             Exercises(self).act(self.payload["task_id"], self.payload["action"], reply=False)
+        elif self.payload["type"] == "encouragement":
+            from skillcoach.reengage import Reengage
+
+            Reengage(self).encourage(self.payload["message"])
         elif self.payload["type"] == "notice":
             # Owner-only operational notices, such as a late scheduled delivery.
             if self.repo.is_owner:
@@ -142,6 +146,7 @@ class Service:
                 for record in list(self.state.lessons.values())[-20:]
             ],
             "recent_quiz_results_by_topic": {topic: f"{r}/{t} correct" for topic, (r, t) in scores.items()},
+            "certification_goal": self.certification_goal(),
             "tasks": [
                 {"title": t.title, "skill": t.skill, "status": t.status}
                 for t in list(self.state.tasks.values())[-30:]
@@ -163,6 +168,18 @@ class Service:
             ][-5:],
         }
         return json.dumps(context, ensure_ascii=False)
+
+    def certification_goal(self):
+        from skillcoach.certifications import TRACKS, weakest
+
+        track = TRACKS.get(self.state.cert_track or "")
+        if track is None:
+            return None
+        return {
+            "exam": f"{track.name} ({track.code})",
+            "weakest_domains": weakest(self.state, track, self.clock()),
+            "note": "Prefer catalog topics that build these domains when they fit the learner's plan.",
+        }
 
     def plan(self, start: date) -> WeekPlan:
         from skillcoach.catalog import planning_catalog
@@ -584,6 +601,10 @@ class Service:
                     f"🔁 Review complete: {score}/{total} remembered. Missed ones come back tomorrow; "
                     "remembered ones return after a longer gap. /review again when more are due."
                 )
+            elif session.kind == "cert":
+                from skillcoach.cert_flow import CertFlow
+
+                text, buttons = CertFlow(self).completed(session, score)
             elif session.kind == "practice":
                 text = (
                     f"🧩 Practice complete: {score}/{total} correct. Practice never changes your quiz "
@@ -1098,13 +1119,19 @@ class Service:
         self.messages[-1]["lesson_key"] = key
 
     def schedule(self):
+        from skillcoach.reengage import Reengage
+
         self.ensure_review_deck()
         kind, day = self.payload["kind"], date.fromisoformat(self.payload["date"])
+        if day == self.now.date():
+            Reengage(self).resume_if_due()
         if day != self.now.date() or self.state.paused:
             return
         from skillcoach.journey import Learning
 
         if Learning(self).schedule():
+            if kind in ("quiz", "weekly"):
+                Reengage(self).evaluate()
             for body in self.messages:
                 body.update(scheduled=True, scheduled_date=day.isoformat())
             return
@@ -1191,6 +1218,8 @@ class Service:
             )
         else:
             raise ValueError("Unsupported schedule")
+        if kind in ("quiz", "weekly"):
+            Reengage(self).evaluate()
         for body in self.messages:
             body["scheduled"] = True
             body["scheduled_date"] = day.isoformat()
@@ -1226,6 +1255,21 @@ class Service:
                 self.practice_mistakes(pieces[1])
             elif pieces[0] == "resume" and len(pieces) == 2:
                 self.resume_active(pieces[1])
+            elif pieces[0] == "cert":
+                from skillcoach.cert_flow import CertFlow
+
+                if len(pieces) == 3 and pieces[1] == "track":
+                    CertFlow(self).choose(pieces[2])
+                elif len(pieces) == 4 and pieces[1] == "p":
+                    CertFlow(self).practice(pieces[2], pieces[3])
+                elif callback == "cert:list":
+                    CertFlow(self).tracks()
+                else:
+                    self.say("Unsupported or expired button.")
+            elif pieces[0] == "nudge" and len(pieces) == 2:
+                from skillcoach.reengage import Reengage
+
+                Reengage(self).respond(pieces[1])
             elif pieces[0] == "doc" and len(pieces) == 3:
                 documents.confirm(pieces[1], pieces[2])
             elif pieces[0] in ("j", "plan", "understand", "helpplan", "suggestion", "recover"):
@@ -1301,6 +1345,20 @@ class Service:
         elif cmd in ("start", "help", "menu"):
             if cmd == "start" and arg.startswith("quiz_"):
                 self.recover_quiz(arg[5:])
+            elif cmd == "start" and arg.startswith("cert_"):
+                from skillcoach.cert_flow import CertFlow
+
+                track, _, index = (
+                    arg[5:].rpartition("_") if arg[5:].rsplit("_", 1)[-1].isdecimal() else (arg[5:], "", "")
+                )
+                if index:
+                    CertFlow(self).practice(track, index)
+                else:
+                    CertFlow(self).choose(track)
+            elif cmd == "start" and arg.startswith("capstone_"):
+                from skillcoach.capstones import CapstoneFlow
+
+                CapstoneFlow(self).show(arg[9:])
             elif cmd == "start" and arg == "review":
                 self.start_review()
             elif cmd == "start" and arg == "resume":
@@ -1406,6 +1464,24 @@ class Service:
                 )
         elif cmd == "quizzes":
             self.quiz_menu()
+        elif cmd in ("capstone", "submitcapstone", "portfolio"):
+            from skillcoach.capstones import CapstoneFlow
+
+            flow = CapstoneFlow(self)
+            if cmd == "portfolio":
+                flow.portfolio(arg)
+            elif cmd == "capstone":
+                flow.show(arg) if arg else flow.list()
+            else:
+                parts = arg.split()
+                if len(parts) != 2:
+                    self.say("Use /submitcapstone <capstone_id> https://github.com/<you>/<repository>.")
+                else:
+                    flow.submit(parts[0], parts[1])
+        elif cmd == "cert":
+            from skillcoach.cert_flow import CertFlow
+
+            CertFlow(self).command(arg)
         elif cmd == "review":
             if arg:
                 self.say("Use /review without arguments.")
@@ -1443,9 +1519,13 @@ class Service:
             self.control = "retry"
             self.say("Failed operations and deliveries queued for retry; saved grades are not recomputed.")
         elif cmd in ("pause", "unpause"):
+            was_paused = self.state.paused
             self.state.paused = cmd == "pause"
+            self.state.pause_until = None  # A manual choice replaces any week-long pause.
             if self.state.paused:
                 self.control = "pause"
+            elif was_paused:
+                self.state.resumed_at = self.now  # Days spent paused are not missed days.
             self.say(
                 "Scheduled coaching paused. Manual commands still work."
                 if self.state.paused

@@ -35,7 +35,8 @@ def schedule(runtime: Runtime, kind: str, day: date, *, media=True):
         scoped = runtime.repo.for_learner(learner)
         try:
             _, state = scoped.read()
-            if not state.paused:
+            # A week-long pause that has ended gets this run so the worker can switch coaching back on.
+            if not state.paused or (state.pause_until and state.pause_until <= runtime.clock()):
                 scoped.enqueue(key, {"type": "schedule", "kind": kind, "date": day.isoformat()})
         except MembershipChanged:
             logging.info("schedule_skipped_access_changed")

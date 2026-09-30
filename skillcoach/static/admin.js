@@ -37,6 +37,10 @@
     $("learner-select").replaceChildren(new Option("Choose a learner", ""));
     $("materials-index").hidden = true; $("course-review").hidden = true;
     $("materials-load").disabled = false; $("admin-course-more").hidden = true;
+    $("adoption-detail").hidden = true; $("adoption-load").disabled = false;
+    for (const id of ["adoption-funnel", "adoption-rates", "adoption-retention", "adoption-risk", "adoption-features",
+                      "adoption-privacy"]) $(id).replaceChildren();
+    $("adoption-status").textContent = "See where learners drop off, who may need encouragement and which features they use.";
     $("admin-course-search").value = "";
     $("admin-course-module").replaceChildren(new Option("All modules", ""));
     for (const id of ["materials-status", "admin-course-count", "admin-course-list", "admin-labs", "admin-resources",
@@ -398,6 +402,55 @@
     $("admin-course-count").textContent = `Showing ${Math.min(courseLimit, topics.length)} of ${topics.length} stored lessons`;
     $("admin-course-more").hidden = topics.length <= courseLimit;
   }
+  async function loadAdoption() {
+    const requestEpoch = epoch;
+    $("adoption-load").disabled = true; $("adoption-status").textContent = "Loading adoption and retention…";
+    try {
+      const data = await api("/admin/adoption", {});
+      for (const id of ["adoption-funnel", "adoption-retention", "adoption-risk", "adoption-features"]) $(id).replaceChildren();
+      const top = data.funnel.length ? data.funnel[0].count : 0;
+      for (const stage of data.funnel) {
+        const item = node("li");
+        item.append(node("strong", `${stage.count}`), node("span", ` ${stage.stage}`),
+          node("span", top ? ` · ${Math.round(100 * stage.count / top)}%` : "", "detail"));
+        $("adoption-funnel").append(item);
+      }
+      $("adoption-rates").textContent = data.retention.weeks.map((week, index) =>
+        `${week}: ${data.retention.rates[index] === null ? "not reached yet" : data.retention.rates[index] + "%"}`).join(" · ");
+      for (const learner of data.retention.learners) {
+        const item = node("li");
+        item.append(node("strong", learner.name), node("span", " " + learner.weeks.map((active, index) =>
+          `W${index + 1} ${active === null ? "–" : active ? "✓" : "✗"}`).join("  "), "detail"));
+        $("adoption-retention").append(item);
+      }
+      for (const learner of data.at_risk) {
+        const item = node("li"), actions = node("div", undefined, "row-actions");
+        item.append(node("strong", learner.name), node("p", learner.reasons.join(" · ")),
+          node("p", `Last study day: ${learner.last_study || "none yet"} · streak ${learner.streak}`, "detail"));
+        const button = node("button", "Send encouragement");
+        button.type = "button";
+        button.addEventListener("click", () => pick("encourage", learner.id, {message: "checkin"}));
+        actions.append(button); item.append(actions);
+        $("adoption-risk").append(item);
+      }
+      if (!data.at_risk.length) empty("adoption-risk", "No active learner has missed two scheduled days.");
+      $("adoption-features-title").textContent = `Feature use · last ${data.window_days} days`;
+      for (const feature of data.features) {
+        const item = node("li");
+        item.append(node("span", feature.feature), node("span",
+          ` · ${feature.uses} use${feature.uses === 1 ? "" : "s"} by ${feature.learners} learner${feature.learners === 1 ? "" : "s"}`, "detail"));
+        $("adoption-features").append(item);
+      }
+      if (!data.features.length) empty("adoption-features", "No feature use recorded in this window yet.");
+      $("adoption-privacy").textContent = data.privacy;
+      $("adoption-status").textContent = `Updated ${date(data.generated_at)} IST.`;
+      $("adoption-detail").hidden = false;
+    } catch (error) {
+      if (requestEpoch !== epoch) return;
+      $("adoption-status").textContent = "Adoption could not be loaded. Use Load adoption to retry.";
+      showError(error);
+    } finally { if (requestEpoch === epoch) $("adoption-load").disabled = false; }
+  }
   async function loadMaterials() {
     const requestEpoch = epoch;
     $("materials-load").disabled = true; $("materials-status").textContent = "Loading stored materials…";
@@ -488,6 +541,7 @@
   $("lessons-more").addEventListener("click", () => loadLearner("lessons"));
   $("deliveries-more").addEventListener("click", () => loadLearner("deliveries"));
   $("materials-load").addEventListener("click", loadMaterials);
+  $("adoption-load").addEventListener("click", loadAdoption);
   for (const id of ["admin-course-search", "admin-course-module"]) {
     $(id).addEventListener(id.endsWith("search") ? "input" : "change", () => {
       if (materials) { courseLimit = 10; renderMaterialIndex(); }
@@ -529,6 +583,12 @@
     if (action === "revokeinvite") field("Invitation ID", "invite_id");
     if (["send_lesson", "schedule_quiz"].includes(action)) field("Cloud / DevOps topic", "topic");
     if (action === "schedule_quiz") field("Due date and time (Asia/Kolkata)", "at", "input", "datetime-local");
+    if (action === "encourage") {
+      const select = field("Message", "message", "select");
+      for (const [key, text] of Object.entries(overview.encouragements || {})) {
+        const option = node("option", text); option.value = key; select.append(option);
+      }
+    }
     if (action === "suggest_plan") {
       const select = field("Suggested catalog topic", "topic_id", "select");
       for (const [key, title] of Object.entries(overview.topics || {})) {

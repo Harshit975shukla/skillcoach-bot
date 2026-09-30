@@ -211,6 +211,7 @@ def test_course_auth_shapes_and_storage_failure_are_explicit(harness, monkeypatc
     assert response.headers["Cache-Control"] == "no-store, private"
     assert response.json["lesson"]["library"]
     assert h.repo.state.model_dump(mode="json") == before and not h.ai.calls
+    assert list(h.repo.usage.items()) == [(("2026-09-25", "course_page"), 1)]
 
     def damaged(*args):
         raise ExternalError("course_content_unavailable", retryable=False)

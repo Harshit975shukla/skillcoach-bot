@@ -63,6 +63,26 @@ fixture.learners[0].learning = {
   assessments: [{date: "2026-09-26", kind: "daily", correct: 3, total: 5}],
 };
 fixture.actions.suggest_plan = "Suggest a plan topic";
+fixture.actions.encourage = "Send encouragement";
+fixture.encouragements = JSON.parse(execFileSync(process.env.TEST_PYTHON || "python",
+  ["-c", "import json; from skillcoach.reengage import ENCOURAGEMENTS; print(json.dumps(ENCOURAGEMENTS))"],
+  {encoding: "utf8"}));
+let adoptionRequests = 0;
+const adoptionFixture = {
+  window_days: 7,
+  funnel: [{stage: "Joined or requested access", count: 4}, {stage: "Approved", count: 3},
+           {stage: "Finished setup", count: 3}, {stage: "Plan started", count: 2},
+           {stage: "First lesson received", count: 2}, {stage: "First quiz answered", count: 1},
+           {stage: "3+ study days in first week", count: 1}],
+  retention: {weeks: ["Week 1", "Week 2", "Week 3", "Week 4"], rates: [100, 50, null, null],
+    learners: [{id: "owner", name: "You (owner)", weeks: [true, true, null, null]},
+               {id: "u_bbbbbbbbbbbb", name: "<img src=x onerror='window.pwnedAdoption=true'>", weeks: [true, false, null, null]}]},
+  at_risk: [{id: "u_bbbbbbbbbbbb", name: "<img src=x onerror='window.pwnedAdoption=true'>", idle_days: 3,
+    last_study: "2026-09-25", streak: 0, reasons: ["No study for 3 scheduled days", "1 quiz open"]}],
+  features: [{feature: "Exercise buttons in chat", uses: 6, learners: 2}, {feature: "Dashboard opens", uses: 1, learners: 1}],
+  generated_at: new Date().toISOString(),
+  privacy: "Counts and dates only: no questions, answers, documents, typed text or message content.",
+};
 const session = () => ({authenticated: true, csrf: "synthetic-csrf", expires_at: new Date(Date.now() + 900000).toISOString()});
 const server = createServer(async (request, response) => {
   let raw = "";
@@ -110,6 +130,11 @@ const server = createServer(async (request, response) => {
     if (request.headers["x-csrf-token"] !== "synthetic-csrf") return output(403, {error: "CSRF missing"});
     if (request.url === "/admin/data") return output(200, fixture);
     if (request.url === "/admin/materials") return output(200, learningFixture.materials);
+    if (request.url === "/admin/adoption") {
+      adoptionRequests += 1;
+      assert.deepEqual(body, {});
+      return output(200, adoptionFixture);
+    }
     if (request.url === "/admin/course") {
       assert.deepEqual(body, {topic: topic.id, version: "2026-09-29"});
       return output(200, {lesson: learningFixture.lesson});
@@ -245,6 +270,38 @@ try {
     await page.click("#course-review-close");
     await page.select("#learner-select", "owner");
     await page.waitForFunction(() => !document.getElementById("learner-detail").hidden);
+    // Adoption: counts-only analytics, escaped names and an encouragement that is previewed, never sent directly.
+    const adoptionBefore = adoptionRequests;
+    await page.click("#adoption-load");
+    await page.waitForFunction(() => !document.getElementById("adoption-detail").hidden);
+    assert.equal(adoptionRequests, adoptionBefore + 1);
+    assert.equal(await page.$$eval("#adoption-funnel > li", e => e.length), 7);
+    assert.equal(await page.$eval("#adoption-funnel > li:last-child", e => e.textContent),
+                 "1 3+ study days in first week · 25%");
+    assert.match(await page.$eval("#adoption-rates", e => e.textContent),
+                 /Week 1: 100% · Week 2: 50% · Week 3: not reached yet/);
+    assert.equal(await page.$$eval("#adoption-retention > li", e => e.length), 2);
+    assert.match(await page.$eval("#adoption-risk", e => e.textContent), /No study for 3 scheduled days · 1 quiz open/);
+    assert.match(await page.$eval("#adoption-features", e => e.textContent), /6 uses by 2 learners/);
+    assert.match(await page.$eval("#adoption-privacy", e => e.textContent), /Counts and dates only/);
+    assert.equal(await page.$$eval("#adoption img", e => e.length), 0);
+    assert.equal(await page.evaluate(() => window.pwnedAdoption), undefined);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    if (process.env.ADMIN_SCREENSHOT_DIR) {
+      await (await page.$("#adoption")).screenshot({path: join(process.env.ADMIN_SCREENSHOT_DIR, `admin-adoption-${name}.png`)});
+    }
+    const previewsBefore = received.length;
+    await page.click("#adoption-risk button");
+    assert.equal(await page.$eval("#action-kind", e => e.value), "encourage");
+    assert.equal(await page.$eval("#action-target", e => e.value), "u_bbbbbbbbbbbb");
+    assert.equal(await page.$eval('[name="message"]', e => e.value), "checkin");
+    assert.equal(await page.$$eval('[name="message"] option', e => e.length), Object.keys(fixture.encouragements).length);
+    await page.select('[name="message"]', "progress");
+    await page.click("#preview-action");
+    await page.waitForFunction(() => !document.getElementById("action-preview").hidden);
+    assert.deepEqual(received.slice(previewsBefore).map(({action, target, arguments: args}) => ({action, target, args})),
+                     [{action: "encourage", target: "u_bbbbbbbbbbbb", args: {message: "progress"}}]);
+    assert.equal(executions, 0);
     if (process.env.ADMIN_SCREENSHOT_DIR) {
       await page.screenshot({path: join(process.env.ADMIN_SCREENSHOT_DIR, `admin-${name}.png`), fullPage: true});
     }
@@ -281,6 +338,8 @@ try {
     assert.equal(await page.$$eval("#members tr", e => e.length), 0);
     assert.equal(await page.$$eval("#learner-lessons > li", e => e.length), 0);
     assert.equal(await page.$$eval("#admin-course-list > li", e => e.length), 0);
+    assert.equal(await page.$$eval("#adoption-funnel > li, #adoption-risk > li, #adoption-features > li", e => e.length), 0);
+    assert.equal(await page.$eval("#adoption-detail", e => e.hidden), true);
     assert.equal(await page.$eval("#course-review-body", e => e.textContent), "");
     assert.equal(await page.$eval("#invite-url", e => e.value), "");
     await page.evaluate(() => window.__lateData());
@@ -585,8 +644,11 @@ try {
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(expiredLaunchAttempts, 1);
   await nativePage.close();
-  assert.ok(received.every(body => body.target === "owner" && body.action === "invite"));
-  console.log("Admin browser and cookie-free Telegram-frame login, confirmation, XSS, logout, stale-response and safe fallback checks passed.");
+  const encouragements = received.filter(body => body.action === "encourage");
+  assert.equal(encouragements.length, 2);
+  assert.ok(received.filter(body => body.action !== "encourage")
+    .every(body => body.target === "owner" && body.action === "invite"));
+  console.log("Admin browser and cookie-free Telegram-frame login, confirmation, adoption, XSS, logout, stale-response and safe fallback checks passed.");
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

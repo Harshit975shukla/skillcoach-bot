@@ -71,6 +71,10 @@ textarea { min-height: 100px; resize: vertical; }
 .learner-controls label { flex: 1; max-width: 540px; min-width: 0; }
 #learner-history .admin-list > li { display: block; }
 #learner-history .admin-list button { margin-top: 10px; }
+#adoption-retention > li, #adoption-risk > li { display: block; overflow-wrap: anywhere; }
+#adoption-risk .row-actions { margin-top: 10px; }
+#adoption-funnel > li { justify-content: flex-start; gap: 10px; }
+#adoption-funnel .detail { margin: 0 0 0 auto; }
 #lessons-more, #deliveries-more, #admin-course-more { margin-top: 16px; }
 #course-review { margin-top: 24px; max-width: 900px; }
 #course-review-body { min-width: 0; }

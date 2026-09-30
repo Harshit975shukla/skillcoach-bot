@@ -53,7 +53,8 @@
     $("content").hidden = true;
     for (const id of ["learner-name", "target-role", "tasks", "earlier-list", "plan-days", "skills", "interviews",
                       "done", "streak", "minutes", "graded", "study-days", "accuracy", "understood", "labs-verified",
-                      "reviews", "roadmap-summary", "roadmap-next",
+                      "reviews", "roadmap-summary", "roadmap-next", "cert-title", "cert-format", "cert-overall",
+                      "cert-domains", "cert-labs", "cert-tracks", "cert-disclaimer", "capstone-list", "portfolio-status",
                       "preferences", "updated", "task-count", "quiz-list", "quiz-count",
                       "today-next", "today-actions", "today-status",
                       "plan-status", "plan-rationale", "lab-items", "lab-catalog", "lab-count", "lab-status",
@@ -62,6 +63,7 @@
       $(id).replaceChildren();
     }
     $("lab-gate").hidden = true; $("today-card").hidden = true; $("earlier-tasks").hidden = true;
+    $("cert-selected").hidden = true; $("cert-guide").removeAttribute("href");
     $("plan-bot-link").hidden = true; $("plan-bot-link").removeAttribute("href");
     $("notice").textContent = message;
     $("notice").classList.toggle("error", error);
@@ -69,7 +71,7 @@
     clearTimeout(expiryTimer); clearTimeout(warningTimer);
   }
   function empty(id, message) { $(id).append(node("li", message, "empty")); }
-  const QUIZ_START = /^(?:quiz_(?:[a-f0-9]{20}|\d{4}-\d{2}-\d{2})|review|resume)$/;
+  const QUIZ_START = /^(?:quiz_(?:[a-f0-9]{20}|\d{4}-\d{2}-\d{2})|review|resume|cert_[a-z-]{2,20}(?:_\d{1,2})?|capstone_[a-z0-9-]{2,30})$/;
   function telegramLink(botUrl, start, label) {
     if (!botUrl || !/^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(botUrl) || !QUIZ_START.test(start || "")) return null;
     const link = node("a", label, "quiz-link");
@@ -223,6 +225,72 @@
     }
     $("lesson-view").hidden = true; $("lesson-page").hidden = true;
     if (app && app.BackButton) app.BackButton.hide();
+  }
+  function renderCertification(view, botUrl) {
+    for (const id of ["cert-domains", "cert-tracks"]) $(id).replaceChildren();
+    $("cert-selected").hidden = true; $("cert-labs").textContent = ""; $("cert-disclaimer").textContent = "";
+    if (!view) return;
+    const track = view.track;
+    if (track) {
+      $("cert-title").textContent = `Your goal: ${track.name} · ${track.code}`;
+      $("cert-format").textContent = track.format + (track.hands_on
+        ? " Hands-on exam: practise the commands in your labs; these questions check reasoning." : "");
+      $("cert-overall").textContent = track.overall === null
+        ? "Practise a domain to see your exam-style accuracy."
+        : `Exam-style practice accuracy: ${track.overall}% across ${track.covered_domains} practised domain${track.covered_domains === 1 ? "" : "s"}.`;
+      if (/^https:\/\/[A-Za-z0-9.-]+\//.test(track.source)) {
+        $("cert-guide").href = track.source;
+        $("cert-guide").onclick = event => { if (app && app.openLink) { event.preventDefault(); app.openLink(track.source); } };
+      }
+      $("cert-selected").hidden = false;
+      for (const domain of track.domains) {
+        const item = node("li"), detail = node("div");
+        detail.append(node("span", domain.name + (domain.weight ? ` · ${domain.weight}% of the exam` : ""), "plan-topic"),
+          node("p", (domain.practice_answers ? `${domain.practice_accuracy}% of ${domain.practice_answers} practice answers`
+            : "No practice yet") + ` · ${domain.topics_started} of ${domain.topics_total} related topics started`, "task-meta"),
+          node("span", domain.label, "state-badge " + (domain.label === "Needs work" ? "needs_review"
+            : domain.label === "Strong in practice" ? "solid" : "")));
+        item.append(detail);
+        const link = telegramLink(botUrl, `cert_${track.id}_${domain.index}`, "Practise in Telegram");
+        if (link) item.append(link);
+        $("cert-domains").append(item);
+      }
+      if (track.labs.length) $("cert-labs").textContent = "Hands-on labs for this exam: " + track.labs.map(lab => lab.title).join(" · ");
+    }
+    $("cert-tracks-heading").textContent = track ? "Other exams" : "Exams you can prepare for";
+    for (const option of view.tracks.filter(item => !track || item.id !== track.id)) {
+      const item = node("li"), detail = node("div");
+      detail.append(node("span", option.name, "plan-topic"), node("p", option.code + (option.hands_on ? " · hands-on exam" : ""), "task-meta"));
+      item.append(detail);
+      const link = telegramLink(botUrl, `cert_${option.id}`, track ? "Switch in Telegram" : "Choose in Telegram");
+      if (link) item.append(link);
+      $("cert-tracks").append(item);
+    }
+    $("cert-disclaimer").textContent = `${view.disclaimer} Exam details checked ${view.verified}.`;
+  }
+  function renderCapstones(capstones, portfolio, botUrl) {
+    $("capstone-list").replaceChildren();
+    const labels = {verified: "Verified", needs_fix: "Needs a fix", started: "Started", not_started: "Not started"};
+    for (const capstone of capstones || []) {
+      const item = node("li"), detail = node("div");
+      detail.append(node("span", capstone.title, "plan-topic"),
+        node("p", `${capstone.hours} · ${labels[capstone.status] || capstone.status}`
+          + (capstone.verified_at ? ` · ${day(capstone.verified_at.slice(0, 10))}` : ""), "task-meta"),
+        node("p", capstone.goal, "task-detail"));
+      item.append(detail);
+      const link = telegramLink(botUrl, `capstone_${capstone.id}`, capstone.status === "not_started" ? "Open brief in Telegram" : "Open in Telegram");
+      if (link) item.append(link);
+      $("capstone-list").append(item);
+    }
+    $("portfolio-status").replaceChildren();
+    if (portfolio && portfolio.enabled && /^\/portfolio\/[A-Za-z0-9_-]{16}$/.test(portfolio.path)) {
+      const link = node("a", "your public portfolio");
+      link.href = portfolio.path; link.target = "_blank"; link.rel = "noopener noreferrer";
+      $("portfolio-status").append(document.createTextNode("Public portfolio is on: "), link,
+        document.createTextNode(". Turn it off any time with /portfolio off."));
+    } else {
+      $("portfolio-status").textContent = "Public portfolio is off. Send /portfolio on in Telegram to share verified labs and capstones.";
+    }
   }
   function renderRoadmap(view) {
     mastery = view || null;
@@ -389,12 +457,14 @@
     for (const step of route.steps) steps.append(node("li", step));
     details.append(steps);
     if (route.cleanup.length) {
-      details.append(node("p", "Cleanup — right after verification", "lab-subhead"));
+      details.append(node("p", route.route === "local" ? "Cleanup when you finish" : "Cleanup — right after verification", "lab-subhead"));
       const cleanup = node("ul", undefined, "lab-cleanup");
       for (const step of route.cleanup) cleanup.append(node("li", step));
       details.append(cleanup);
     }
-    details.append(node("p", "Submit: " + route.submit, "task-detail"));
+    details.append(node("p", route.route === "local"
+      ? "Self-checked practice on your own machine: nothing is deployed, charged or submitted. Verify the lab with the in-app scenario."
+      : "Submit: " + route.submit, "task-detail"));
     return details;
   }
   function resourceList(items) {
@@ -606,6 +676,8 @@
     } else $("reviews").textContent = progress.review_due ? `${progress.review_due} due` : "None yet";
     $("graded").textContent = data.stats.answers_graded ? `(${data.stats.answers_graded} graded)` : "";
     renderRoadmap(data.mastery);
+    renderCertification(data.certification, data.bot_url);
+    renderCapstones(data.capstones, data.portfolio, data.bot_url);
     for (const skill of data.skills) {
       const item = node("li");
       item.append(node("span", skill.skill), node("span", `${skill.done} / ${skill.total} tasks`));

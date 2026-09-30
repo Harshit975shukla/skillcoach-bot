@@ -28,11 +28,12 @@ from skillcoach.resources import (
 
 
 def test_catalog_is_bounded_attributed_and_uses_only_direct_public_https_links():
-    assert len(RESOURCES) == 24
+    assert len(RESOURCES) == 30
     assert len({r.id for r in RESOURCES}) == len(RESOURCES)
     assert len({r.url for r in RESOURCES}) == len(RESOURCES)
-    assert date.fromisoformat(RESOURCE_VERSION) == date(2026, 9, 29)
+    assert date.fromisoformat(RESOURCE_VERSION) == date(2026, 9, 30)
     modules = {m.id for m in MODULES}
+    assert {m for r in RESOURCES for m in r.modules} == modules
     for resource in RESOURCES:
         assert re.fullmatch(r"[a-z0-9-]+", resource.id)
         assert resource.group in GROUPS and resource.account in ACCOUNTS
@@ -92,10 +93,10 @@ def test_related_links_use_known_topics_and_rank_specific_guides_first():
 
 def test_pagination_covers_every_link_once_and_messages_stay_under_telegram_limit():
     pages = []
-    for number in range(1, 7):
+    for number in range(1, 9):
         text = resources_text(f"all --page {number}")
         assert len(text) < 4000
-        assert f"page {number}/6" in text and "Optional" in text
+        assert f"page {number}/8" in text and "Optional" in text
         pages.append(text)
     for r in RESOURCES:
         assert sum(r.url in text for text in pages) == 1
@@ -105,7 +106,7 @@ def test_pagination_covers_every_link_once_and_messages_stay_under_telegram_limi
     for query in ("cloud --page -1", "linux --page nope", "cloud --page 99999", "x" * 241):
         assert resources_text(query).startswith("Use /resources")
     assert "No curated resources match" in resources_text("not-a-real-course")
-    assert "24 curated links" in resources_text()
+    assert "30 curated links" in resources_text()
 
 
 def test_resource_browsing_needs_no_profile_or_ai_and_preserves_active_flow(harness):

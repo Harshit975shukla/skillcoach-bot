@@ -60,6 +60,7 @@
       </div>
       <nav class="sections" aria-label="Administration sections">
         <a href="#people">Users &amp; access</a>
+        <a href="#adoption">Adoption</a>
         <a href="#learner-history">Learner history</a>
         <a href="#materials">Learning library</a>
         <a href="#actions">Actions</a>
@@ -85,6 +86,29 @@
         <ul id="learning-plans" class="admin-list"></ul>
         <h3>Recent invitations</h3>
         <ul id="invites" class="admin-list"></ul>
+      </section>
+      <section id="adoption" aria-labelledby="adoption-title">
+        <div class="section-heading">
+          <h2 id="adoption-title">Adoption and retention</h2>
+          <button id="adoption-load" type="button">Load adoption</button>
+        </div>
+        <p id="adoption-status" class="section-description" role="status" aria-live="polite">
+          See where learners drop off, who may need encouragement and which features they use.</p>
+        <div id="adoption-detail" hidden>
+          <h3>Learner funnel</h3>
+          <ol id="adoption-funnel" class="admin-list funnel"></ol>
+          <h3>Weekly retention</h3>
+          <p class="section-description">A week counts when the learner studied at least once, measured from their join date.</p>
+          <p id="adoption-rates"></p>
+          <ul id="adoption-retention" class="admin-list"></ul>
+          <h3>May need encouragement</h3>
+          <p class="section-description">Active learners with two or more missed scheduled days (Sundays are rest days).
+            The bot already sends its own gentle nudges; encouragement from you comes from a person.</p>
+          <ul id="adoption-risk" class="admin-list"></ul>
+          <h3 id="adoption-features-title">Feature use</h3>
+          <ul id="adoption-features" class="admin-list"></ul>
+          <p id="adoption-privacy" class="section-description"></p>
+        </div>
       </section>
       <section id="learner-history" aria-labelledby="learner-history-title">
         <h2 id="learner-history-title">Past deliveries and what comes next</h2>

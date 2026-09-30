@@ -33,6 +33,7 @@ from skillcoach.catalog import TOPICS
 from skillcoach.clients import ExternalError
 from skillcoach.commands import COMMANDS
 from skillcoach.models import State
+from skillcoach.reengage import ENCOURAGEMENTS
 from skillcoach.timeutil import IST, requested_quiz_payload
 
 OWNER_COMMANDS = {
@@ -75,6 +76,7 @@ ACTIONS = {
     "schedule_quiz": ("Schedule one lesson-based quiz", {"topic", "at"}),
     "owner_command": ("Run a command in your own bot chat", {"command", "argument"}),
     "suggest_plan": ("Suggest a plan topic (learner decides)", {"topic_id", "plan_id"}),
+    "encourage": ("Send encouragement", {"message"}),
 }
 
 
@@ -261,6 +263,22 @@ def _validate_action(conn, action, target, arguments, config, now):
             details.append("Runs only in your own Telegram chat, using your current learning state.")
             if command in ("cancel", "publish", "unpause"):
                 warnings.append(COMMANDS[command])
+        if action == "encourage":
+            from skillcoach.reengage import ENCOURAGEMENTS
+
+            if args["message"] not in ENCOURAGEMENTS:
+                raise AdminDenied("Choose one of the prepared encouragement messages.")
+            if state.paused:
+                raise AdminConflict("This learner paused coaching. Encouragement waits until they unpause.")
+            recent = conn.execute(
+                "SELECT 1 FROM jobs WHERE learner_id=%s AND payload->>'type'='encouragement' "
+                "AND created_at>now()-interval '20 hours'",
+                (target,),
+            ).fetchone()
+            if recent:
+                raise AdminConflict("This learner already received encouragement in the last day.")
+            details.append(ENCOURAGEMENTS[args["message"]])
+            warnings.append("Sent to the learner's Telegram with a button for their next step.")
         if action in ("send_lesson", "schedule_quiz"):
             args["topic"] = args["topic"].strip()
             if not args["topic"] or len(args["topic"]) > 300:
@@ -417,6 +435,8 @@ def execute_action(runtime, session, body):
                     "VALUES (%s,%s,%s,%s,%s)",
                     (key, Jsonb(payload), member["id"], member["generation"], due),
                 )
+            elif row["action"] == "encourage":
+                _job(conn, key, member, {"type": "encouragement", "message": args["message"]})
             elif row["action"] == "suggest_plan":
                 from skillcoach.service import stable_id
 
@@ -569,6 +589,7 @@ def admin_overview(runtime):
         "audit": dated(audit),
         "owner_commands": OWNER_COMMANDS,
         "actions": {key: value[0] for key, value in ACTIONS.items()},
+        "encouragements": ENCOURAGEMENTS,
         "topics": {key: value[1] for key, value in TOPICS.items()},
         "join_url": "/join",
         "limits": {
@@ -777,6 +798,16 @@ def register_admin(app, runtime_factory):
         ):
             raise AdminDenied("Choose an available library topic and version.")
         return jsonify(lesson=course_library.page(body["topic"], body["version"]))
+
+    @app.post("/admin/adoption")
+    @endpoint
+    def adoption_view():
+        from skillcoach.adoption import adoption
+
+        runtime = runtime_factory()
+        authenticate(request, runtime, mutate=True)
+        _json_body(request, set())
+        return jsonify(adoption(runtime))
 
     @app.post("/admin/learner")
     @endpoint
