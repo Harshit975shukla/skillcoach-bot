@@ -140,6 +140,11 @@ class Task(Model):
     actual_minutes: Annotated[int, Field(strict=True, ge=0, le=1440)] = 0
     status: Literal["pending", "done", "skipped"] = "pending"
     completed_at: datetime | None = None
+    # Progressive help for "I'm stuck": generated once, revealed one level at a time.
+    hints: list[Annotated[str, Field(min_length=1, max_length=1200)]] = Field(
+        default_factory=list, max_length=3
+    )
+    hint_level: Annotated[int, Field(strict=True, ge=0, le=3)] = 0
 
 
 class LessonTask(Model):
@@ -216,7 +221,7 @@ class LabAttempt(Model):
 class State(Model):
     profile: Profile | None = None
     draft: Draft | None = None
-    focus: Literal["draft", "assessment", "interview", "onboarding", "document", "lab"] | None = None
+    focus: Literal["draft", "assessment", "interview", "onboarding", "document", "lab", "ask"] | None = None
     active_assessment: str | None = None
     active_interview: str | None = None
     paused: bool = False
@@ -239,8 +244,13 @@ class State(Model):
     active_lab: str | None = None
     lab_checks: list[datetime] = Field(default_factory=list)
     lab_carry_at: datetime | None = None
+    # Streak milestones already celebrated, so each is announced once.
+    milestones: list[int] = Field(default_factory=list)
+    ask_session: str | None = None
 
     def target(self) -> dict | None:
+        if self.focus == "ask" and self.ask_session:
+            return {"kind": "ask", "session": self.ask_session, "question": "ask"}
         if self.focus == "lab" and self.active_lab:
             item = self.lab_attempts.get(self.active_lab)
             if item and item.status == "active" and len(item.answers) < 4:

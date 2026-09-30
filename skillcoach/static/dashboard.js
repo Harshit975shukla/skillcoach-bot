@@ -2,12 +2,13 @@
   "use strict";
   const $ = id => document.getElementById(id);
   const app = window.Telegram && window.Telegram.WebApp;
-  let expiryTimer;
+  let expiryTimer, warningTimer;
   let controller;
   let authenticated = false;
   let epoch = 0;
   let documentCsrf = "", uploadId = null, uploadPreview = null, uploadBusy = false, uploadController;
   let labBusy = false, labController, labRequests = {};
+  let exerciseBusy = false, exerciseController;
   let resourceCatalog = [], resourceLimit = 6;
   let courseModules = [], courseLimit = 10, lastLessonButton = null;
   const LESSON = /^[0-9a-f]{20}$/;
@@ -22,41 +23,143 @@
     if (className) element.className = className;
     return element;
   };
-  function clearPrivate(message, error = false) {
+  function cancelPrivateWork() {
+    // Invalidate in-flight private requests so a late reply can never land; reading content stays.
     epoch += 1;
-    if (controller) controller.abort();
-    if (uploadController) uploadController.abort();
-    if (labController) labController.abort();
-    if (lessonController) lessonController.abort();
+    for (const pending of [controller, uploadController, labController, exerciseController, lessonController]) {
+      if (pending) pending.abort();
+    }
+    uploadId = null; uploadPreview = null; uploadBusy = false;
+    labBusy = false; labRequests = {}; exerciseBusy = false;
+    $("document-file").value = ""; $("document-preview").hidden = true;
+    for (const id of ["document-file", "document-kind", "document-confirm", "document-cancel", "document-choice"]) $(id).disabled = false;
+    $("document-status").textContent = ""; $("document-preview-summary").textContent = "";
+    for (const id of ["lab-status", "task-status"]) $(id).textContent = "";
+    for (const input of document.querySelectorAll(".lab-input")) input.value = "";
+    setLabControls(false); setExerciseControls(false);
+  }
+  function clearPrivate(message, error = false) {
+    cancelPrivateWork();
     hideLesson();
-    documentCsrf = ""; uploadId = null; uploadPreview = null; uploadBusy = false;
-    labBusy = false; labRequests = {};
+    documentCsrf = "";
     resourceCatalog = []; resourceLimit = 6;
     courseModules = []; courseLimit = 10; lastLessonButton = null;
     $("course-search").value = ""; $("course-module").replaceChildren(node("option", "All modules"));
     $("course-module").firstChild.value = ""; $("course-more").hidden = true;
     $("resource-search").value = ""; $("resource-group").value = ""; $("resource-no-account").checked = false;
     $("resource-more").hidden = true;
-    $("document-file").value = ""; $("document-preview").hidden = true;
-    for (const id of ["document-file", "document-kind", "document-confirm", "document-cancel", "document-choice"]) $(id).disabled = false;
-    $("document-status").textContent = ""; $("document-preview-summary").textContent = "";
     authenticated = false;
     $("content").hidden = true;
-    for (const id of ["learner-name", "target-role", "tasks", "plan-days", "skills", "interviews",
-                      "done", "streak", "minutes", "graded", "preferences", "updated", "task-count", "quiz-list", "quiz-count",
+    for (const id of ["learner-name", "target-role", "tasks", "earlier-list", "plan-days", "skills", "interviews",
+                      "done", "streak", "minutes", "graded", "study-days", "accuracy", "understood", "labs-verified",
+                      "preferences", "updated", "task-count", "quiz-list", "quiz-count",
+                      "today-next", "today-actions", "today-status",
                       "plan-status", "plan-rationale", "lab-items", "lab-catalog", "lab-count", "lab-status",
                       "lab-cost", "lab-gate", "lesson-list", "resource-list", "resource-count",
                       "resource-notice", "resource-rights", "course-list", "course-count", "course-notice"]) {
       $(id).replaceChildren();
     }
-    $("lab-gate").hidden = true;
+    $("lab-gate").hidden = true; $("today-card").hidden = true; $("earlier-tasks").hidden = true;
     $("plan-bot-link").hidden = true; $("plan-bot-link").removeAttribute("href");
     $("notice").textContent = message;
     $("notice").classList.toggle("error", error);
     $("notice").hidden = false;
-    clearTimeout(expiryTimer);
+    clearTimeout(expiryTimer); clearTimeout(warningTimer);
   }
   function empty(id, message) { $(id).append(node("li", message, "empty")); }
+  const QUIZ_START = /^quiz_(?:[a-f0-9]{20}|\d{4}-\d{2}-\d{2})$/;
+  function telegramLink(botUrl, start, label) {
+    if (!botUrl || !/^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(botUrl) || !QUIZ_START.test(start || "")) return null;
+    const link = node("a", label, "quiz-link");
+    link.href = botUrl + "?start=" + start;
+    link.rel = "noopener noreferrer";
+    link.addEventListener("click", event => {
+      if (app && app.openTelegramLink) { event.preventDefault(); app.openTelegramLink(link.href); }
+    });
+    return link;
+  }
+  function renderToday(today, progress, botUrl) {
+    const actions = $("today-actions"), status = $("today-status");
+    actions.replaceChildren(); status.replaceChildren();
+    if (!today || !today.next) { $("today-card").hidden = true; return; }
+    const next = today.next;
+    $("today-next").textContent = next.text;
+    if (next.lesson && LESSON.test(next.lesson)) {
+      const read = node("button", "Read today's lesson");
+      read.type = "button";
+      read.addEventListener("click", () => { lastLessonButton = read; openLesson(next.lesson); });
+      actions.append(read);
+    }
+    const link = telegramLink(botUrl, next.start, next.kind === "quiz" ? "Take the quiz in Telegram" : "Catch up in Telegram");
+    if (link) actions.append(link);
+    else if (next.kind === "exercise") {
+      const jump = node("a", "Go to your exercises", "quiz-link");
+      jump.href = "#tasks-heading";
+      actions.append(jump);
+    }
+    const lesson = today.lesson, quiz = today.quiz, exercises = today.exercises || [];
+    if (lesson) {
+      status.append(node("li", `Lesson: ${lesson.topic}${lesson.today ? "" : " · " + day(lesson.date)}`
+        + (lesson.understood ? " · understood" : lesson.delivered ? "" : " · still arriving")));
+    }
+    if (quiz) {
+      status.append(node("li", quiz.status === "completed" ? `Quiz: done · ${quiz.score}/${quiz.total} correct`
+        : quiz.can_resume ? `Quiz: ${quiz.answered}/${quiz.total} answered` : "Quiz: deadline passed"));
+    }
+    if (exercises.length) {
+      status.append(node("li", `Exercises: ${exercises.filter(e => e.status === "done").length} of ${exercises.length} done`));
+    }
+    if (progress) {
+      status.append(node("li", `Study days this week: ${progress.study_days_week} of ${progress.weekly_goal} · streak ${progress.streak}`));
+    }
+    $("today-card").hidden = false;
+  }
+  function taskItem(task) {
+    const item = node("li");
+    item.append(node("span", task.title, "task-title"));
+    item.append(node("p", `${task.skill} · about ${task.estimated_minutes} min · assigned ${day(task.assigned_date)}`, "task-meta"));
+    if (task.detail_blocks && task.detail_blocks.length) {
+      const details = node("details");
+      details.append(node("summary", "Exercise details"), prose(task.detail_blocks));
+      item.append(details);
+    } else if (task.detail) {
+      const details = node("details");
+      details.append(node("summary", "Exercise details"), node("p", task.detail, "task-detail"));
+      item.append(details);
+    }
+    const actions = node("div", undefined, "task-actions");
+    for (const [action, label] of [["done", "Mark done"], ["skip", "Skip"]]) {
+      const button = node("button", label, "exercise-button");
+      button.type = "button";
+      button.setAttribute("aria-label", `${label}: ${task.title}`);
+      button.addEventListener("click", () => exerciseAction(task.id, action));
+      actions.append(button);
+    }
+    item.append(actions);
+    return item;
+  }
+  function setExerciseControls(disabled) {
+    for (const element of document.querySelectorAll(".exercise-button")) element.disabled = disabled || !documentCsrf;
+  }
+  async function exerciseAction(taskId, action) {
+    if (exerciseBusy || uploadBusy || labBusy || !documentCsrf) return;
+    const requestEpoch = epoch;
+    let saved = false;
+    exerciseBusy = true; setExerciseControls(true);
+    $("task-status").textContent = action === "done" ? "Saving…" : "Skipping…";
+    try {
+      const result = await privateRequest("/app/exercise", {request_id: crypto.randomUUID(), task_id: taskId, action}, true, "exercise");
+      if (!result) return;
+      saved = true;
+      $("task-status").textContent = action === "done" ? "Nice work. Exercise recorded as done."
+        : "Skipped. It stays on the lesson page as optional practice.";
+    } catch (error) {
+      if (requestEpoch === epoch) $("task-status").textContent = (error.message || "Could not save.") + " Tap again to retry.";
+    } finally {
+      if (requestEpoch === epoch) { exerciseBusy = false; setExerciseControls(false); }
+    }
+    if (saved && requestEpoch === epoch) refresh();
+  }
   function renderQuizzes(quizzes, botUrl) {
     const list = $("quiz-list"); list.replaceChildren();
     $("quiz-count").textContent = `${quizzes.filter(quiz => quiz.can_resume).length} available`;
@@ -327,18 +430,16 @@
     const required = labs.gate.required_pending;
     if (required) {
       $("lab-gate").hidden = false;
-      $("lab-gate").textContent = labs.gate.blocked
-        ? `Next week's plan is waiting for ${plural(required, "required lab")}. Verify below or in the bot and it is prepared automatically.`
-          + (labs.carry_available ? " Once every 28 days you can send /labcarry in the bot to move them into next week instead." : "")
-        : `${plural(required, "required lab")} to verify before Sunday's review. Quizzes do not wait for labs.`;
+      $("lab-gate").textContent = `${plural(required, "required lab")} still open. Unfinished required labs carry `
+        + "forward to next week; your quizzes and plan never wait for them.";
     }
     labs.items.forEach((lab, index) => {
       const item = node("li");
       item.append(node("span", lab.title, "task-title"));
       item.append(node("p", `~${lab.minutes} min · ${lab.required ? "Required" : "Optional"}${lab.carried ? " · carried over" : ""} · assigned ${lab.assigned_date}`, "task-meta"));
       const state = lab.status === "verified" ? `Verified${lab.verified_route ? " · " + lab.verified_route : ""}`
-        : lab.blocking ? "Needed before next week's plan" : lab.status === "needs_fix" ? "Needs a fix" : "Not verified yet";
-      item.append(node("span", state, "lab-state" + (lab.blocking ? " blocking" : "")));
+        : lab.status === "needs_fix" ? "Needs a fix" : lab.carried ? "Carried to this week" : "Not verified yet";
+      item.append(node("span", state, "lab-state"));
       item.append(node("p", lab.goal, "lab-reason"));
       if (lab.reason) item.append(node("p", "Last check: " + lab.reason, "lab-reason"));
       if (lab.status === "verified") {
@@ -399,30 +500,22 @@
   }
   function render(data) {
     renderQuizzes(data.quizzes || [], data.bot_url);
+    renderToday(data.today, data.progress, data.bot_url);
     $("learner-name").textContent = data.profile.name;
     $("target-role").textContent = data.profile.target_role || "A plan built around your goals starts with /setup.";
     $("setup-note").hidden = data.profile.setup_complete;
     $("task-count").textContent = `${data.stats.pending} open`;
-    for (const id of ["tasks", "plan-days", "skills", "interviews"]) $(id).replaceChildren();
-    for (const task of data.tasks) {
-      const item = node("li");
-      item.append(node("span", task.title, "task-title"));
-      item.append(node("p", `${task.skill} · ${task.estimated_minutes} min estimate · assigned ${task.assigned_date}`, "task-meta"));
-      if (task.detail_blocks && task.detail_blocks.length) {
-        const details = node("details");
-        details.append(node("summary", "Exercise details"), prose(task.detail_blocks));
-        item.append(details);
-      } else if (task.detail) {
-        const details = node("details");
-        details.append(node("summary", "Exercise details"), node("p", task.detail, "task-detail"));
-        item.append(details);
-      }
-      const command = node("span", undefined, "task-command");
-      command.append(node("code", `/complete ${task.id}`));
-      item.append(command);
-      $("tasks").append(item);
+    documentCsrf = data.document_csrf || "";
+    for (const id of ["tasks", "earlier-list", "plan-days", "skills", "interviews"]) $(id).replaceChildren();
+    const earlier = data.tasks.filter(task => task.earlier);
+    for (const task of data.tasks) (task.earlier ? $("earlier-list") : $("tasks")).append(taskItem(task));
+    if (data.tasks.length === earlier.length) {
+      empty("tasks", earlier.length ? "You're up to date. Older exercises are optional practice below."
+                                    : "No open exercises. Your next lesson will add practice here.");
     }
-    if (!data.tasks.length) empty("tasks", "No open tasks. Your next lesson will add practice here.");
+    $("earlier-tasks").hidden = !earlier.length;
+    $("earlier-summary").textContent = `Earlier practice (${earlier.length}, optional)`;
+    setExerciseControls(exerciseBusy);
     $("lesson-list").replaceChildren();
     for (const lesson of data.lessons || []) {
       const item = node("li"), text = node("div"), button = node("button", "Read");
@@ -475,9 +568,19 @@
       $("plan-days").append(item);
     }
     if (!proposed && !data.plan.length) empty("plan-days", "No weekly plan yet. Complete /onboard and approve your proposal.");
+    const progress = data.progress || {};
+    const streakDays = progress.streak ?? data.stats.streak;
+    $("study-days").textContent = `${progress.study_days_week ?? 0} of ${progress.weekly_goal ?? 4}`;
+    $("streak").textContent = `${streakDays} day${streakDays === 1 ? "" : "s"}`;
+    $("accuracy").replaceChildren();
+    if (progress.questions_answered) {
+      $("accuracy").append(document.createTextNode(`${progress.accuracy}%`),
+                           node("span", ` · ${progress.questions_answered} answered`, "metric-note"));
+    } else $("accuracy").textContent = "No answers yet";
+    $("understood").textContent = `${progress.lessons_understood ?? 0} of ${progress.lessons_delivered ?? 0}`;
     $("done").textContent = `${data.stats.done} / ${data.stats.total}`;
-    $("streak").textContent = `${data.stats.streak} days`;
     $("minutes").textContent = `${data.stats.minutes_practiced} min`;
+    $("labs-verified").textContent = progress.labs_verified ?? 0;
     $("graded").textContent = data.stats.answers_graded;
     for (const skill of data.skills) {
       const item = node("li");
@@ -499,9 +602,16 @@
     $("notice").hidden = true;
     $("content").hidden = Boolean(wantedLesson);
     authenticated = true;
-    clearTimeout(expiryTimer);
-    expiryTimer = setTimeout(() => clearPrivate("For privacy, this view has expired. Reopen /dashboard from the bot."),
-                             Math.max(0, data.auth_expires_at * 1000 - Date.now()));
+    clearTimeout(expiryTimer); clearTimeout(warningTimer);
+    const remaining = data.auth_expires_at * 1000 - Date.now();
+    warningTimer = setTimeout(() => {
+      if (!authenticated) return;
+      $("notice").textContent = "This private view closes in about 2 minutes. Reopen /dashboard from the bot to keep going.";
+      $("notice").classList.remove("error");
+      $("notice").hidden = false;
+    }, Math.max(0, remaining - 120000));
+    expiryTimer = setTimeout(() => clearPrivate("For privacy, this view has closed. Reopen /dashboard from the bot."),
+                             Math.max(0, remaining));
     if (wantedLesson && shownLesson !== wantedLesson) openLesson(wantedLesson);
   }
   for (const id of ["resource-search", "resource-group", "resource-no-account"]) {
@@ -551,7 +661,9 @@
   $("refresh").addEventListener("click", refresh);
   async function privateRequest(path, body, json, slot) {
     const requestEpoch = epoch, token = new AbortController();
-    if (slot === "lab") labController = token; else uploadController = token;
+    if (slot === "lab") labController = token;
+    else if (slot === "exercise") exerciseController = token;
+    else uploadController = token;
     const options = {method: "POST", cache: "no-store", credentials: "omit", signal: token.signal,
       headers: {"X-Telegram-Init-Data": app.initData, "X-CSRF-Token": documentCsrf}, body};
     if (json) { options.headers["Content-Type"] = "application/json"; options.body = JSON.stringify(body); }
@@ -668,8 +780,9 @@
     app.onEvent("themeChanged", theme);
   }
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) clearPrivate("Refreshing your private progress…");
-    else refresh();
+    // Switching to the chat keeps what the learner is reading; only in-flight private work is cancelled.
+    if (document.hidden) cancelPrivateWork();
+    else if (authenticated || app) refresh();
   });
   setInterval(() => { if (!document.hidden && authenticated) refresh(); }, 60000);
   refresh();

@@ -25,7 +25,7 @@ from skillcoach.models import (
     WeekPlan,
 )
 from skillcoach.service import CoachingText
-from skillcoach.timeutil import IST, streak, week_key
+from skillcoach.timeutil import IST, streak, study_day, week_key
 from skillcoach.web import create_app
 
 
@@ -159,10 +159,22 @@ def test_question_shape_dates_and_utf16_chunks():
 
 def test_ist_boundaries_streak_and_schedule_selection():
     assert datetime(2026, 9, 25, 18, 30, tzinfo=timezone.utc).astimezone(IST).date() == date(2026, 9, 26)
-    today = date(2026, 9, 25)
+    today = date(2026, 9, 25)  # Friday
     assert streak([today, today, today - timedelta(days=1)], today) == 2
-    assert streak([today - timedelta(days=2)], today) == 0
     assert streak([today - timedelta(days=1)], today) == 1
+    # Today is not over, and one missed weekday per ISO week is forgiven (but never counted).
+    assert streak([today - timedelta(days=2)], today) == 1
+    # A second missed weekday in the same week ends the streak.
+    assert streak([today - timedelta(days=3)], today) == 0
+    # Sunday is a rest day: Saturday and Monday stay one streak.
+    assert streak([date(2026, 9, 26), date(2026, 9, 28)], date(2026, 9, 28)) == 2
+    # Misses in different weeks are each forgiven once.
+    assert streak([date(2026, 9, 25), date(2026, 9, 29)], date(2026, 9, 29)) == 2
+    assert streak([], today) == 0
+    # Study days begin at 04:00 IST: 01:30 still belongs to the previous day.
+    assert study_day(datetime(2026, 9, 30, 1, 30, tzinfo=IST)) == date(2026, 9, 29)
+    assert study_day(datetime(2026, 9, 30, 4, 0, tzinfo=IST)) == date(2026, 9, 30)
+    assert study_day(datetime(2026, 9, 29, 20, 0, tzinfo=timezone.utc)) == date(2026, 9, 29)
     assert week_key(date(2027, 1, 1)) == "2026-W53"
     assert schedule_key("lesson", today) == schedule_key("lesson", today)
     with pytest.raises(ValueError):

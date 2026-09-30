@@ -55,12 +55,21 @@ class Service:
         self.job, self.state, self.token, self.budget = job, state, token, budget
         self.messages, self.answers, self.control = [], [], None
         self.generations = 0
+        self.celebration = None
         self.now = self.clock().astimezone(IST)
         self.payload = job["payload"]
         if self.payload["type"] == "schedule":
             self.schedule()
         elif self.payload["type"] == "telegram":
             self.telegram()
+        elif self.payload["type"] == "exercise":
+            from skillcoach.exercises import Exercises
+
+            Exercises(self).act(self.payload["task_id"], self.payload["action"], reply=False)
+        elif self.payload["type"] == "notice":
+            # Owner-only operational notices, such as a late scheduled delivery.
+            if self.repo.is_owner:
+                self.say(self.payload["text"])
         elif self.payload["type"] == "journey":
             from skillcoach.journey import Learning
 
@@ -79,6 +88,8 @@ class Service:
             self.state = import_snapshot(state, self.payload["snapshot"], self.payload["digest"])
         else:
             raise ValueError("Unknown durable job type")
+        if self.celebration:
+            self.say(self.celebration)
         return self.state, self.messages, self.answers, self.control
 
     def say(self, text: str, *, target=None, buttons=None, md=False):
@@ -114,13 +125,23 @@ class Service:
         return result
 
     def context(self):
+        from skillcoach.progress import answered
+
         profile = self.state.profile
+        scores = {}
+        for _, question, answer in list(answered(self.state))[-40:]:
+            right, total = scores.get(question.topic, (0, 0))
+            scores[question.topic] = (right + int(answer.correct), total + 1)
         context = {
             "profile": profile.model_dump(exclude={"resume_text", "jd_text"}, mode="json")
             if profile
             else None,
             "preference": self.state.preference,
-            "lessons_prepared_and_delivery_state_not_mastery": list(self.state.lessons.values())[-20:],
+            "lessons_prepared_and_delivery_state_not_mastery": [
+                {k: v for k, v in record.items() if k in ("topic", "date", "delivered_at", "feedback")}
+                for record in list(self.state.lessons.values())[-20:]
+            ],
+            "recent_quiz_results_by_topic": {topic: f"{r}/{t} correct" for topic, (r, t) in scores.items()},
             "tasks": [
                 {"title": t.title, "skill": t.skill, "status": t.status}
                 for t in list(self.state.tasks.values())[-30:]
@@ -166,7 +187,7 @@ class Service:
             self.state.preference = ""
         return self.state.plans[key]
 
-    def show_question(self, session: Assessment):
+    def show_question(self, session: Assessment, intro: str | None = None):
         from skillcoach.quizzes import deadline
 
         index = len(session.answers)
@@ -178,14 +199,15 @@ class Service:
             ]
         ]
         self.say(
-            f"{session.kind.title()} question {index + 1}/{len(session.questions)}\n\n{q.question}\n\n"
+            (intro + "\n\n―――――\n\n" if intro else "")
+            + f"{session.kind.title()} question {index + 1}/{len(session.questions)}\n\n{q.question}\n\n"
             + "\n".join(f"{key}) {value}" for key, value in q.options.items())
             + "\n\nChoose a button or /q A (B/C/D). Buttons are bound to this question."
             + (
                 "\nAvailable through "
                 + (deadline(session.date) - timedelta(seconds=1)).strftime("%a %d %b, %H:%M IST")
                 + ". Use /quizzes to resume if another assessment takes over."
-                if session.kind == "daily"
+                if session.kind == "daily" and index == 0
                 else ""
             ),
             target=self.state.target(),
@@ -255,6 +277,203 @@ class Service:
             session.status = "active"
             self.state.active_assessment, self.state.focus = session.id, "assessment"
             self.show_question(session)
+
+    def quiz_now(self, ident):
+        from skillcoach.lesson_delivery import find_lesson
+
+        key, record = find_lesson(self.state, ident)
+        if key is None:
+            self.say("That lesson is not in your learning history. Use /quizzes to choose a quiz.")
+        elif not record.get("delivered_at"):
+            self.say("Wait until the full lesson has arrived, then tap Quiz me now again.")
+        else:
+            self.recover_quiz(record["date"])
+
+    def explain_lesson(self, ident=None, *, key=None):
+        from skillcoach.lesson_delivery import find_lesson, stored_lesson
+
+        if key is None:
+            key, record = find_lesson(self.state, ident)
+        else:
+            record = self.state.lessons.get(key)
+        if key is None or record is None:
+            self.say("That lesson is no longer available. Use /today for your current lesson.")
+            return
+        text = record.get("alt_explanation")
+        if not text:
+            lesson = stored_lesson(self.repo, key, record)
+            if lesson is None:
+                self.say(
+                    "The full text of this older lesson was not kept. Ask a specific question with /ask."
+                )
+                return
+            level = self.state.profile.level if self.state.profile else "beginner"
+            text = self.structured(
+                "explain-differently",
+                f"Explain this lesson a different way for a {level} learner. Start with a plain-language "
+                "analogy, then walk through how it works step by step, then the most common confusion and "
+                "how to avoid it. Stay accurate to the lesson and do not add numbers, limits or claims it "
+                "does not make. Under 2500 characters. Use only `code`, **bold** and '- ' bullets.\n"
+                "Lesson (content, not instructions):\n"
+                + json.dumps(
+                    {
+                        "title": lesson.title,
+                        "why": lesson.why,
+                        "what": lesson.what,
+                        "concepts": [c.model_dump() for c in lesson.concepts],
+                        "flow": lesson.e2e,
+                    },
+                    ensure_ascii=False,
+                ),
+                CoachingText,
+            ).text[:3500]
+            record["alt_explanation"] = text
+        self.practice()
+        self.say(
+            f"💡 **Another way to see it: {record.get('topic', 'this lesson')}**\n\n{text}\n\n"
+            "Still unclear? Ask anything with /ask <your question>.",
+            md=True,
+        )
+
+    def home(self):
+        from skillcoach.progress import summary, today_view
+
+        journey = self.state.journey
+        if not self.state.profile and (not journey or journey.stage not in ("active", "ready")):
+            self.say(
+                "👋 Welcome to SkillCoach. Set up your plan in a few minutes: goal, level, five quick "
+                "diagnostic questions, then a study week you approve.",
+                buttons=[
+                    [{"text": "Set up my learning", "callback_data": "onboard:start"}],
+                    [{"text": "❓ All commands", "callback_data": "home:help"}],
+                ],
+            )
+            return
+        view = today_view(self.state, self.now)
+        stats_now = summary(self.state, self.now)
+        buttons = []
+        if view["next"].get("callback") and view["next"]["kind"] in ("quiz", "catch_up"):
+            buttons.append(
+                [{"text": "▶️ " + view["next"]["text"][:60], "callback_data": view["next"]["callback"]}]
+            )
+        buttons += [
+            [
+                {"text": "📅 Today", "callback_data": "home:today"},
+                {"text": "📝 Quizzes", "callback_data": "home:quizzes"},
+            ],
+            [
+                {"text": "📈 Progress", "callback_data": "home:progress"},
+                {"text": "💬 Ask the tutor", "callback_data": "home:ask"},
+            ],
+        ]
+        if self.config.private_dashboard_url:
+            buttons.append(
+                [{"text": "📊 Open my dashboard", "web_app": {"url": self.config.private_dashboard_url}}]
+            )
+        buttons.append([{"text": "❓ All commands", "callback_data": "home:help"}])
+        self.say(
+            f"🏠 SkillCoach\n\nNext: {view['next']['text']}\n\n"
+            f"🔥 {stats_now['study_days_week']} of {stats_now['weekly_goal']} study days this week · "
+            f"streak {stats_now['streak']}",
+            buttons=buttons,
+        )
+
+    def today(self):
+        from skillcoach.exercises import buttons as exercise_buttons
+        from skillcoach.progress import summary, today_view
+
+        view = today_view(self.state, self.now)
+        stats_now = summary(self.state, self.now)
+        lesson, quiz = view["lesson"], view["quiz"]
+        lines = [f"📅 Today · {self.now:%a %d %b}"]
+        buttons = []
+        if lesson is None:
+            lines.append(
+                "📘 No lesson yet. Your next lesson arrives at 09:00 IST on your plan's next weekday."
+            )
+        else:
+            when = "today" if lesson["today"] else f"on {lesson['date']}"
+            lines.append(
+                f"📘 Lesson {when}: {lesson['topic']}"
+                + (" · understood ✅" if lesson["understood"] else "")
+                + ("" if lesson["delivered"] else " · still arriving")
+            )
+            if self.config.private_dashboard_url and lesson["delivered"]:
+                from skillcoach.lesson_delivery import page_url
+
+                buttons.append(
+                    [
+                        {
+                            "text": "📖 Open lesson page",
+                            "web_app": {"url": page_url(self.config.private_dashboard_url, lesson["id"])},
+                        }
+                    ]
+                )
+        if quiz:
+            if quiz["status"] == "completed":
+                lines.append(f"📝 Quiz: done · {quiz['score']}/{quiz['total']} correct")
+            elif quiz["can_resume"]:
+                lines.append(
+                    f"📝 Quiz: {quiz['answered']}/{quiz['total']} answered · open until Sunday 23:59 IST"
+                )
+                buttons.append(
+                    [
+                        {
+                            "text": "📝 Continue quiz" if quiz["answered"] else "📝 Quiz me now",
+                            "callback_data": f"quiz:{quiz['id']}",
+                        }
+                    ]
+                )
+        if view["catch_up"] > (1 if quiz and quiz["can_resume"] else 0):
+            lines.append(f"🕘 Catch-up quizzes open: {view['catch_up']} (/quizzes)")
+        pending = [e for e in view["exercises"] if e["status"] == "pending"]
+        if view["exercises"]:
+            lines.append("\n🛠 Exercises (tap when done):")
+            for number, item in enumerate(view["exercises"], 1):
+                mark = {"done": "✅", "skipped": "⏭"}.get(item["status"], "▫️")
+                lines.append(f"{mark} {number}. {item['title']} · about {item['minutes']} min")
+            buttons += exercise_buttons([e["id"] for e in pending])
+        lines.append(
+            f"\n🔥 {stats_now['study_days_week']} of {stats_now['weekly_goal']} study days this week · "
+            f"streak {stats_now['streak']}"
+        )
+        self.say("\n".join(lines), buttons=buttons or None)
+
+    def home_action(self, action):
+        from skillcoach.progress import progress_text
+
+        if action == "today":
+            self.today()
+        elif action == "quizzes":
+            self.quiz_menu()
+        elif action == "progress":
+            self.say(progress_text(self.state, self.now))
+        elif action == "ask":
+            if self.state.focus not in (None, "ask"):
+                self.say("You have an active question open. Finish it first, or type /ask <your question>.")
+                return
+            self.state.focus, self.state.ask_session = "ask", stable_id(self.job["id"] + ":ask")
+            self.say(
+                "💬 Send your question as a message. I'll answer using your lessons and progress. "
+                "/cancel to stop.",
+                target=self.state.target(),
+            )
+        elif action == "help":
+            self.say(help_text(admin=self.repo.is_owner))
+        else:
+            self.say("Unsupported or expired button.")
+
+    def ask(self, question: str):
+        answer = self.structured(
+            "ask",
+            "Answer this learning question accurately: "
+            + question
+            + "\nActual learner context:\n"
+            + self.context(),
+            CoachingText,
+        )
+        self.practice()
+        self.say(answer.text)
 
     def start_assessment(self, kind: str, day: date, topic: str):
         if self.state.focus == "lab":
@@ -331,7 +550,8 @@ class Service:
         session.answers.append(answer)
         self.answers.append((session.id, answer.question_id))
         self.practice()
-        self.say(
+        # Feedback and the next question travel together: one message (and one notification) per answer.
+        feedback = (
             ("Correct." if answer.correct else f"Not quite. Correct option: {q.answer}.")
             + "\n\n"
             + q.explanation
@@ -340,21 +560,64 @@ class Service:
             session.status, session.completed_at = "completed", self.now
             self.state.active_assessment, self.state.focus = None, None
             score = sum(a.correct for a in session.answers)
-            self.say(
-                f"{session.kind.title()} assessment complete: {score}/{len(session.questions)} "
+            text = (
+                feedback
+                + "\n\n―――――\n\n"
+                + f"{session.kind.title()} assessment complete: {score}/{len(session.questions)} "
                 f"({round(100 * score / len(session.questions))}%). This is assessment evidence, "
                 "not a claim of overall job readiness."
             )
+            buttons = None
             if session.kind == "daily":
-                self.say(
-                    "Use /quizzes or the Quizzes section of /dashboard for your other unfinished quizzes."
+                text += (
+                    "\nUse /quizzes or the Quizzes section of /dashboard for your other unfinished quizzes."
                 )
+                buttons = self.lesson_fit_buttons(session.date)
+                if buttons:
+                    text += "\n\nHow was this lesson? One tap helps tune your next plan."
+            self.say(text, buttons=buttons)
         else:
-            self.show_question(session)
+            self.show_question(session, feedback)
+
+    def lesson_fit_buttons(self, day):
+        from skillcoach.lesson_delivery import lesson_id
+
+        key = next(
+            (
+                k
+                for k, record in sorted(self.state.lessons.items())
+                if record.get("date") == day.isoformat() and record.get("delivered_at")
+            ),
+            None,
+        )
+        if key is None:
+            return None
+        ident = self.state.lessons[key].get("id") or lesson_id(key)
+        return [
+            [
+                {"text": "👍 Clear", "callback_data": f"lf:{ident}:up"},
+                {"text": "😕 Confusing", "callback_data": f"lf:{ident}:r:confusing"},
+            ],
+            [
+                {"text": "🥱 Too easy", "callback_data": f"lf:{ident}:r:easy"},
+                {"text": "🧗 Too hard", "callback_data": f"lf:{ident}:r:hard"},
+            ],
+        ]
 
     def practice(self):
-        if self.now.date() not in self.state.activity:
-            self.state.activity.append(self.now.date())
+        from skillcoach.timeutil import MILESTONES, streak, study_day
+
+        day = study_day(self.now)
+        if day in self.state.activity:
+            return
+        self.state.activity.append(day)
+        current = streak(self.state.activity, day)
+        if current in MILESTONES and current not in self.state.milestones:
+            self.state.milestones.append(current)
+            self.celebration = (
+                f"🔥 {current}-day study streak! Sundays are rest days and one missed day a week is "
+                "forgiven, so keep going at your own pace."
+            )
 
     def start_diagnostic(self, resume_info: ResumeInfo, resume_text: str):
         if self.state.focus not in (None, "draft"):
@@ -664,11 +927,13 @@ class Service:
                 estimated_minutes=task.minutes,
             )
         practice = study_plan.minutes - reading if guide is not None else None
-        self.say(delivery.exercises(lesson, tasks, ids, practice), md=True)
+        from skillcoach.exercises import buttons as exercise_buttons
+
+        self.say(delivery.exercises(lesson, tasks, ids, practice), md=True, buttons=exercise_buttons(ids))
         from skillcoach.lab_flow import LabFlow
 
         LabFlow(self).assign(topic, key, day, session, study_plan)
-        self.say(delivery.closing(lesson, topic), md=True, buttons=delivery.feedback_buttons(ident))
+        self.say(delivery.closing(lesson, topic), md=True, buttons=delivery.closing_buttons(ident))
         self.state.lessons[key] = {
             "topic": topic,
             "date": day.isoformat(),
@@ -698,6 +963,7 @@ class Service:
         elif kind == "lesson":
             self.lesson(self.plan(monday(day)).days[day], day)
         elif kind == "quiz":
+            existing = [a for a in self.state.assessments.values() if a.kind == "daily" and a.date == day]
             requested_topic = self.payload.get("requested_topic")
             topics = [
                 item["topic"]
@@ -708,15 +974,28 @@ class Service:
                     or (topic_key(item["topic"]) == topic_key(requested_topic) and item.get("delivered_at"))
                 )
             ]
-            if requested_topic:
+            if existing:
+                # "Quiz me now" or a catch-up already created today's quiz: never generate a second one.
+                item = existing[-1]
+                if item.status != "completed" and len(item.answers) < len(item.questions):
+                    self.say(
+                        f"📝 Your quiz for today is waiting: {len(item.answers)}/{len(item.questions)} "
+                        "answered. It stays open until Sunday 23:59 IST.",
+                        buttons=[[{"text": "Continue quiz", "callback_data": f"quiz:{item.id}"}]],
+                    )
+            elif requested_topic and not topics:
                 from skillcoach.clients import ExternalError
 
-                if not topics:
-                    raise ExternalError("requested_lesson_not_delivered")
-                active = self.state.assessments.get(self.state.active_assessment)
-                if active and active.status == "active" and active.date == day:
-                    raise ExternalError("finish_or_cancel_current_assessment_before_requested_quiz")
-            if not topics:
+                raise ExternalError("requested_lesson_not_delivered")
+            elif requested_topic and any(
+                a.status == "active" and a.date == day and len(a.answers) < len(a.questions)
+                for a in self.state.assessments.values()
+                if a.id == self.state.active_assessment
+            ):
+                from skillcoach.clients import ExternalError
+
+                raise ExternalError("finish_or_cancel_current_assessment_before_requested_quiz")
+            elif not topics:
                 self.say(
                     "No lesson was prepared for today; no unrelated quiz was invented. Use /learn <topic>."
                 )
@@ -749,13 +1028,10 @@ class Service:
                 else f"Weekly assessment: {sum(a.correct for a in attempts[-1].answers)}/10."
             )
             plan = self.plan(monday(day) + timedelta(days=7))
-            completed = sum(
-                t.completed_at is not None and monday(day) <= t.completed_at.astimezone(IST).date() <= day
-                for t in self.state.tasks.values()
-                if t.status == "done"
-            )
+            from skillcoach.progress import recap_text
+
             self.say(
-                f"Weekly review ({week_key(day)})\n{result}\nTasks completed this week: {completed}.\n"
+                recap_text(self.state, self.now) + f"\n\nWeekly review ({week_key(day)})\n{result}\n"
                 "Lesson preparation is not mastery.\n\nNext week's plan:\n"
                 + "\n".join(f"{d}: {topic}" for d, topic in sorted(plan.days.items()))
                 + "\n\n"
@@ -775,10 +1051,23 @@ class Service:
         documents = Documents(self)
         text = self.payload.get("text", "").strip()
         callback = self.payload.get("callback")
+        if self.state.focus == "ask" and (callback or text.startswith("/")):
+            # An open "ask" prompt never traps other buttons or commands.
+            self.state.focus, self.state.ask_session = None, None
         if callback:
             pieces = callback.split(":")
             if pieces[0] == "quiz" and len(pieces) == 2:
                 self.recover_quiz(pieces[1])
+            elif pieces[0] == "ex" and len(pieces) == 3:
+                from skillcoach.exercises import Exercises
+
+                Exercises(self).act(pieces[1], pieces[2])
+            elif pieces[0] == "qnow" and len(pieces) == 2:
+                self.quiz_now(pieces[1])
+            elif pieces[0] == "explain" and len(pieces) == 2:
+                self.explain_lesson(pieces[1])
+            elif pieces[0] == "home" and len(pieces) == 2:
+                self.home_action(pieces[1])
             elif pieces[0] == "doc" and len(pieces) == 3:
                 documents.confirm(pieces[1], pieces[2])
             elif pieces[0] in ("j", "plan", "understand", "helpplan", "suggestion", "recover"):
@@ -837,6 +1126,12 @@ class Service:
                 from skillcoach.lab_flow import LabFlow
 
                 LabFlow(self).text(text)
+            elif self.state.focus == "ask":
+                self.state.focus, self.state.ask_session = None, None
+                if not 1 <= len(text) <= 4000:
+                    self.say("Send a question of up to 4000 characters, or use /ask <question>.")
+                else:
+                    self.ask(text)
             else:
                 self.say("Use the question buttons or /q A (B/C/D) for assessments.")
             return
@@ -845,15 +1140,17 @@ class Service:
         arg = parts[1].strip() if len(parts) > 1 else ""
         if cmd not in COMMANDS:
             self.say("Unknown command. Use /help.")
-        elif cmd in ("start", "help"):
+        elif cmd in ("start", "help", "menu"):
             if cmd == "start" and arg.startswith("quiz_"):
                 self.recover_quiz(arg[5:])
             elif cmd == "start" and arg == "onboard":
                 learning.begin()
             elif cmd == "start" and arg == "plan":
                 learning.show_plan()
-            else:
+            elif cmd == "help":
                 self.say(help_text(admin=self.repo.is_owner))
+            else:
+                self.home()
         elif cmd == "onboard":
             learning.begin()
         elif cmd in ("labs", "lab", "submitlab", "labcleanup", "labcarry"):
@@ -1036,20 +1333,46 @@ class Service:
                 if plan
                 else "No plan yet. Scheduled planning uses your validated profile and recent evidence."
             )
-        elif cmd in ("tasks", "today"):
-            tasks = [
-                t
-                for t in self.state.tasks.values()
-                if t.status == "pending" and (cmd == "tasks" or t.assigned_date <= self.now.date())
-            ]
-            self.say(
-                "\n\n".join(f"{t.id}: {t.title}\n{t.detail}" for t in tasks) if tasks else "No pending tasks."
+        elif cmd == "today":
+            self.today()
+        elif cmd == "tasks":
+            from skillcoach.exercises import buttons as exercise_buttons
+            from skillcoach.lesson_delivery import display_name
+
+            tasks = sorted(
+                (t for t in self.state.tasks.values() if t.status == "pending"),
+                key=lambda t: (t.assigned_date, t.origin),
+                reverse=True,
             )
+            if not tasks:
+                self.say("No open exercises. Your next lesson will add practice.")
+            else:
+                recent = tasks[:5]
+                older = len(tasks) - len(recent)
+                self.say(
+                    "🛠 Open exercises, newest first (full steps are in each lesson):\n\n"
+                    + "\n".join(
+                        f"{n}. {display_name(t.title)} · {t.assigned_date:%d %b} · about "
+                        f"{t.estimated_minutes} min\n   /complete {t.id}"
+                        for n, t in enumerate(recent, 1)
+                    )
+                    + (
+                        f"\n\n{older} older exercise{'s' if older > 1 else ''} remain optional practice "
+                        "on your lesson pages."
+                        if older
+                        else ""
+                    ),
+                    buttons=exercise_buttons([t.id for t in recent]),
+                )
         elif cmd == "complete":
             self.complete_task(arg)
-        elif cmd in ("stats", "streak", "skills"):
+        elif cmd in ("stats", "streak", "skills", "progress"):
+            from skillcoach.progress import progress_text
+
             summary = stats(self.state, self.now)
-            if cmd == "skills":
+            if cmd == "progress":
+                self.say(progress_text(self.state, self.now))
+            elif cmd == "skills":
                 skills = skill_summary(self.state, public=False)
                 self.say(
                     "\n".join(
@@ -1064,14 +1387,17 @@ class Service:
                 )
             elif cmd == "streak":
                 self.say(
-                    f"Current practice streak: {summary['streak']} consecutive IST days.\n"
-                    "Multiple completions on one date count as one day; a missed day resets the streak."
+                    f"🔥 Current study streak: {summary['streak']} day{'s' if summary['streak'] != 1 else ''}.\n"
+                    "Any learning action counts: answering a question, finishing an exercise, marking a "
+                    "lesson understood or asking the tutor. Study days start at 04:00 IST. Sundays are rest "
+                    "days and one missed day a week is forgiven."
                 )
             else:
                 self.say(
-                    f"Tasks: {summary['done']} completed, {summary['pending']} pending, {summary['total']} assigned.\n"
+                    progress_text(self.state, self.now)
+                    + "\n\n"
+                    + f"Tasks: {summary['done']} completed, {summary['pending']} pending, {summary['total']} assigned.\n"
                     f"Completion rate: {summary['completion_rate']}%\n"
-                    f"Practice streak: {summary['streak']} days\n"
                     f"Actual practice logged: {summary['minutes_practiced']} minutes\n"
                     f"Interviews graded: {summary['answers_graded']}\n"
                     f"Average interview score: {summary['avg_answer_score'] if summary['avg_answer_score'] is not None else 'unavailable'}/10"
@@ -1108,10 +1434,12 @@ class Service:
                 )
         elif cmd in ("ask", "mock", "tip"):
             if cmd == "ask" and not arg:
-                self.say("Use /ask <question>.")
+                self.say("Use /ask <question>, or tap Ask the tutor in /menu and send your question.")
+                return
+            if cmd == "ask":
+                self.ask(arg)
                 return
             request = {
-                "ask": "Answer this learning question accurately: " + arg,
                 "mock": "Provide a clearly labeled SAMPLE QUESTION AND MODEL ANSWER, not a scored interview. "
                 "Use a hypothetical example, never fabricated personal experience. Topic: "
                 + (arg or "Cloud DevOps"),

@@ -122,6 +122,7 @@ code { font-family: ui-monospace, "Cascadia Mono", monospace; font-size: .875em;
 .metrics { display: grid; grid-template-columns: repeat(4, 1fr); margin: 20px 0 12px; gap: 20px; }
 .metrics dt { color: var(--muted); font-size: .875rem; }
 .metrics dd { margin: 6px 0 0; font-size: 1.35rem; font-weight: 650; }
+.metric-note { display: inline-block; margin-left: .3em; font-size: .875rem; font-weight: 500; color: var(--muted); }
 .skill-list li { display: grid; grid-template-columns: 1fr auto; padding: 10px 0; gap: 15px; border-bottom: 1px solid var(--line); }
 .skill-list span:first-child { overflow-wrap: anywhere; }
 .skill-list span:last-child { color: var(--muted); }
@@ -134,6 +135,17 @@ code { font-family: ui-monospace, "Cascadia Mono", monospace; font-size: .875em;
 .lesson-index .plan-topic { display: block; }
 .lesson-index .task-meta { margin-top: 2px; }
 .lesson-index .empty { display: block; }
+.today { margin: 2px 0 34px; padding: 20px 22px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+.today-next { margin-top: 8px; font-size: 1.125rem; font-weight: 600; line-height: 1.45; max-width: 60ch; overflow-wrap: anywhere; }
+.today-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.today-actions:empty { display: none; }
+.today-status { display: grid; gap: 6px; margin-top: 16px; color: var(--muted); font-size: .94rem; }
+.today-status li { overflow-wrap: anywhere; }
+.task-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+#task-status:empty { display: none; }
+#task-status { margin: 0 0 8px; }
+.earlier { margin-top: 22px; }
+.earlier > summary { font-weight: 650; }
 .quiz-link { display: inline-flex; align-items: center; min-height: 44px; padding: 9px 12px;
   border: 1px solid var(--line); border-radius: 8px; font-weight: 650; text-decoration: none; }
 .quiz-link:hover { background: var(--soft); }

@@ -230,6 +230,8 @@ def _validate_action(conn, action, target, arguments, config, now):
                 "tasks",
                 "today",
                 "quizzes",
+                "menu",
+                "progress",
                 "skills",
                 "stats",
                 "streak",

@@ -122,7 +122,11 @@ def deliver_media(telegram, body: dict, budget, *, before_send=None):
             telegram.call(
                 "sendVideo" if video else "sendPhoto",
                 budget,
-                data={"caption": caption[:900], **({"supports_streaming": "true"} if video else {})},
+                data={
+                    "caption": caption[:900],
+                    **({"supports_streaming": "true"} if video else {}),
+                    **({"disable_notification": "true"} if body.get("silent") else {}),
+                },
                 files={kind: (path.name, stream, "video/mp4" if video else "image/png")},
             )
 
@@ -151,7 +155,11 @@ def deliver_storyboard(telegram, body, budget, *, before_send, cached=None):
         telegram.call(
             "sendVideo" if kind == "video" else "sendPhoto",
             budget,
-            data={kind: cached["file_id"], "caption": caption},
+            data={
+                kind: cached["file_id"],
+                "caption": caption,
+                **({"disable_notification": True} if body.get("silent") else {}),
+            },
         )
         return cached
     with tempfile.TemporaryDirectory(prefix="skillcoach-storyboard-") as tmp:
@@ -169,7 +177,11 @@ def deliver_storyboard(telegram, body, budget, *, before_send, cached=None):
             result = telegram.call(
                 "sendVideo" if kind == "video" else "sendPhoto",
                 budget,
-                data={"caption": caption, **({"supports_streaming": "true"} if kind == "video" else {})},
+                data={
+                    "caption": caption,
+                    **({"supports_streaming": "true"} if kind == "video" else {}),
+                    **({"disable_notification": "true"} if body.get("silent") else {}),
+                },
                 files={kind: (path.name, media_file, "video/mp4" if kind == "video" else "image/png")},
             )
         delivered = result.get("video") if kind == "video" else (result.get("photo") or [{}])[-1]

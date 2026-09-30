@@ -1,4 +1,4 @@
-"""Hands-on lab assignment, in-app scenarios, evidence checks and the next-week lab gate."""
+"""Hands-on lab assignment, in-app scenarios and evidence checks. Required labs carry forward, never block."""
 
 import secrets
 from datetime import datetime, timedelta
@@ -36,22 +36,26 @@ def active_keys(state):
 
 
 def pending_required(state):
-    """Required, unverified labs that must be verified before another study week is proposed."""
+    """Required, unverified labs from the current week or carried over from an earlier one."""
     keys = active_keys(state)
     return [
         a
         for a in state.labs.values()
-        if a.required
-        and a.status != "verified"
-        and (
-            (a.carried_at is None and a.lesson_key in keys)
-            or (a.carried_at is not None and a.lesson_key not in keys)
-        )
+        if a.required and a.status != "verified" and (a.carried_at is not None or a.lesson_key in keys)
     ]
 
 
 def blocking(state, config):
-    return pending_required(state) if config.labs_enabled else []
+    """Nothing holds planning any more; unfinished required labs carry forward instead."""
+    return []
+
+
+def carry_forward(state, now):
+    """Carry a finished week's unverified required labs into the next week, without limits."""
+    carried = [a for a in pending_required(state) if a.carried_at is None]
+    for item in carried:
+        item.carried_at = now
+    return carried
 
 
 def canonical_link(url):
@@ -64,34 +68,11 @@ def week_finished(state):
     return bool(plan and all(state.lessons.get(d.lesson_key, {}).get("delivered_at") for d in plan.sessions))
 
 
-def carry_available(state, config, now):
-    current = [a for a in blocking(state, config) if a.carried_at is None]
-    return bool(
-        current
-        and week_finished(state)
-        and (state.lab_carry_at is None or now - state.lab_carry_at >= timedelta(days=CARRY_DAYS))
-    )
-
-
-def gate_text(items):
-    names = "\n".join(f"- {LABS[a.lab_id].title} (/lab {a.lab_id})" for a in items)
-    return (
-        "Next week's plan is waiting for your required lab"
-        + ("s" if len(items) > 1 else "")
-        + ":\n"
-        + names
-        + "\nEvery lab has a free in-app scenario, so no cloud account is needed. Quizzes and lessons you "
-        "already have keep working. After verification your next plan is prepared automatically. "
-        "Once every 28 days, /labcarry moves this week's required labs into next week instead."
-    )
-
-
 def lab_view(state, config, now):
     """Private learner dashboard DTO. Never includes submitted URLs or digests."""
     from skillcoach.resources import related_view
 
-    gate = blocking(state, config)
-    gate_ids = {a.id for a in gate}
+    open_required = pending_required(state) if config.labs_enabled else []
     items = []
     for a in sorted(state.labs.values(), key=lambda x: (x.status == "verified", x.assigned_date, x.id)):
         lab = LABS.get(a.lab_id)
@@ -119,7 +100,7 @@ def lab_view(state, config, now):
                 "goal": lab.goal,
                 "minutes": lab.minutes,
                 "required": a.required,
-                "blocking": a.id in gate_ids,
+                "blocking": False,
                 "carried": a.carried_at is not None,
                 "status": a.status,
                 "reason": message(a.result_code) if a.status == "needs_fix" else None,
@@ -133,17 +114,12 @@ def lab_view(state, config, now):
                 "resources": related_view(lab.topics[0]),
             }
         )
-    j = state.journey
     return {
         "enabled": config.labs_enabled,
         "template_repo": config.labs_template_repo,
         "cost_note": COST,
-        "gate": {
-            "blocked": bool(gate) and week_finished(state),
-            "waiting_since": j.lab_gate_since.isoformat() if j and j.lab_gate_since and gate else None,
-            "required_pending": len(gate),
-        },
-        "carry_available": carry_available(state, config, now),
+        "gate": {"blocked": False, "waiting_since": None, "required_pending": len(open_required)},
+        "carry_available": False,
         "items": items[:40],
         "catalog": [
             {"lab_id": lab.id, "title": lab.title, "minutes": lab.minutes, "routes": list(lab.routes)}
@@ -155,12 +131,11 @@ def lab_view(state, config, now):
 def admin_counts(state, enabled):
     """Owner-safe counts only: no tokens, links, routes, answers or result details."""
     labs = list(state.labs.values())
-    gate = pending_required(state) if enabled else []
     return {
         "required": sum(a.required for a in labs),
         "verified": sum(a.status == "verified" for a in labs),
         "pending": sum(a.status != "verified" for a in labs),
-        "gate_blocked": bool(gate and week_finished(state)),
+        "gate_blocked": False,
     }
 
 
@@ -364,18 +339,13 @@ class LabFlow:
             self.s.say("Hands-on labs are temporarily turned off. Lessons, quizzes and plans continue.")
             return
         lines = []
-        gate = blocking(self.state, self.config)
-        gate_ids = {a.id for a in gate}
         for a in sorted(self.state.labs.values(), key=lambda x: (x.status == "verified", x.assigned_date)):
             lab = LABS.get(a.lab_id)
             if not lab:
                 continue
             label = {"pending": "pending", "needs_fix": "needs a fix", "verified": "verified"}[a.status]
             flags = ("required" if a.required else "optional") + (", carried" if a.carried_at else "")
-            lines.append(
-                f"{lab.id}: {lab.title} — {label} ({flags})"
-                + (" — needed before next week's plan" if a.id in gate_ids else "")
-            )
+            lines.append(f"{lab.id}: {lab.title} — {label} ({flags})")
         assigned = {a.lab_id for a in self.state.labs.values()}
         available = [lab for lab in LABS.values() if lab.id not in assigned]
         text = "YOUR LABS\n" + ("\n".join(lines) if lines else "No labs assigned yet.")
@@ -383,9 +353,10 @@ class LabFlow:
             text += "\n\nMore labs you can start any time (optional):\n" + "\n".join(
                 f"{lab.id}: {lab.title} (~{lab.minutes} min)" for lab in available
             )
-        text += "\n\nUse /lab <lab_id> for steps. Labs never block quizzes."
-        if gate and week_finished(self.state):
-            text += "\n\n" + gate_text(gate)
+        text += (
+            "\n\nUse /lab <lab_id> for steps. Labs never block quizzes or your next week: "
+            "unfinished required labs carry forward."
+        )
         self.s.say(text)
 
     def show(self, lab_id):
@@ -553,13 +524,11 @@ class LabFlow:
                 f"Scenario practice result: {score}/4. {lab.title} was already verified, so its "
                 "verification is unchanged."
             )
-            self.resume_planning()
             return
         if score >= PASS_MARK:
             attempt.status = "passed"
             self.verified(item, "scenario", ["scenario-pass"])
             self.s.say(f"Lab scenario passed: {score}/4. {lab.title} is verified.")
-            self.resume_planning()
         else:
             attempt.status = "failed"
             item.status, item.result_code = "needs_fix", "scenario_failed"
@@ -657,7 +626,6 @@ class LabFlow:
             )
         else:
             self.s.say(f"Code lab verified: {lab.title}. The protected tests passed on GitHub Actions.")
-        self.resume_planning()
 
     def record(self, item, result):
         item.status, item.result_code = "needs_fix", result["code"]
@@ -700,43 +668,29 @@ class LabFlow:
         else:
             self.s.say(message(cached["code"]))
 
-    # Gate -----------------------------------------------------------------------------------
+    # Carry-forward -------------------------------------------------------------------------
 
     def carry(self):
-        gate = [a for a in blocking(self.state, self.config) if a.carried_at is None]
-        if not gate:
-            self.s.say("No required labs from your current week need carrying.")
-            return
-        if not week_finished(self.state):
-            self.s.say("You can carry labs only after this week's lessons are all delivered.")
-            return
-        if self.state.lab_carry_at and self.s.now - self.state.lab_carry_at < timedelta(days=CARRY_DAYS):
-            ready = (self.state.lab_carry_at + timedelta(days=CARRY_DAYS)).astimezone(self.s.now.tzinfo)
-            self.s.say(
-                f"You already used a lab carry recently. The next one is available on {ready:%d %b %Y}."
-            )
-            return
-        for item in gate:
-            item.carried_at = self.s.now
-        self.state.lab_carry_at = self.s.now
+        pending = pending_required(self.state) if self.config.labs_enabled else []
         self.s.say(
-            "Carried to next week: "
-            + ", ".join(LABS[a.lab_id].title for a in gate)
-            + ". Verify them before next Sunday's review; they cannot be carried again."
+            "Required labs now carry forward automatically, so your plan never waits for them."
+            + (
+                "\nStill open: " + ", ".join(f"{LABS[a.lab_id].title} (/lab {a.lab_id})" for a in pending)
+                if pending
+                else "\nNo required labs are open."
+            )
         )
-        self.resume_planning()
 
     def resume_planning(self):
-        """Release a Sunday lab gate once nothing blocks it; an active question does not (approval guards focus)."""
+        """Plan the next week when a finished week has no proposal yet (e.g. after /unpause)."""
         from skillcoach.journey import Learning
 
         j = self.state.journey
         if (
             not j
-            or not j.lab_gate_since
             or j.stage != "active"
+            or j.proposed_id
             or self.state.paused
-            or blocking(self.state, self.config)
             or not week_finished(self.state)
             or self.s.control
         ):
@@ -746,21 +700,17 @@ class LabFlow:
         j.revision_request = "Propose the next study week from recent practice and diagnostic evidence."
         Learning(self.s).followup("propose")
         self.s.say(
-            (
-                "Required labs are done."
-                if self.config.labs_enabled
-                else "Hands-on labs are turned off, so next week no longer waits for them."
-            )
-            + " Preparing next week's proposal; you will approve it before it starts."
+            "Preparing next week's plan. It starts automatically at your next 09:00 IST lesson slot "
+            "unless you change it."
         )
 
     def quiz_reminder(self, day):
-        pending = blocking(self.state, self.config)
+        pending = pending_required(self.state) if self.config.labs_enabled else []
         if day.weekday() == 4 and pending:
             self.s.say(
                 "Reminder: "
                 + ", ".join(LABS[a.lab_id].title for a in pending)
-                + " must be verified before Sunday's review to prepare next week's plan. The quiz below "
+                + " is still open. It carries forward if unfinished, so nothing waits on it. The quiz below "
                 "does not depend on it. /labs"
             )
 

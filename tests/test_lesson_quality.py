@@ -148,7 +148,9 @@ def test_reviewed_lessons_are_valid_on_topic_and_have_a_reviewed_video(key):
     lesson = Lesson.model_validate(curriculum.reviewed_lesson(title))
     checks.validate_lesson(lesson)
     assert checks.reference_urls(lesson.references) == lesson.references
-    assert len(lesson.tasks) == 4 and all(checks.problems_for([checks.task_text(t)]) == [] for t in lesson.tasks)
+    assert len(lesson.tasks) == 4 and all(
+        checks.problems_for([checks.task_text(t)]) == [] for t in lesson.tasks
+    )
     assert lesson.interview_question and 3 <= len(lesson.interview_points) <= 5
     assert not lesson.reviewed_at.startswith("AI-generated")
     assert checks.problems_for([entry["core"]]) == []
@@ -239,8 +241,18 @@ def test_reviewed_topic_lesson_is_compact_on_topic_and_needs_no_ai(harness):
     lesson = Lesson.model_validate(curriculum.reviewed_lesson(TOPICS[catalog_id(CI)][1]))
     assert lesson.interview_question in closing["text"] and "Walk me through a design" not in closing["text"]
     feedback = [b["callback_data"] for row in closing["buttons"] for b in row]
-    assert feedback == [f"lf:{ident}:up", f"lf:{ident}:down", f"lf:{ident}:report"]
+    assert feedback == [
+        f"qnow:{ident}",
+        f"explain:{ident}",
+        f"lf:{ident}:up",
+        f"lf:{ident}:down",
+        f"lf:{ident}:report",
+    ]
     assert all(len(data.encode()) <= 64 for data in feedback)
+    done = [b["callback_data"] for row in exercises["buttons"] for b in row]
+    assert done == [
+        f"ex:{task}:{action}" for task in h.repo.state.tasks for action in ("done", "skip", "stuck")
+    ]
     text = "\n".join(b.get("text", "") for b in bodies)
     for retired in ("upload-artifact@v3", "checkout@v3", "terraform:*"):
         assert retired not in text
@@ -325,14 +337,16 @@ def test_lesson_page_is_structured_and_scoped_to_the_learner_history(harness):
     json.dumps(data)
     assert page(h.repo, h.repo.state, "f" * 20, h.clock.now) is None
     assert find_lesson(h.repo.state, "../etc") == (None, None)
-    assert page_url("https://x.test/app?lesson=old&a=1", "b" * 20) == "https://x.test/app?a=1&lesson=" + "b" * 20
+    assert (
+        page_url("https://x.test/app?lesson=old&a=1", "b" * 20) == "https://x.test/app?a=1&lesson=" + "b" * 20
+    )
 
 
 def test_runtime_sends_markdown_as_html_and_falls_back_to_plain_text_once(harness):
     h = harness
     sent = []
 
-    def send(text, budget, buttons=None, *, parse_mode=None):
+    def send(text, budget, buttons=None, *, parse_mode=None, silent=False):
         sent.append((text, parse_mode))
         if parse_mode == "HTML" and len(sent) == 1:
             raise ExternalError("http_400")

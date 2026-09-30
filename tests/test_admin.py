@@ -305,7 +305,9 @@ def test_browser_login_recovers_after_reopening_with_only_original_cookie(admin)
     pending = post(admin, "/admin/login/status", client=reopened).json
     assert pending == {"authenticated": False, "pending": True, **started}
     assert post(admin, "/admin/data", client=reopened).status_code == 403
-    assert post(admin, "/admin/login/status", client=reopened, origin="https://evil.invalid").status_code == 403
+    assert (
+        post(admin, "/admin/login/status", client=reopened, origin="https://evil.invalid").status_code == 403
+    )
     identifier = parse_qs(urlsplit(started["telegram_url"]).query)["start"][0].removeprefix("admin_login_")
     admin.bot.input(admin.bot.config.owner_id, callback="adminlogin:approve:" + identifier)
     response = post(admin, "/admin/login/status", client=reopened)

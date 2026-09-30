@@ -14,6 +14,9 @@ from skillcoach.models import State
 from skillcoach.timeutil import IST, monday
 
 MAX_AUTH_AGE = 300
+# Learners read full lessons in the Mini App, so their signed launch stays valid for 30 minutes.
+# Membership and revocation are still re-checked on every request.
+LEARNER_AUTH_AGE = 1800
 
 
 def learner_csrf(auth_hash, config):
@@ -26,7 +29,7 @@ class DashboardDenied(ValueError):
     pass
 
 
-def verify_init_data(raw: str, bot_token: str, now: int) -> tuple[int, int]:
+def verify_init_data(raw: str, bot_token: str, now: int, max_age: int = MAX_AUTH_AGE) -> tuple[int, int]:
     if not isinstance(raw, str) or not raw or len(raw) > 8192:
         raise DashboardDenied("Open the dashboard from Telegram.")
     try:
@@ -43,7 +46,7 @@ def verify_init_data(raw: str, bot_token: str, now: int) -> tuple[int, int]:
         if not hmac.compare_digest(signature, expected):
             raise ValueError("Invalid authentication signature")
         issued = int(fields["auth_date"])
-        if issued > now + 15 or now - issued > MAX_AUTH_AGE:
+        if issued > now + 15 or now - issued > max_age:
             raise ValueError("Authentication expired")
         user = json.loads(fields["user"])
         if not isinstance(user, dict) or type(user.get("id")) is not int or not 0 < user["id"] < 2**52:
@@ -72,7 +75,7 @@ def authorize_learner(repo, actor: int, issued: int, auth_hash: str):
         conn.execute(
             "INSERT INTO dashboard_sessions(auth_hash,learner_id,access_generation,expires_at) "
             "VALUES (%s,%s,%s,to_timestamp(%s)) ON CONFLICT DO NOTHING",
-            (auth_hash, row["id"], row["generation"], issued + MAX_AUTH_AGE),
+            (auth_hash, row["id"], row["generation"], issued + LEARNER_AUTH_AGE),
         )
         session = conn.execute(
             "SELECT learner_id,access_generation FROM dashboard_sessions WHERE auth_hash=%s", (auth_hash,)
@@ -85,16 +88,21 @@ def authorize_learner(repo, actor: int, issued: int, auth_hash: str):
 def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narration_enabled=False, config=None):
     from skillcoach.course_library import index
     from skillcoach.formatting import md_blocks
-    from skillcoach.lesson_delivery import recent_lessons
+    from skillcoach.lesson_delivery import display_name, recent_lessons
+    from skillcoach.progress import summary, today_view
     from skillcoach.quizzes import catalogue
     from skillcoach.resources import library_view
+    from skillcoach.timeutil import study_day
 
     _, state = authorize_learner(repo, actor, issued, auth_hash)
     profile = state.profile
     today = now.astimezone(IST).date()
     plan = state.plans.get(monday(today).isoformat())
+    # Newest practice first; exercises older than a week stay available as optional practice.
     pending = sorted(
-        (t for t in state.tasks.values() if t.status == "pending"), key=lambda t: (t.assigned_date, t.id)
+        (t for t in state.tasks.values() if t.status == "pending"),
+        key=lambda t: (t.assigned_date, t.origin),
+        reverse=True,
     )
     recent = sorted(
         (i for i in state.interviews.values() if i.completed_at and i.feedback),
@@ -113,6 +121,8 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
             "setup_complete": profile is not None,
         },
         "stats": stats(state, now),
+        "progress": summary(state, now),
+        "today": today_view(state, now),
         "preferences": {
             "paused": state.paused,
             "media": state.media,
@@ -122,12 +132,13 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
         "tasks": [
             {
                 "id": t.id,
-                "title": t.title,
+                "title": display_name(t.title),
                 "skill": t.skill,
                 "detail": t.detail,
                 "detail_blocks": md_blocks(t.detail),
                 "assigned_date": t.assigned_date.isoformat(),
                 "estimated_minutes": t.estimated_minutes,
+                "earlier": (study_day(now) - t.assigned_date).days > 7,
             }
             for t in pending[:30]
         ],
@@ -149,7 +160,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
             for i in recent[:5]
         ],
         "generated_at": now.isoformat(),
-        "auth_expires_at": issued + MAX_AUTH_AGE,
+        "auth_expires_at": issued + LEARNER_AUTH_AGE,
         "private": True,
         "documents": {
             "resume_saved": bool(profile and profile.resume_text),
@@ -203,7 +214,10 @@ def register_dashboard(app, runtime_factory):
             if request.args or not isinstance(body, dict) or set(body) != {"init_data"}:
                 raise DashboardDenied("Open this dashboard from the bot.")
             actor, issued = verify_init_data(
-                body["init_data"], runtime.config.telegram_token, int(runtime.clock().timestamp())
+                body["init_data"],
+                runtime.config.telegram_token,
+                int(runtime.clock().timestamp()),
+                LEARNER_AUTH_AGE,
             )
             digest = hashlib.sha256(body["init_data"].encode()).hexdigest()
             with runtime.repo.session():
@@ -237,14 +251,19 @@ def register_dashboard(app, runtime_factory):
             if request.args or not isinstance(body, dict) or set(body) != {"init_data", "topic"}:
                 raise DashboardDenied("Open this course from the bot.")
             actor, issued = verify_init_data(
-                body["init_data"], runtime.config.telegram_token, int(runtime.clock().timestamp())
+                body["init_data"],
+                runtime.config.telegram_token,
+                int(runtime.clock().timestamp()),
+                LEARNER_AUTH_AGE,
             )
             digest = hashlib.sha256(body["init_data"].encode()).hexdigest()
             with runtime.repo.session():
                 authorize_learner(runtime.repo, actor, issued, digest)
             if not isinstance(body["topic"], str) or body["topic"] not in TOPICS:
                 return jsonify(error="Choose a topic from the lesson library."), 404
-            return jsonify(lesson=page(body["topic"]), auth_expires_at=issued + MAX_AUTH_AGE, private=True)
+            return jsonify(
+                lesson=page(body["topic"]), auth_expires_at=issued + LEARNER_AUTH_AGE, private=True
+            )
         except DashboardDenied as exc:
             return jsonify(error=str(exc)), 403
         except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
@@ -262,7 +281,10 @@ def register_dashboard(app, runtime_factory):
             if not isinstance(body["lesson"], str) or not LESSON_ID.fullmatch(body["lesson"]):
                 return jsonify(error="That lesson link is not valid."), 404
             actor, issued = verify_init_data(
-                body["init_data"], runtime.config.telegram_token, int(runtime.clock().timestamp())
+                body["init_data"],
+                runtime.config.telegram_token,
+                int(runtime.clock().timestamp()),
+                LEARNER_AUTH_AGE,
             )
             digest = hashlib.sha256(body["init_data"].encode()).hexdigest()
             with runtime.repo.session():
@@ -270,7 +292,7 @@ def register_dashboard(app, runtime_factory):
                 data = page(runtime.repo.for_learner(learner), state, body["lesson"], runtime.clock())
             if data is None:
                 return jsonify(error="This lesson is not in your learning history."), 404
-            return jsonify(lesson=data, auth_expires_at=issued + MAX_AUTH_AGE, private=True)
+            return jsonify(lesson=data, auth_expires_at=issued + LEARNER_AUTH_AGE, private=True)
         except DashboardDenied as exc:
             return jsonify(error=str(exc)), 403
         except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
@@ -283,7 +305,9 @@ def register_dashboard(app, runtime_factory):
         if request.args:
             raise DashboardDenied("Document requests cannot contain URL parameters.")
         raw = request.headers.get("X-Telegram-Init-Data", "")
-        actor, issued = verify_init_data(raw, runtime.config.telegram_token, int(runtime.clock().timestamp()))
+        actor, issued = verify_init_data(
+            raw, runtime.config.telegram_token, int(runtime.clock().timestamp()), LEARNER_AUTH_AGE
+        )
         digest = hashlib.sha256(raw.encode()).hexdigest()
         if not hmac.compare_digest(
             request.headers.get("X-CSRF-Token", ""), learner_csrf(digest, runtime.config)
@@ -399,6 +423,33 @@ def register_dashboard(app, runtime_factory):
             return jsonify(
                 error="Lab check temporarily unavailable. Retry the same submission to see its result."
             ), 503
+
+    @app.post("/app/exercise")
+    def exercise_action():
+        from skillcoach.admin_auth import AdminDenied
+        from skillcoach.clients import Budget, ExternalError
+        from skillcoach.exercises import ExerciseError, queue
+
+        budget = Budget(20)
+        try:
+            runtime = runtime_factory()
+            with runtime.repo.session():
+                identity = document_identity(runtime)
+                body = request.get_json(silent=True)
+                if not isinstance(body, dict) or set(body) != {"request_id", "task_id", "action"}:
+                    raise ExerciseError("Unexpected exercise fields.")
+                if any(not isinstance(value, str) for value in body.values()):
+                    raise ExerciseError("Invalid exercise update.")
+                result = queue(runtime, identity, body["request_id"], body["task_id"], body["action"])
+                if not result["duplicate"] and budget.remaining() >= 8:
+                    runtime.process_one(budget, document_job=result["job"])
+            return jsonify(queued=True, duplicate=result["duplicate"])
+        except (AdminDenied, DashboardDenied) as exc:
+            return jsonify(error=str(exc)), 403
+        except ExerciseError as exc:
+            return jsonify(error=str(exc)), 409
+        except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
+            return jsonify(error="Exercise update temporarily unavailable. Retry the same tap."), 503
 
     @app.after_request
     def private_headers(response):

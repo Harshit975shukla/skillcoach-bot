@@ -52,6 +52,8 @@ class LearningPlan(PlanDraft):
     start_now_at: datetime | None = None
     replaces_plan_id: str | None = None
     labs_enabled: bool = False
+    # Set when a next-week proposal started on schedule without an explicit tap.
+    auto_started_at: datetime | None = None
 
 
 class Suggestion(Model):

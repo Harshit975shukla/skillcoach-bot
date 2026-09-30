@@ -359,7 +359,13 @@ class Telegram:
 
     def call(self, method, budget: Budget, *, data=None, files=None):
         payload = {"chat_id": self.recipient_id, **(data or {})}
-        if method in ("answerCallbackQuery", "getWebhookInfo", "getUpdates"):
+        if method in (
+            "answerCallbackQuery",
+            "getWebhookInfo",
+            "getUpdates",
+            "setMyCommands",
+            "setChatMenuButton",
+        ):
             payload.pop("chat_id", None)
         kwargs = {"data": payload, "files": files} if files else {"json": payload}
         _, body = self.http.call(
@@ -373,13 +379,15 @@ class Telegram:
             raise ExternalError("telegram_rejected")
         return body.get("result")
 
-    def send(self, text: str, budget: Budget, buttons=None, *, parse_mode=None):
+    def send(self, text: str, budget: Budget, buttons=None, *, parse_mode=None, silent=False):
         payload = {"text": text}
         if parse_mode:
             payload["parse_mode"] = parse_mode
             payload["link_preview_options"] = {"is_disabled": True}
         if buttons:
             payload["reply_markup"] = {"inline_keyboard": buttons}
+        if silent:
+            payload["disable_notification"] = True
         return self.call("sendMessage", budget, data=payload)
 
     def acknowledge(self, callback_id: str, budget: Budget):

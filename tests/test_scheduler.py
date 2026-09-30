@@ -139,8 +139,14 @@ def test_cron_endpoint_dispatches_todays_slot_with_exact_not_before(monkeypatch)
     }
     [(method, url, kwargs)] = session.calls
     assert method == "POST"
-    assert url == "https://api.github.com/repos/owner/skillcoach-bot/actions/workflows/morning_lesson.yml/dispatches"
-    assert kwargs["json"] == {"ref": "main", "inputs": {"date": "2026-09-29", "not_before": "2026-09-29T03:30:00Z"}}
+    assert (
+        url
+        == "https://api.github.com/repos/owner/skillcoach-bot/actions/workflows/morning_lesson.yml/dispatches"
+    )
+    assert kwargs["json"] == {
+        "ref": "main",
+        "inputs": {"date": "2026-09-29", "not_before": "2026-09-29T03:30:00Z"},
+    }
     assert kwargs["headers"]["Authorization"] == "Bearer dispatch-token"
     assert "GITHUB_TOKEN" not in json.dumps(response.get_json())
 
@@ -148,7 +154,12 @@ def test_cron_endpoint_dispatches_todays_slot_with_exact_not_before(monkeypatch)
 @pytest.mark.parametrize(
     ("kind", "now", "workflow", "inputs"),
     [
-        ("quiz", "2026-09-29T11:00:00", "evening_quiz.yml", {"date": "2026-09-29", "not_before": "2026-09-29T12:30:00Z"}),
+        (
+            "quiz",
+            "2026-09-29T11:00:00",
+            "evening_quiz.yml",
+            {"date": "2026-09-29", "not_before": "2026-09-29T12:30:00Z"},
+        ),
         (
             "weekly",
             "2026-10-03T02:59:00",
@@ -174,8 +185,12 @@ def test_each_slot_dispatches_its_workflow(monkeypatch, kind, now, workflow, inp
 
 def test_non_slot_days_and_far_early_calls_do_not_dispatch(monkeypatch):
     session = configured(monkeypatch)
-    assert trigger("lesson", f"Bearer {SECRET}", now=utc("2026-10-03T02:10:00"))[0]["reason"] == "not_a_slot_day"
-    assert trigger("weekly", f"Bearer {SECRET}", now=utc("2026-10-02T02:10:00"))[0]["reason"] == "not_a_slot_day"
+    assert (
+        trigger("lesson", f"Bearer {SECRET}", now=utc("2026-10-03T02:10:00"))[0]["reason"] == "not_a_slot_day"
+    )
+    assert (
+        trigger("weekly", f"Bearer {SECRET}", now=utc("2026-10-02T02:10:00"))[0]["reason"] == "not_a_slot_day"
+    )
     assert trigger("lesson", f"Bearer {SECRET}", now=utc("2026-09-28T22:00:00"))[0]["reason"] == "too_early"
     assert session.calls == []
     # A call after the slot on the same day still dispatches; the worker then runs at once and dedupes.
@@ -191,7 +206,9 @@ def test_dispatch_failures_are_reported_without_secrets(monkeypatch):
 
 
 def test_http_client_accepts_empty_no_content_responses():
-    status, body = HTTP(Session(Response(204))).call("POST", "https://example.invalid", budget=Budget(), allow=(204,))
+    status, body = HTTP(Session(Response(204))).call(
+        "POST", "https://example.invalid", budget=Budget(), allow=(204,)
+    )
     assert (status, body) == (204, None)
 
 
@@ -219,8 +236,8 @@ def test_workflows_forward_not_before_and_wait_for_the_slot():
     assert "timeout-minutes: ${{ inputs.not_before != '' && 125 || 20 }}" in worker
     wait = worker.index("name: Wait for the exact IST slot")
     assert worker.index("Install local renderers") < wait < worker.index("Execute explicit operation")
-    assert "if: inputs.not_before != ''" in worker and '-gt 6000' in worker and 'sleep "$WAIT"' in worker
-    assert int(re.search(r'-gt (\d+) \]', worker).group(1)) == MAX_LEAD.total_seconds()
+    assert "if: inputs.not_before != ''" in worker and "-gt 6000" in worker and 'sleep "$WAIT"' in worker
+    assert int(re.search(r"-gt (\d+) \]", worker).group(1)) == MAX_LEAD.total_seconds()
     for name, jobs in (("morning_lesson.yml", 1), ("evening_quiz.yml", 1), ("weekend.yml", 2)):
         caller = Path(".github", "workflows", name).read_text()
         assert "      not_before:\n" in caller

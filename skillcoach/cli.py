@@ -5,7 +5,7 @@ import os
 import re
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -40,6 +40,74 @@ def schedule(runtime: Runtime, kind: str, day: date, *, media=True):
         except MembershipChanged:
             logging.info("schedule_skipped_access_changed")
     runtime.recover(media=media)
+    alert_late(runtime, kind, day)
+
+
+LATE_AFTER = timedelta(minutes=20)
+
+
+def alert_late(runtime: Runtime, kind: str, day: date):
+    """Tell the owner once when a slot reached learners late or is still waiting after 20 minutes."""
+    from skillcoach.scheduler import slot_instant
+
+    due = slot_instant(kind, day)
+    now = runtime.clock()
+    if now - due < LATE_AFTER:
+        return None
+    late = [
+        row
+        for row in runtime.repo.slot_deliveries(schedule_key(kind, day))
+        if row["waiting"] or (row["last_sent"] is not None and row["last_sent"] - due > LATE_AFTER)
+    ]
+    if not late:
+        return None
+    reached = [row["last_sent"] for row in late if row["last_sent"] is not None]
+    worst = round((max(reached) - due).total_seconds() / 60) if reached else None
+    text = (
+        f"⚠️ Delivery delay: the {day:%a %d %b} {kind} for {len(late)} learner"
+        f"{'s' if len(late) > 1 else ''}"
+        + (
+            f" finished {worst} min after {due:%H:%M} IST."
+            if worst is not None
+            else f" (due {due:%H:%M} IST)."
+        )
+        + (
+            " Some parts are still waiting; recovery keeps retrying and /status shows the queue."
+            if any(row["waiting"] for row in late)
+            else ""
+        )
+    )
+    key = f"alert:late:{kind}:{day.isoformat()}"
+    if runtime.repo.enqueue(key, {"type": "notice", "text": text}):
+        runtime.recover(limit=3, media=False)
+    return key
+
+
+MENU = (
+    ("menu", "Home: your next step"),
+    ("today", "Today's lesson, quiz and exercises"),
+    ("quizzes", "Quizzes to finish this week"),
+    ("progress", "Study days, streak and accuracy"),
+    ("ask", "Ask the AI tutor"),
+    ("dashboard", "Open your private dashboard"),
+    ("pause", "Pause scheduled coaching"),
+    ("help", "All commands"),
+)
+
+
+def configure_telegram(runtime: Runtime):
+    """Idempotently set the bot's command menu and, when configured, the dashboard menu button."""
+    runtime.telegram.call(
+        "setMyCommands", Budget(), data={"commands": [{"command": c, "description": d} for c, d in MENU]}
+    )
+    url = runtime.config.private_dashboard_url
+    if url:
+        runtime.telegram.call(
+            "setChatMenuButton",
+            Budget(),
+            data={"menu_button": {"type": "web_app", "text": "Dashboard", "web_app": {"url": url}}},
+        )
+    return {"commands": len(MENU), "menu_button": bool(url)}
 
 
 def queue_owner_quiz(runtime: Runtime, due: datetime, topic: str):
@@ -103,6 +171,7 @@ def main(argv=None):
     announce.add_argument("--release", required=True)
     sub.add_parser("needs-media", help="Exit 0 for queued media/lesson work, 3 if absent")
     sub.add_parser("poll", help="Explicit local polling adapter; refuses an active webhook")
+    sub.add_parser("configure-telegram", help="Set the bot command menu and dashboard menu button")
     run = sub.add_parser("schedule")
     run.add_argument("kind", choices=("lesson", "quiz", "weekly", "review"))
     run.add_argument("--no-media", action="store_true", help="Leave media for an equipped recovery worker")
@@ -171,6 +240,9 @@ def main(argv=None):
         if args.command == "needs-media":
             return 0 if Repository(database_url()).needs_media() else 3
         runtime = Runtime.from_env()
+        if args.command == "configure-telegram":
+            print(json.dumps(configure_telegram(runtime)))
+            return 0
         if args.command == "queue-owner-quiz":
             print(json.dumps(queue_owner_quiz(runtime, args.at, args.topic), indent=2))
             return 0

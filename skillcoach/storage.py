@@ -246,7 +246,7 @@ class Repository:
             if document_job is not None and (
                 row is None
                 or row["id"] != document_job
-                or row["payload"].get("type") not in ("document", "lab")
+                or row["payload"].get("type") not in ("document", "lab", "exercise")
             ):
                 return None
             if row:
@@ -585,6 +585,21 @@ class Repository:
                             item["access_notice"],
                         ),
                     )
+
+    def slot_deliveries(self, key: str) -> list[dict]:
+        """Per learner: when a scheduled slot's messages first/last reached Telegram and what is left."""
+        with self.connection() as conn:
+            return [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT j.learner_id, min(o.delivered_at) FILTER (WHERE o.status='sent') AS first_sent, "
+                    "max(o.delivered_at) FILTER (WHERE o.status='sent') AS last_sent, "
+                    "count(*) FILTER (WHERE o.status IN ('pending','failed')) AS waiting "
+                    "FROM jobs j JOIN outbox o ON o.job_id=j.id "
+                    "WHERE j.id=%s OR j.id LIKE %s GROUP BY j.learner_id",
+                    (key, "learner:%:" + key),
+                )
+            ]
 
     def status(self, *, all_learners=False) -> dict:
         with self.connection() as conn:

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from skillcoach.models import State
-from skillcoach.timeutil import IST, streak
+from skillcoach.timeutil import IST, streak, study_day
 
 TOPICS = {
     "ec2": "EC2",
@@ -34,7 +34,7 @@ def stats(state: State, now: datetime) -> dict:
     graded = [i.feedback.score for i in state.interviews.values() if i.status == "completed" and i.feedback]
     return {
         "done": done,
-        "streak": streak(state.activity, now.astimezone(IST).date()),
+        "streak": streak(state.activity, study_day(now)),
         "pending": sum(t.status == "pending" for t in tasks),
         "minutes_practiced": sum(t.actual_minutes for t in tasks if t.status == "done"),
         "answers_graded": len(graded),

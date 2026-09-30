@@ -28,7 +28,7 @@
           controlled learning reasons, activity and assessment summaries, not your private documents, answers or conversations.</p>
       </section>
       <nav class="sections" aria-label="Learning sections">
-        <a href="#today">Practice</a>
+        <a href="#today">Today</a>
         <a href="#quizzes">Quizzes</a>
         <a href="#lessons">Lessons</a>
         <a href="#labs">Labs</a>
@@ -37,12 +37,24 @@
         <a href="#progress">Progress</a>
         <a href="#documents">Documents</a>
       </nav>
-      <section id="today" aria-labelledby="tasks-heading">
+      <section id="today" aria-labelledby="today-heading">
+        <div id="today-card" class="today" hidden>
+          <h2 id="today-heading">Today</h2>
+          <p id="today-next" class="today-next"></p>
+          <div id="today-actions" class="today-actions"></div>
+          <ul id="today-status" class="today-status"></ul>
+        </div>
         <div class="section-heading"><h2 id="tasks-heading">Your next practice</h2><span id="task-count"></span></div>
         <p id="setup-note" class="guidance" hidden>Start with <code>/onboard</code> in the bot. Documents are optional.
           Answer five diagnostic questions, then review and approve your plan before Day 1.</p>
-        <p class="section-description">Open tasks, ordered by assigned date. Complete them in the bot using the task ID.</p>
+        <p class="section-description">Newest first. Tap Done when you finish an exercise, or Skip to keep it as optional
+          practice. Exercises older than a week move to “Earlier practice”.</p>
+        <p id="task-status" class="task-meta" role="status" aria-live="polite"></p>
         <ol id="tasks" class="task-list"></ol>
+        <details id="earlier-tasks" class="earlier" hidden>
+          <summary id="earlier-summary">Earlier practice</summary>
+          <ol id="earlier-list" class="task-list"></ol>
+        </details>
       </section>
       <section id="quizzes" aria-labelledby="quizzes-heading">
         <div class="section-heading"><h2 id="quizzes-heading">Your quizzes</h2><span id="quiz-count"></span></div>
@@ -77,9 +89,9 @@
       <section id="labs" aria-labelledby="labs-heading">
         <div class="section-heading"><h2 id="labs-heading">Hands-on labs</h2><span id="lab-count"></span></div>
         <p id="lab-gate" class="guidance" hidden></p>
-        <p class="section-description">Quizzes arrive whether or not you finish a lab. Verify required labs before
-          Sunday's review so next week's plan can be prepared. Every lab has a free in-app scenario in the bot; code labs
-          run free on GitHub, and your own AWS account is optional.</p>
+        <p class="section-description">Quizzes and your next week's plan never wait for labs: unfinished required labs
+          carry forward. Every lab has a free in-app scenario in the bot; code labs run free on GitHub, and your own AWS
+          account is optional.</p>
         <p id="lab-status" role="status" aria-live="polite"></p>
         <ol id="lab-items" class="task-list lab-list"></ol>
         <h3 id="lab-catalog-heading">More labs you can start</h3>
@@ -124,12 +136,17 @@
       <section id="progress" aria-labelledby="progress-heading">
         <h2 id="progress-heading">Progress, not guesses</h2>
         <dl class="metrics">
-          <div><dt>Tasks completed</dt><dd id="done"></dd></div>
-          <div><dt>Practice streak</dt><dd id="streak"></dd></div>
+          <div><dt>Study days this week</dt><dd id="study-days"></dd></div>
+          <div><dt>Study streak</dt><dd id="streak"></dd></div>
+          <div><dt>Quiz accuracy</dt><dd id="accuracy"></dd></div>
+          <div><dt>Lessons understood</dt><dd id="understood"></dd></div>
+          <div><dt>Exercises done</dt><dd id="done"></dd></div>
           <div><dt>Logged practice</dt><dd id="minutes"></dd></div>
+          <div><dt>Labs verified</dt><dd id="labs-verified"></dd></div>
           <div><dt>Interviews graded</dt><dd id="graded"></dd></div>
         </dl>
-        <p class="section-description">Receiving a lesson does not count as mastery. Minutes reflect what you logged.</p>
+        <p class="section-description">Study days start at 04:00 IST and count any learning action. Sundays are rest days
+          and one missed day a week is forgiven. Receiving a lesson does not count as mastery.</p>
         <h3>Skill practice</h3>
         <ul id="skills" class="skill-list"></ul>
         <h3>Recent interview feedback</h3>
@@ -164,7 +181,7 @@
       <footer>
         <p id="preferences"></p>
         <p id="updated"></p>
-        <p>To keep this view private, it expires after five minutes. Reopen it from <code>/dashboard</code>.</p>
+        <p>To keep this view private, it closes 30 minutes after you open it. Reopen it from <code>/dashboard</code>.</p>
       </footer>
     </div>
     <article id="lesson-view" class="lesson-view" hidden aria-labelledby="lesson-title">

@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 import requests
 from test_flows import PROFILE, command, question_set
-from test_journey import callback, proposal, shared_journey
+from test_journey import callback, core_guide, proposal, shared_journey
 
 from skillcoach.catalog import TOPICS
 from skillcoach.clients import Budget, ExternalError
@@ -244,38 +244,34 @@ def test_approved_lesson_assigns_required_lab_and_grandfathered_plans_get_none(h
     assert pending_required(state) == [item]
 
 
-def test_sunday_review_waits_for_required_lab_then_scenario_prepares_next_week(harness):
+def test_sunday_review_carries_required_lab_and_prepares_next_week(harness):
     h = harness
     _, item = s3_week(h)
-    sunday_review(h)
-    j = h.repo.state.journey
-    assert j.stage == "active" and j.lab_gate_since is not None and j.proposed_id is None
-    assert not h.ai.calls
-    assert "Next week's plan is waiting for your required lab" in texts(h)[-1]
-    assert "/lab s3-private-presigned" in texts(h)[-1]
-    callback(h, "plan:plan-test:edit")
-    assert h.repo.state.journey.stage == "active" and "waiting for your required lab" in texts(h)[-1]
-    view = lab_view(h.repo.state, h.runtime.config, h.clock.now)
-    assert view["gate"]["blocked"] and view["gate"]["required_pending"] == 1
-    assert view["items"][0]["blocking"] and view["items"][0]["token"] == TOKEN
-    assert admin_counts(h.repo.state, True) == {
-        "required": 1,
-        "verified": 0,
-        "pending": 1,
-        "gate_blocked": True,
-    }
-
     h.ai.responses.append(proposal())
+    sunday_review(h)
+    state = h.repo.state
+    j = state.journey
+    # Nothing waits for the lab: it carries forward and next week's proposal is prepared.
+    assert j.stage == "ready" and j.proposed_id and j.lab_gate_since is None
+    assert state.labs["lab-a"].carried_at is not None and state.labs["lab-a"].status == "pending"
+    assert any("Your week" in text for text in texts(h))
+    assert any("carried forward: Private S3" in text for text in texts(h))
+    assert any("starts automatically" in text for text in texts(h))
+    view = lab_view(state, h.runtime.config, h.clock.now)
+    assert not view["gate"]["blocked"] and view["gate"]["required_pending"] == 1
+    assert not view["items"][0]["blocking"] and view["items"][0]["carried"]
+    assert view["items"][0]["token"] == TOKEN and not view["carry_available"]
+    assert admin_counts(state, True) == {"required": 1, "verified": 0, "pending": 1, "gate_blocked": False}
+
+    calls = len(h.ai.calls)
     pass_scenario(h, item.id)
     state = h.repo.state
     assert state.labs["lab-a"].status == "verified" and state.labs["lab-a"].route == "scenario"
     assert state.focus is None and state.active_lab is None
-    assert state.journey.stage == "ready" and state.journey.proposed_id
-    assert state.journey.lab_gate_since is None
-    assert state.journey.plans[state.journey.proposed_id].labs_enabled
+    # Verifying a carried lab never re-plans or replaces the waiting proposal.
+    assert len(h.ai.calls) == calls and state.journey.stage == "ready"
     assert h.clock.now.date() in state.activity
     assert any("Lab scenario passed: 4/4" in text for text in texts(h))
-    assert any("Preparing next week's proposal" in text for text in texts(h))
     # Four step answers are unique receipts, and an old button cannot regrade.
     assert sum(key[1].startswith("step-") for key in h.repo.answer_keys) == 4
 
@@ -339,40 +335,33 @@ def test_friday_quiz_is_sent_with_lab_reminder_and_kill_switch_releases_gate(har
     assert "temporarily turned off" in texts(h)[-1]
 
 
-def test_carry_is_explicit_once_per_28_days_and_blocks_the_following_week(harness):
+def test_labcarry_explains_automatic_carry_and_carried_labs_never_block(harness):
     h = harness
     _, item = s3_week(h, delivered=False)
     command(h, "/labcarry")
-    assert "only after this week's lessons are all delivered" in texts(h)[-1]
+    assert "carry forward automatically" in texts(h)[-1] and "/lab s3-private-presigned" in texts(h)[-1]
     for record in h.repo.state.lessons.values():
         record["delivered_at"] = h.clock.now.isoformat()
-    sunday_review(h)
-    assert h.repo.state.journey.lab_gate_since
     h.ai.responses.append(proposal())
-    command(h, "/labcarry")
+    sunday_review(h)
     state = h.repo.state
-    assert state.labs["lab-a"].carried_at and state.lab_carry_at
-    assert state.journey.stage == "ready"
+    assert state.labs["lab-a"].carried_at and state.journey.stage == "ready"
     new = state.journey.proposed_id
     callback(h, f"plan:{new}:approve")
     state = h.repo.state
     assert state.journey.active_id == new
-    assert [a.id for a in pending_required(state)] == ["lab-a"]  # Carried work now belongs to this week.
-    state.labs["lab-b"] = LabAssignment(
-        id="lab-b",
-        lab_id="iam-least-privilege",
-        lesson_key="later",
-        plan_id=new,
-        required=True,
-        token="SC-BBBB-CCCC",
-        assigned_date=h.clock.now.date(),
-    )
+    assert [a.id for a in pending_required(state)] == ["lab-a"]  # Carried work stays visible this week.
+    carried_at = state.labs["lab-a"].carried_at
     for index, day in enumerate(state.journey.plans[new].sessions):
-        day.lesson_key = "later" if index == 0 else f"later:{index}"
-        state.lessons[day.lesson_key] = {"topic": "x", "date": "2026-10-05", "delivered_at": "2026-10-05"}
-    command(h, "/labcarry")
-    assert "already used a lab carry recently" in texts(h)[-1]
-    assert h.repo.state.labs["lab-b"].carried_at is None
+        day.lesson_key = f"later:{index}"
+        state.lessons[day.lesson_key] = {"topic": "x", "date": "2026-10-09", "delivered_at": "2026-10-09"}
+    h.ai.responses.append(proposal())
+    h.clock.now = datetime(2026, 10, 11, 10, tzinfo=IST)
+    h.repo.enqueue("review:second", {"type": "schedule", "kind": "review", "date": "2026-10-11"})
+    h.runtime.recover(media=False)
+    state = h.repo.state
+    # A lab carried twice still never blocks, and its original carry time is kept.
+    assert state.journey.stage == "ready" and state.labs["lab-a"].carried_at == carried_at
 
 
 def test_optional_labs_list_and_unknown_or_verified_labs_do_not_run_checks(harness):
@@ -461,18 +450,18 @@ def test_check_result_is_cached_so_a_retry_never_rechecks(harness, monkeypatch):
     assert len(h.repo.state.lab_checks) == 1
 
 
-def test_unpause_resumes_a_cleared_gate_and_pause_holds_it(harness):
+def test_unpause_after_a_paused_sunday_prepares_the_missed_week_plan(harness):
     h = harness
-    _, item = s3_week(h)
-    sunday_review(h)
+    s3_week(h)
     command(h, "/pause")
-    h.runtime.labs = FakeChecker()
-    command(h, f"/submitlab s3-private-presigned {SIGNED}")
-    assert h.repo.state.labs["lab-a"].status == "verified"
-    assert h.repo.state.journey.stage == "active" and h.repo.state.journey.lab_gate_since
+    sunday_review(h)
+    assert h.repo.state.journey.stage == "active" and not h.repo.state.journey.proposed_id
+    assert not h.ai.calls
     h.ai.responses.append(proposal())
     command(h, "/unpause")
-    assert h.repo.state.journey.stage == "ready" and h.repo.state.journey.lab_gate_since is None
+    j = h.repo.state.journey
+    assert j.stage == "ready" and j.proposed_id and j.lab_gate_since is None
+    assert any("starts automatically" in text for text in texts(h))
 
 
 def saturday_assessment_left_open(h):
@@ -484,47 +473,39 @@ def saturday_assessment_left_open(h):
     return h.repo.state.active_assessment
 
 
-@pytest.mark.parametrize("release", ["submit", "carry"])
-def test_open_assessment_focus_does_not_trap_the_lab_gate(harness, release):
+def test_open_assessment_never_blocks_next_week_and_monday_starts_it(harness):
     h = harness
     s3_week(h)
     assessment = saturday_assessment_left_open(h)
-    sunday_review(h)
-    j = h.repo.state.journey
-    assert j.lab_gate_since is not None and j.stage == "active" and h.repo.state.focus == "assessment"
     h.ai.responses.append(proposal())
-    if release == "submit":
-        h.runtime.labs = FakeChecker()
-        command(h, f"/submitlab s3-private-presigned {SIGNED}")
-        assert h.repo.state.labs["lab-a"].status == "verified"
-    else:
-        command(h, "/labcarry")
-        assert h.repo.state.labs["lab-a"].carried_at is not None
+    sunday_review(h)
     state = h.repo.state
     assert state.journey.stage == "ready" and state.journey.proposed_id
-    assert state.journey.lab_gate_since is None
-    # The proposal waits for approval; the unfinished assessment and its focus are untouched.
+    # The proposal waits; the unfinished assessment and its focus are untouched.
     assert state.focus == "assessment" and state.active_assessment == assessment
     assert state.assessments[assessment].status == "active"
     callback(h, f"plan:{state.journey.proposed_id}:approve")
     assert "Finish or /cancel the current question" in texts(h)[-1]
+    proposed = h.repo.state.journey.proposed_id
+    h.ai.responses.append(core_guide())
+    h.clock.now = datetime(2026, 10, 5, 9, tzinfo=IST)
+    h.repo.enqueue("lesson:monday", {"type": "schedule", "kind": "lesson", "date": "2026-10-05"})
+    h.runtime.recover(media=False)
+    j = h.repo.state.journey
+    assert j.active_id == proposed and j.stage == "active" and j.plans[proposed].auto_started_at
+    assert j.plans[proposed].sessions[0].date.isoformat() == "2026-10-05"
 
 
-def test_kill_switch_releases_an_existing_gate_at_the_next_scheduled_job(harness):
+def test_kill_switch_plans_the_next_week_without_labs(harness):
     h = harness
     s3_week(h)
-    saturday_assessment_left_open(h)
-    sunday_review(h)
-    assert h.repo.state.journey.lab_gate_since is not None
     h.runtime.config = replace(h.runtime.config, labs_enabled=False)
     h.ai.responses.append(proposal())
-    h.clock.now = datetime(2026, 10, 5, 9, tzinfo=IST)
-    h.repo.enqueue("lesson:" + uuid4().hex, {"type": "schedule", "kind": "lesson", "date": "2026-10-05"})
-    h.runtime.recover(media=False)
+    sunday_review(h)
     j = h.repo.state.journey
     assert j.lab_gate_since is None and j.stage == "ready" and j.proposed_id
     assert not j.plans[j.proposed_id].labs_enabled
-    assert any("Hands-on labs are turned off" in text for text in texts(h))
+    assert h.repo.state.labs["lab-a"].carried_at is None
 
 
 def test_scenario_finishing_after_code_verification_keeps_the_verified_evidence(harness):

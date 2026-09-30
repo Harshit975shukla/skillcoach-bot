@@ -9,6 +9,7 @@ import puppeteer from "puppeteer";
 let denied = false;
 let uploadPreviews = 0, uploadConfirms = 0, dataRequests = 0, labFailOnce = false, lessonRequests = 0, lessonDenied = false;
 let courseRequests = 0, courseDenied = false;
+const exerciseTaps = [];
 const labSubmits = [];
 const LAB_TOKEN = "SC-TEST-TOKN";
 const LESSON_ID = "0123456789abcdef0123";
@@ -61,7 +62,19 @@ const fixture = {
                       {type: "ol", start: 1, items: [spans("Sketch two availability zones.")]}]},
     {id: "test-task-2", title: "Trace a Kubernetes readiness failure", skill: "Kubernetes networking",
       estimated_minutes: 15, assigned_date: "2026-09-26", detail: "Compare pod readiness and liveness."},
+    {id: "c".repeat(20), title: "Older optional practice", skill: "Linux", estimated_minutes: 10,
+      assigned_date: "2026-09-10", detail: "Review permissions.", earlier: true},
   ],
+  progress: {study_days_week: 2, weekly_goal: 4, streak: 3, questions_answered: 10, accuracy: 60,
+    lessons_delivered: 3, lessons_understood: 2, exercises_done: 4, labs_verified: 0},
+  today: {date: "2026-09-29", catch_up: 2,
+    lesson: {id: LESSON_ID, topic: "CI pipeline design", date: "2026-09-29", delivered: true, today: true, understood: false},
+    quiz: {id: LESSON_ID, title: "CI pipeline quiz", date: "2026-09-29", status: "in_progress", answered: 2, total: 5,
+      score: null, can_resume: true, deadline: "2026-10-05T00:00:00+05:30"},
+    exercises: [{id: "test-task-1", title: "Explain health-based traffic routing", minutes: 20, status: "done"},
+                {id: "test-task-2", title: "Trace a Kubernetes readiness failure", minutes: 15, status: "pending"}],
+    next: {kind: "quiz", text: "Finish the quiz for “CI pipeline design” (2/5)", callback: "quiz:" + LESSON_ID,
+      start: "quiz_" + LESSON_ID, lesson: LESSON_ID}},
   lessons: [{id: LESSON_ID, topic: "CI pipeline design", date: "2026-09-29", delivered: true},
             {id: MISSING_LESSON, topic: "Kubernetes pods", date: "2026-09-28", delivered: false}],
   quizzes: [
@@ -134,6 +147,20 @@ const server = createServer(async (request, response) => {
     const fail = labFailOnce; labFailOnce = false;
     response.writeHead(fail ? 503 : 200, {"Content-Type": "application/json", "Cache-Control": "no-store"});
     response.end(JSON.stringify(fail ? {error: "The check could not start right now."} : {queued: true, duplicate: false}));
+    return;
+  }
+  if (request.url === "/app/exercise") {
+    assert.equal(request.method, "POST");
+    assert.equal(request.headers["x-csrf-token"], "synthetic-csrf");
+    assert.equal(request.headers["x-telegram-init-data"], "synthetic-signed-launch");
+    assert.equal(request.headers.cookie, undefined);
+    let raw = ""; for await (const chunk of request) raw += chunk;
+    const body = JSON.parse(raw);
+    assert.deepEqual(Object.keys(body).sort(), ["action", "request_id", "task_id"]);
+    assert.match(body.request_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    exerciseTaps.push(body);
+    response.writeHead(200, {"Content-Type": "application/json", "Cache-Control": "no-store"});
+    response.end(JSON.stringify({queued: true, duplicate: false}));
     return;
   }
   if (request.url.startsWith("/app/documents/")) {
@@ -222,6 +249,35 @@ try {
     await page.waitForFunction(() => !document.getElementById("content").hidden);
     assert.equal(await page.$eval("#learner-name", e => e.textContent), "Synthetic learner");
     assert.equal(await page.$$eval("#tasks > li", e => e.length), 2);
+    assert.equal(await page.$eval("#earlier-tasks", e => e.hidden), false);
+    assert.equal(await page.$$eval("#earlier-list > li", e => e.length), 1);
+    assert.match(await page.$eval("#earlier-summary", e => e.textContent), /Earlier practice \(1, optional\)/);
+    // Today: one next action, lesson/quiz/exercise status and the week's study days.
+    assert.equal(await page.$eval("#today-card", e => e.hidden), false);
+    assert.equal(await page.$eval("#today-next", e => e.textContent), "Finish the quiz for “CI pipeline design” (2/5)");
+    assert.match(await page.$eval("#today-status", e => e.textContent), /Quiz: 2\/5 answered/);
+    assert.match(await page.$eval("#today-status", e => e.textContent), /Exercises: 1 of 2 done/);
+    assert.match(await page.$eval("#today-status", e => e.textContent), /Study days this week: 2 of 4 · streak 3/);
+    assert.equal(await page.$eval("#today-actions a", e => e.href), "https://t.me/SkillCoachTestBot?start=quiz_" + LESSON_ID);
+    assert.equal(await page.$eval("#study-days", e => e.textContent), "2 of 4");
+    assert.equal(await page.$eval("#accuracy", e => e.textContent), "60% · 10 answered");
+    assert.equal(await page.$eval("#understood", e => e.textContent), "2 of 3");
+    assert.equal(await page.$eval("#streak", e => e.textContent), "3 days");
+    if (process.env.DASHBOARD_SCREENSHOT_DIR) {
+      await page.$eval("#today", e => e.scrollIntoView());
+      await page.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, `today-${label}.png`)});
+      await page.$eval("#progress", e => e.scrollIntoView());
+      await page.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, `progress-${label}.png`)});
+      await page.evaluate(() => window.scrollTo(0, 0));
+    }
+    // One-tap exercise tracking posts a bound request and refreshes the view.
+    const beforeTap = dataRequests;
+    await page.click("#tasks > li:first-child .exercise-button");
+    for (let wait = 0; dataRequests === beforeTap && wait < 100; wait++) await new Promise(r => setTimeout(r, 20));
+    assert.ok(dataRequests > beforeTap, "an exercise tap refreshes the dashboard");
+    assert.deepEqual(exerciseTaps.slice(-1).map(({task_id, action}) => ({task_id, action})),
+                     [{task_id: "test-task-1", action: "done"}]);
+    await page.waitForFunction(() => document.getElementById("task-status").textContent.includes("recorded as done"));
     assert.equal(await page.$eval("#quiz-count", e => e.textContent), "2 available");
     assert.equal(await page.$$eval("#quiz-list a", e => e.length), 2);
     assert.equal(await page.$$eval("#quiz-list img", e => e.length), 0);
@@ -391,14 +447,15 @@ try {
       assert.equal(await page.$eval("#document-kind", e => e.disabled), false);
       assert.equal(await page.$eval("#document-confirm", e => e.disabled), false);
     }
-    // Labs: pending lab, gate, escaping, safe references and catalog.
+    // Labs: open lab, carry-forward note, escaping, safe references and catalog.
     assert.equal(await page.$$eval("#lab-items > li", e => e.length), 2);
     assert.equal(await page.$eval("#lab-count", e => e.textContent), "1 pending");
     assert.equal(await page.$eval("#lab-gate", e => e.hidden), false);
-    assert.match(await page.$eval("#lab-gate", e => e.textContent), /waiting for 1 required lab.*\/labcarry/);
+    assert.match(await page.$eval("#lab-gate", e => e.textContent), /1 required lab still open.*carry forward.*never wait/);
     assert.equal(await page.$eval("#lab-items .lab-token code", e => e.textContent), LAB_TOKEN);
     assert.equal(await page.$$eval("#lab-items .lab-token", e => e.length), 1);
-    assert.match(await page.$eval("#lab-items .lab-state.blocking", e => e.textContent), /Needed before next week/);
+    assert.equal(await page.$$eval("#lab-items .lab-state.blocking", e => e.length), 0);
+    assert.match(await page.$eval("#lab-items .lab-state", e => e.textContent), /Needs a fix/);
     assert.equal(await page.$$eval("#lab-items > li:nth-child(2) .task-title *", e => e.length), 0);
     assert.deepEqual(await page.$$eval("#lab-items .lab-refs a", e => e.map(a => a.href)),
                      ["https://docs.aws.amazon.com/AmazonS3/latest/userguide/ShareObjectPreSignedURL.html"]);
@@ -451,7 +508,7 @@ try {
     await page.$eval("#refresh", e => e.click());
     await new Promise(resolve => setTimeout(resolve, 30));
     assert.equal(dataRequests, busyData);
-    // Hiding the page clears every lab detail; a late response cannot repopulate private state.
+    // Switching to the chat cancels the in-flight check: its late reply cannot land, reading content stays.
     await page.evaluate(() => {
       Object.defineProperty(document, "hidden", {configurable: true, value: true});
       document.dispatchEvent(new Event("visibilitychange"));
@@ -459,11 +516,10 @@ try {
       delete window.pendingLab;
     });
     await new Promise(resolve => setTimeout(resolve, 30));
-    assert.equal(await page.$$eval("#lab-items > li", e => e.length), 0);
-    assert.equal(await page.$$eval("#resource-list > li", e => e.length), 0);
-    assert.equal(await page.$eval("#resource-search", e => e.value), "");
+    assert.equal(await page.$$eval("#lab-items > li", e => e.length), 2);
     assert.equal(await page.$eval("#lab-status", e => e.textContent), "");
-    assert.equal(await page.evaluate(token => document.body.textContent.includes(token), LAB_TOKEN), false);
+    assert.equal(await page.$eval(".lab-input", e => e.value), "");
+    assert.equal(await page.$eval("#content", e => e.hidden), false);
     await page.evaluate(() => {
       Object.defineProperty(document, "hidden", {configurable: true, value: false});
       document.dispatchEvent(new Event("visibilitychange"));
@@ -507,13 +563,16 @@ try {
     Object.defineProperty(document, "hidden", {configurable: true, value: true});
     document.dispatchEvent(new Event("visibilitychange"));
   });
-  await stale.evaluate(fixture => window.delayedRefresh({ok: true, json: async () => fixture}), fixture);
+  await stale.evaluate(fixture => window.delayedRefresh({ok: true, json: async () => (
+    {...fixture, profile: {...fixture.profile, name: "Late response"}})}), fixture);
   await new Promise(resolve => setTimeout(resolve, 50));
-  assert.equal(await stale.$eval("#content", e => e.hidden), true);
-  assert.equal(await stale.$eval("#plan-rationale", e => e.textContent), "");
+  // A refresh answered after the page was hidden is ignored.
+  assert.equal(await stale.$eval("#learner-name", e => e.textContent), "Synthetic learner");
   await stale.close();
-  // A lesson link from Telegram opens straight into that lesson and clears it when hidden.
+  // A lesson link from Telegram opens straight into that lesson and stays open while the learner visits the chat.
   const direct = await browser.newPage();
+  const directErrors = [];
+  direct.on("pageerror", error => directErrors.push(error.message));
   await direct.setRequestInterception(true);
   direct.on("request", request => {
     if (request.url().startsWith("https://telegram.org/")) {
@@ -531,22 +590,28 @@ try {
   if (process.env.DASHBOARD_SCREENSHOT_DIR) {
     await direct.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, "lesson-dark-mobile.png"), fullPage: true});
   }
+  const reopened = lessonRequests, before = dataRequests;
   await direct.evaluate(() => {
+    window.scrollTo(0, 400);
     Object.defineProperty(document, "hidden", {configurable: true, value: true});
     document.dispatchEvent(new Event("visibilitychange"));
   });
-  assert.equal(await direct.$eval("#lesson-view", e => e.hidden), true);
-  assert.equal(await direct.evaluate(() => document.body.textContent.includes("guarantee the tested artifact")), false);
-  const reopened = lessonRequests;
+  assert.equal(await direct.$eval("#lesson-view", e => e.hidden), false);
+  assert.equal(await direct.evaluate(() => document.body.textContent.includes("guarantee the tested artifact")), true);
   await direct.evaluate(() => {
     Object.defineProperty(document, "hidden", {configurable: true, value: false});
     document.dispatchEvent(new Event("visibilitychange"));
   });
-  await direct.waitForFunction(() => !document.getElementById("lesson-page").hidden);
-  assert.equal(lessonRequests, reopened + 1);
+  for (let wait = 0; dataRequests === before && wait < 100; wait++) await new Promise(r => setTimeout(r, 20));
+  assert.ok(dataRequests > before, "returning re-checks access");
+  await direct.waitForFunction(() => !document.getElementById("refresh").disabled);
+  // The open lesson is kept, not reloaded, so the reading position survives.
+  assert.equal(await direct.$eval("#lesson-page", e => e.hidden), false);
+  assert.equal(lessonRequests, reopened);
   await direct.evaluate(() => window.backClick());
   assert.equal(await direct.$eval("#content", e => e.hidden), false);
   assert.equal(await direct.evaluate(() => window.backShown), 0);
+  assert.deepEqual(directErrors, []);
   lessonDenied = true;
   await direct.click("#lesson-list > li:first-child button");
   await direct.waitForFunction(() => !document.getElementById("notice").hidden);

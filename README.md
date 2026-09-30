@@ -225,7 +225,7 @@ from the existing scheduler and approved plan, including the next unprepared top
 It does not generate content or mutate queues. Paused/inactive/unapproved learners have no automatic
 next delivery. Quizzes and weekly assessments are conditional on lesson delivery; a forecast is not a
 queued job or promised send time. Existing **Delivery health** and the delivery log show actual queued
-work, while lab gates and learner approval still govern subsequent plans.
+work. Learner plan choices govern subsequent weeks; required labs carry forward and never pause them.
 
 These views use the existing owner authentication, Origin/CSRF checks, private no-store responses and
 session-expiry cleanup. They do not require a schema migration or change scheduling/delivery behavior.
@@ -361,13 +361,17 @@ for scheduled recovery.
 
 `/dashboard` opens a read-only private Telegram Mini App when `PRIVATE_DASHBOARD_URL` is configured
 to this deployment's `/app` route. The shared URL contains no learner identifier and returns no
-personal data by itself. `/app/data` verifies Telegram's HMAC-signed `initData`, a five-minute age,
+personal data by itself. `/app/data` verifies Telegram's HMAC-signed `initData`, a 30-minute age,
 the authenticated numeric user ID and current active membership. An authentication receipt binds
 each launch to the membership generation, so revoking and then reapproving a learner does not
 reactivate their old dashboard launch. The owner sees only their own learning in this view.
 
 Private responses use `Cache-Control: no-store`; the frontend keeps no localStorage copy, clears
-on expiry/backgrounding, and rechecks active views periodically. It renders all user/AI strings as
+on expiry, and rechecks access every minute and whenever the learner returns to the view. Learners
+read full lessons in the Mini App, so the signed launch stays usable for 30 minutes (admin launches
+keep five) and switching to the chat no longer wipes the page or its reading position; in-flight
+uploads, lab checks and exercise taps are cancelled instead, so late replies can never land. A notice
+appears two minutes before the view closes. It renders all user/AI strings as
 text, never as HTML. Revocation blocks the next request; already downloaded content cannot be
 remotely recalled. No administration actions are exposed in the Mini App. The separate public
 dashboard remains anonymous and owner-controlled.
@@ -390,11 +394,53 @@ still take priority over the active question; the unfinished daily quiz remains 
 the catalogue until its Sunday deadline. Saturday's ten-question assessment is separate and
 keeps its existing same-day deadline. Neither schedules nor historical lesson dates are changed.
 
+### Daily learning loop
+
+These behaviors keep full lessons and animated video as the default while making practice lighter
+and more rewarding:
+
+- **One tap for everything.** Every exercise has **✅ done**, **⏭ Skip** and **🆘 Stuck** buttons in
+  Telegram, and **Mark done**/**Skip** on the dashboard. After Done, optional 10/20/30/45-minute
+  buttons log practice once. **Stuck** generates three private hints once (nudge, stronger hint,
+  solution outline) and reveals one per tap. `/complete` still works.
+- **Quiz me now.** Each lesson ends with **Quiz me now** (today's validated five questions) and
+  **Explain it differently** (one cached AI re-explanation grounded in the lesson). The 18:00 run
+  never creates a second quiz for the same date: it only reminds about an unfinished one.
+- **One message per answer.** Answer feedback and the next question arrive together. The final
+  message shows the score and asks one tap about the lesson: Clear, Confusing, Too easy or Too hard.
+  Those counts feed the next plan proposal and the owner's rating totals.
+- **Quieter chat.** Only the first message of each lesson, quiz or reply makes a sound; follow-up
+  parts, and everything between 22:00 and 07:00 in the learner's timezone, arrive silently.
+- **Fair study days and streaks.** Study days start at 04:00 IST, so late-night study counts for the
+  day you are finishing. Answering a question, finishing an exercise, asking the tutor, getting a hint,
+  marking a lesson understood, re-explaining it and lab practice count. Sundays are rest days and one
+  missed weekday per week is forgiven. Streak milestones (3, 7, 14, 30, 60, 100) are celebrated once.
+  The weekly goal is 4 study days.
+- **Wins-first Sunday recap.** The review reports study days, lessons received and understood,
+  quiz answers and accuracy, exercises, labs, strongest and weakest quiz topics, and one focus for
+  next week. It never reports "0/5 sessions" just because exercises were not ticked.
+- **Weeks never stall.** Sunday's next-week proposal starts automatically at the next 09:00 IST
+  lesson slot unless the learner changes it first, including when a change request was left
+  unfinished. Learners are told in advance and can edit it afterwards; completed work is kept. The
+  first plan after onboarding still needs explicit approval. A finished week without a proposal
+  (for example after `/unpause`) is planned at the next lesson slot.
+- **Home and menu.** `/start` and `/menu` show the next step with buttons for Today, Quizzes,
+  Progress, Ask the tutor and the dashboard; **Ask the tutor** accepts the next typed message as a
+  question. `python -m skillcoach.cli configure-telegram` idempotently registers the eight core
+  commands in Telegram's command menu and sets the chat menu button to the private dashboard.
+- **Dashboard Today card.** The learner dashboard opens with one next action (continue a quiz,
+  read today's lesson, catch up or do an exercise), today's lesson/quiz/exercise status and the
+  week's study days. Exercises show newest first; ones older than a week move to optional
+  **Earlier practice**. Progress shows study days, streak, quiz accuracy, lessons understood,
+  exercises, logged minutes, labs and interviews.
+- **Late-delivery alerts.** When a scheduled lesson or quiz finishes reaching learners more than 20
+  minutes after its slot, or still has parts waiting, the owner gets one alert for that slot.
+
 Help is generated from `skillcoach/commands.py`. `/profile` displays the private profile or enters setup; `/profile setup` replaces it only after successful validation.
 
 | Commands | Behavior |
 |---|---|
-| `/start`, `/help` | Consistent supported command list |
+| `/start`, `/menu`, `/help` | Home card with the next step and quick buttons; grouped command list |
 | `/setup`, `/profile`, `/skip`, `/assess` | Resume + JD setup or exactly five open diagnostic questions; old profile survives cancel/failure |
 | `/score`, `/gaps` | Actual evidence and skill ratings; unavailable is not fabricated as 50 |
 | `/curriculum`, `/nextweek <preference>` | Dated six-day plan, including Saturday review; preferences apply to the next unplanned week |
@@ -404,17 +450,17 @@ Help is generated from `skillcoach/commands.py`. `/profile` displays the private
 | `/quizzes`, `/quiz <id or lesson date>` | Resume unfinished daily quizzes through Sunday 23:59 IST without resetting answers; also available from the private dashboard |
 | `/interview [topic]`, `/interview next` | Question first, learner answer, rubric feedback and hypothetical model answer afterward |
 | `/mock [topic]` | Clearly labeled sample Q&A, **not** a graded interview |
-| `/tasks`, `/today`, `/complete <id> [actual_minutes]` | Stable tasks and one-time completion; omitted actual minutes are zero, not estimated practice |
-| `/skills`, `/stats`, `/streak` | Honest task counts, interview metrics and consecutive IST practice dates |
+| `/today`, `/tasks`, `/complete <id> [actual_minutes]` | Today's lesson, quiz and one-tap exercises; open exercises newest first; one-time completion, omitted minutes are zero, not estimated practice |
+| `/progress`, `/skills`, `/stats`, `/streak` | Study days, streak, quiz accuracy, lessons understood, honest task counts and interview metrics |
 | `/resume` | Feedback on the actual stored resume/JD; never resumes notifications |
 | `/pause`, `/unpause`, `/cancel`, `/retry`, `/status` | Notification, flow and recovery controls |
 | `/media video`, `/media static` | Animated video default; static is opt-in |
 | `/publish`, `/dashboard` | Anonymous summary export and configured dashboard link |
 | `/labs`, `/lab <id>` | Your labs, what is pending, and the steps for each free or optional route |
 | `/submitlab <id> <link>`, `/labcleanup <id> <link>` | Verify a code or AWS lab link; confirm that AWS resources were deleted |
-| `/labcarry` | Once every 28 days, move this week's unverified required labs into next week |
+| `/labcarry` | Explains that unfinished required labs now carry forward automatically and lists open ones |
 
-Plans use the actual target role, level, gaps, prior topics, task evidence and recent incorrect answers. Delivered/prepared lessons are not treated as mastery. Only completed, correctly dated weekly assessments enter a weekly score report. Missing or unfinished attempts remain unavailable. Practice on one date contributes only one streak day; a missed day resets the streak.
+Plans use the actual target role, level, gaps, prior topics, task evidence and recent incorrect answers. Delivered/prepared lessons are not treated as mastery. Only completed, correctly dated weekly assessments enter a weekly score report. Missing or unfinished attempts remain unavailable. Practice on one study day contributes one streak day (see the daily learning loop below).
 
 Resume/JD alignment scores are explicitly provisional document-based estimates. Diagnostic scores are limited evidence, not a guarantee of job readiness. Private resume/JD/answer text is sent to your configured AI provider when you invoke those features; configure an acceptable provider/data-retention policy before use.
 
@@ -436,7 +482,7 @@ videos remain unchanged; resources supplement rather than replace them.
 
 **No new completion gates.** These external resources are optional. Opening a link does not create
 tasks, log minutes, award grades, verify a lab or change a streak. They never block quizzes or
-next-week planning. Only the existing required SkillCoach labs affect the lab gate.
+next-week planning.
 
 **Free access is not free infrastructure.** Documentation can be read without deploying anything.
 Provider-hosted practice can require a free account and impose session limits. Optional exams,
@@ -471,7 +517,7 @@ Each lab carries a per-learner token and offers up to three routes:
 
 **When required labs are due.** Pace sets the number: 15–30 minute plans require 1 lab a week, and 45–60 minute plans require 2. Further labs are optional.
 
-**What waits for labs, and what doesn't.** Quizzes, lessons and weekly assessments are sent whether or not labs are done. On Friday, the quiz message also reminds you about pending required labs. At Sunday's review, next week's plan is **not** prepared while a required lab from the fully delivered week is unverified. The plan is prepared automatically once that lab is verified, or after `/labcarry`. `/labcarry` works once every 28 days, and a lab can be carried only once.
+**Nothing waits for labs.** Quizzes, lessons, weekly assessments and next week's plan continue whether or not labs are done. On Friday, the quiz message reminds you about open required labs. At Sunday's review, unverified required labs from the finished week carry forward automatically and stay visible in `/labs` and the dashboard until verified. Carrying has no limit and never blocks planning.
 
 **Grandfathered plans.** Plans approved before labs existed keep `labs_enabled=false` and never receive a lab or wait for one.
 

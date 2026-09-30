@@ -15,6 +15,22 @@ log = logging.getLogger(__name__)
 
 
 WORKER_STEP_SECONDS = 90
+QUIET_HOURS = (22, 7)
+
+
+def silent_delivery(item_id: str, state, now) -> bool:
+    """Only the first message of a job makes a sound, and nothing does during 22:00-07:00 local time."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    first = item_id.rsplit(":", 1)[-1] in ("0", "preparing", "failure")
+    zone = IST
+    if state.journey and state.journey.timezone:
+        try:
+            zone = ZoneInfo(state.journey.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = IST
+    hour = now.astimezone(zone).hour
+    return not first or hour >= QUIET_HOURS[0] or hour < QUIET_HOURS[1]
 
 
 def _left(budget: Budget) -> float:
@@ -162,6 +178,10 @@ class Runtime:
                 scoped.delivery_result(item["id"], token, "suppressed")
                 return True
             telegram = self.telegram if scoped.is_owner else self.telegram.for_chat(scoped.recipient())
+            # One sound per lesson, quiz or reply: follow-up parts and quiet-hour messages arrive silently.
+            quiet = {"silent": True} if silent_delivery(item["id"], state, self.clock()) else {}
+            if quiet and body["kind"] == "media":
+                body["silent"] = True
 
             def authorize_send():
                 scoped.ensure_delivery_authorized(item["id"], token)
@@ -177,16 +197,20 @@ class Runtime:
 
                         try:
                             telegram.send(
-                                telegram_html(body["text"]), budget, body.get("buttons"), parse_mode="HTML"
+                                telegram_html(body["text"]),
+                                budget,
+                                body.get("buttons"),
+                                parse_mode="HTML",
+                                **quiet,
                             )
                         except ExternalError as exc:
                             # Telegram's 400 means nothing was sent, so one plain resend cannot duplicate.
                             if exc.code != "http_400":
                                 raise
                             authorize_send()
-                            telegram.send(plain(body["text"]), budget, body.get("buttons"))
+                            telegram.send(plain(body["text"]), budget, body.get("buttons"), **quiet)
                     else:
-                        telegram.send(body["text"], budget, body.get("buttons"))
+                        telegram.send(body["text"], budget, body.get("buttons"), **quiet)
                 elif body["kind"] == "media":
                     if "storyboard" in body:
                         from skillcoach.storyboard import Storyboard, asset_key

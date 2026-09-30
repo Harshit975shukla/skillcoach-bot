@@ -57,22 +57,25 @@ class FakeTelegram:
         self.acks = []
         self.fail = False
         self.chat_messages = {}
+        self.silent = []
 
     def for_chat(self, chat_id):
         parent = self
 
         class Recipient:
-            def send(self, text, budget, buttons=None, *, parse_mode=None):
+            def send(self, text, budget, buttons=None, *, parse_mode=None, silent=False):
                 if parent.fail:
                     raise ExternalError("fake_telegram_failure")
                 parent.chat_messages.setdefault(chat_id, []).append((text, buttons))
+                parent.silent.append(silent)
 
         return Recipient()
 
-    def send(self, text, budget, buttons=None, *, parse_mode=None):
+    def send(self, text, budget, buttons=None, *, parse_mode=None, silent=False):
         if self.fail:
             raise ExternalError("fake_telegram_failure")
         self.messages.append((text, buttons))
+        self.silent.append(silent)
 
     def acknowledge(self, callback, budget):
         self.acks.append(callback)
@@ -300,6 +303,20 @@ class MemoryRepository:
 
     def status(self, *, all_learners=False):
         return {"jobs": [], "outbox": []}
+
+    def slot_deliveries(self, key):
+        rows = [row for row in self.outbox.values() if row["job_id"] == key]
+        if not rows:
+            return []
+        sent = [row["delivered_at"] for row in rows if row["status"] == "sent" and row.get("delivered_at")]
+        return [
+            {
+                "learner_id": "owner",
+                "first_sent": min(sent) if sent else None,
+                "last_sent": max(sent) if sent else None,
+                "waiting": sum(row["status"] in ("pending", "failed") for row in rows),
+            }
+        ]
 
 
 @pytest.fixture

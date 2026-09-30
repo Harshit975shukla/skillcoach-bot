@@ -62,6 +62,14 @@ def feedback_buttons(ident: str):
     ]
 
 
+def closing_buttons(ident: str):
+    return [
+        [{"text": "📝 Quiz me now", "callback_data": f"qnow:{ident}"}],
+        [{"text": "💡 Explain it differently", "callback_data": f"explain:{ident}"}],
+        *feedback_buttons(ident),
+    ]
+
+
 def review_note(lesson) -> str:
     if lesson.reviewed_at.startswith("AI-generated"):
         if lesson.reviewed_at.startswith("AI-generated offline"):
@@ -112,15 +120,15 @@ def display_name(name: str) -> str:
 def exercises(lesson, tasks, ids, practice=None) -> str:
     total = practice if practice is not None else sum(t.minutes for t in tasks)
     parts = [
-        f"**🛠 Today's exercises** · about {total} min, required",
-        "Do them in order. Record each one with its command when you finish; add minutes if you like, "
-        "for example `/complete <id> 12`.",
+        f"**🛠 Today's exercises** · about {total} min",
+        "Do them in order and tap **✅ done** below as you finish each one. Tap **🆘 Stuck** for a hint, "
+        "or **⏭ Skip** to keep it as optional practice.",
     ]
     for index, (task, ident) in enumerate(zip(tasks, ids), 1):
         steps = "\n".join(f"{i}. {step}" for i, step in enumerate(task.steps, 1))
         parts.append(
             f"**{index}. {display_name(task.name)}** · about {task.minutes} min\n**Goal:** {task.goal}\n{steps}\n"
-            f"Record it: `/complete {ident}`"
+            f"Or record it with `/complete {ident}`"
         )
     return "\n\n".join(parts)
 
@@ -138,6 +146,7 @@ def closing(lesson, topic) -> str:
         + "\n\nAnswer out loud or in writing in about two minutes, then compare with the answer checklist "
         "in the full lesson. For a graded round, use /interview.\n\n"
         "Optional free courses and guides: /resources (also on the lesson page).\n\n"
+        "**Ready to check yourself?** Tap **Quiz me now** for today's 5 questions, or wait for the 18:00 quiz.\n"
         "**How was today's lesson?** Your rating stores only the button you pick; the owner sees totals only."
     )
 
@@ -350,7 +359,9 @@ class LessonActions:
                 reports.append(reason)
             feedback.update(reports=reports, reported_at=at)
             self.s.say(
-                f"Thanks, reported “{REPORT_REASONS[reason]}”. Report totals guide which lessons get reviewed next."
+                f"Thanks, noted “{REPORT_REASONS[reason]}”. Your next plan proposal takes this into account."
+                if reason in ("confusing", "hard", "easy")
+                else f"Thanks, reported “{REPORT_REASONS[reason]}”. Report totals guide which lessons get reviewed next."
             )
         else:
             self.s.say("Unsupported or expired button.")

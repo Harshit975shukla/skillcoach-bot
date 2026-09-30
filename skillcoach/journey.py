@@ -69,7 +69,9 @@ def safe_learning_view(state, now, *, labs_enabled=True):
             )
     finished = [a for a in state.assessments.values() if a.status == "completed" and a.completed_at]
     finished.sort(key=lambda a: a.completed_at)
-    today = now.astimezone(IST).date()
+    from skillcoach.timeutil import study_day
+
+    today = study_day(now)
     return {
         "shared": True,
         "status": "paused" if state.paused else j.stage,
@@ -254,7 +256,9 @@ class Learning:
                     Readiness,
                 )
                 self.j.diagnostic_rating = result.model_dump()
-                self.j.diagnostic_practice_date = self.s.clock().astimezone(IST).date()
+                from skillcoach.timeutil import study_day
+
+                self.j.diagnostic_practice_date = study_day(self.s.clock())
                 if self.j.diagnostic_practice_date not in self.s.state.activity:
                     self.s.state.activity.append(self.j.diagnostic_practice_date)
                 self.j.stage = "planning"
@@ -292,32 +296,25 @@ class Learning:
         )
 
     def lab_gate(self):
-        """Hold the next-week proposal while required labs from the finished week are unverified."""
-        from skillcoach.lab_flow import blocking, gate_text
-
-        pending = blocking(self.s.state, self.s.config)
-        if not pending:
-            self.j.lab_gate_since = None
-            return False
-        self.j.stage = "active"
-        if self.s.state.focus == "onboarding":
-            self.s.state.focus = None
-        if self.j.lab_gate_since is None:
-            self.j.lab_gate_since = self.s.now
-        self.s.say(gate_text(pending))
-        return True
+        """Required labs never hold the next week: unfinished ones carry forward instead."""
+        self.carry_labs()
+        return False
 
     def next_week_blocked(self):
-        """True (after telling the learner) when a finished week still has required labs pending."""
-        from skillcoach.lab_flow import blocking, gate_text
+        """Kept for callers; a finished week's unverified required labs carry forward, never block."""
+        self.carry_labs()
+        return False
+
+    def carry_labs(self):
+        from skillcoach.lab_flow import carry_forward
 
         active = approved_plan(self.s.state)
         if not active or not all(d.lesson_key for d in active.sessions):
-            return False
-        pending = blocking(self.s.state, self.s.config)
-        if pending:
-            self.s.say(gate_text(pending))
-        return bool(pending)
+            return []
+        self.j.lab_gate_since = None
+        if not self.s.config.labs_enabled:
+            return []
+        return carry_forward(self.s.state, self.s.now)
 
     def propose(self):
         from skillcoach.service import stable_id
@@ -407,8 +404,13 @@ class Learning:
             count = required_quota(plan.minutes)
             lines.append(
                 f"Hands-on labs: {count} required lab{'s' if count > 1 else ''} this week when a lesson has one. "
-                "Each has a free in-app scenario route. Quizzes never wait for labs, but next week's plan is "
-                "prepared only after this week's required labs are verified (/labs)."
+                "Each has a free in-app scenario route. Quizzes and next week's plan never wait for labs: "
+                "unfinished required labs carry forward (/labs)."
+            )
+        if self.auto_start_candidate(plan):
+            lines.append(
+                "Starts automatically at your next 09:00 IST lesson slot unless you change it. "
+                "You can still edit it afterwards; completed work always stays."
             )
         for i, day in enumerate(plan.sessions):
             due = (
@@ -622,20 +624,17 @@ class Learning:
             body["journey_plan_id"] = plan.id
             body["journey_lesson_key"] = key
         closing = self.s.messages[-1]
+        # Keep "Quiz me now" first; understanding sits right after it.
+        rows = closing.get("buttons", [])
         closing["buttons"] = [
-            *closing.get("buttons", []),
+            *rows[:1],
             [
                 {
                     "text": "✅ I understand this lesson",
                     "callback_data": f"understand:{plan.id}:{plan.sessions.index(current)}",
                 }
             ],
-            [
-                {
-                    "text": "Explain differently / ask a question",
-                    "callback_data": f"helpplan:{plan.id}:ask",
-                }
-            ],
+            *rows[1:],
         ]
         if closing.get("kind") == "text":
             closing["text"] += (
@@ -648,16 +647,16 @@ class Learning:
             return False
         if not self.j.active_id:
             return True
-        if self.j.lab_gate_since:
+        kind, day = self.s.payload["kind"], self.s.now.date()
+        if kind == "lesson":
             from skillcoach.lab_flow import LabFlow
 
-            # Any scheduled touch releases a gate whose blocker disappeared (e.g. labs kill switch).
+            self.start_proposed_week()
+            # A finished week without a proposal (e.g. Sunday passed while paused) starts planning now.
             LabFlow(self.s).resume_planning()
-        kind, day = self.s.payload["kind"], self.s.now.date()
-        plan = approved_plan(self.s.state)
-        if kind == "lesson":
-            self.prepare_lesson(plan.id, day)
+            self.prepare_lesson(approved_plan(self.s.state).id, day)
             return True
+        plan = approved_plan(self.s.state)
         if kind in ("quiz", "weekly") and not any(
             self.s.state.lessons.get(d.lesson_key, {}).get("delivered_at")
             and (kind == "weekly" or d.date == day)
@@ -665,24 +664,65 @@ class Learning:
         ):
             return True
         if kind == "review":
-            self.s.say(
-                "Weekly progress: "
-                + str(safe_learning_view(self.s.state, self.s.now)["sessions_practiced"])
-                + "/5 sessions have all tracked tasks completed. Receiving a lesson is not mastery."
-            )
+            from skillcoach.labs import LABS
+            from skillcoach.progress import recap_text
+
+            self.s.say(recap_text(self.s.state, self.s.now))
             if self.j.stage == "active" and all(
                 self.s.state.lessons.get(d.lesson_key, {}).get("delivered_at") for d in plan.sessions
             ):
-                if self.lab_gate():
-                    return True
+                carried = self.carry_labs()
                 self.j.stage = "planning"
                 self.j.revision_request = (
                     "Propose the next study week from recent practice and diagnostic evidence."
                 )
                 self.followup("propose")
-                self.s.say("Preparing next week's proposal. You will approve it before it starts.")
+                self.s.say(
+                    "Preparing next week's plan. It starts automatically at your next 09:00 IST lesson slot "
+                    "unless you change it."
+                    + (
+                        " Unfinished required labs carried forward: "
+                        + ", ".join(LABS[a.lab_id].title for a in carried if a.lab_id in LABS)
+                        + "."
+                        if carried
+                        else ""
+                    )
+                )
             return True
         return False
+
+    def auto_start_candidate(self, plan):
+        """A pending next-week proposal that follows a fully delivered approved week."""
+        active = approved_plan(self.s.state)
+        return bool(
+            plan
+            and self.j.proposed_id == plan.id
+            and not plan.approved_at
+            and not plan.replaces_plan_id
+            and active
+            and active.id != plan.id
+            and not any(d.lesson_key for d in plan.sessions)
+            and all(self.s.state.lessons.get(d.lesson_key, {}).get("delivered_at") for d in active.sessions)
+        )
+
+    def start_proposed_week(self):
+        """Keep learning moving: a next-week proposal starts at the lesson slot unless changed first."""
+        j = self.j
+        plan = j.plans.get(j.proposed_id) if j.proposed_id else None
+        if self.s.state.paused or j.stage not in ("ready", "revision") or not self.auto_start_candidate(plan):
+            return
+        for session, due in zip(plan.sessions, session_dates(self.s.now, start_now=True)):
+            session.date = due
+        plan.approved_at = plan.auto_started_at = self.s.now
+        plan.start_now_at = None
+        plan.expires_at = max(plan.expires_at, self.s.now + timedelta(days=7))
+        j.active_id, j.proposed_id, j.stage, j.revision_request = plan.id, None, "active", ""
+        if self.s.state.focus == "onboarding":
+            self.s.state.focus = None
+        self.s.say(
+            f"🚀 Your new study week (version {plan.version}) started today as planned. "
+            "Change it any time with /plan; completed work always stays."
+        )
 
     def callback(self, value):
         parts = value.split(":")
@@ -699,10 +739,16 @@ class Learning:
             if not plan or not previous or not previous.approved_at:
                 self.s.say("This lesson button is no longer current. Use /plan.")
             elif parts[0] == "helpplan":
-                self.s.say(
-                    "Use /ask <your question> for another explanation, or /tasks for practical exercises. "
-                    "Your question stays private."
-                )
+                # Buttons sent before "Explain it differently" existed: explain the newest delivered lesson.
+                keys = [
+                    d.lesson_key
+                    for d in plan.sessions
+                    if d.lesson_key and self.s.state.lessons.get(d.lesson_key, {}).get("delivered_at")
+                ]
+                if keys:
+                    self.s.explain_lesson(key=keys[-1])
+                else:
+                    self.s.say("Ask anything about your lessons with /ask <your question>.")
             elif parts[2].isdecimal() and 0 <= int(parts[2]) < 5:
                 old_day = previous.sessions[int(parts[2])]
                 day = next(
@@ -715,7 +761,11 @@ class Learning:
                     self.s.say("Wait for the full lesson to finish delivery first.")
                 else:
                     day.understood_at = day.understood_at or self.s.now
-                    self.s.say("Understanding recorded. Tasks and assessment scores were not changed.")
+                    self.s.practice()
+                    self.s.say(
+                        "Understanding recorded. Tasks and assessment scores were not changed. "
+                        "Check yourself with Quiz me now on the lesson, or /today."
+                    )
             else:
                 self.s.say("Invalid lesson button.")
         elif parts[0] == "suggestion" and len(parts) == 3:
