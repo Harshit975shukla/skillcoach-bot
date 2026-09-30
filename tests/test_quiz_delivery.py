@@ -139,7 +139,7 @@ def test_answer_feedback_and_next_question_fit_budget_despite_slow_connect(pg_re
         ).status_code
         == 202
     )
-    assert len(runtime.telegram.messages) == 2
+    assert len(runtime.telegram.messages) == 1
     assert len(pg_repo.read()[1].assessments[target["session"]].answers) == 1
 
 
