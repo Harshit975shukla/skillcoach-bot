@@ -519,8 +519,13 @@ def admin_overview(runtime):
                 "done": sum(t.status == "done" for t in tasks),
                 "pending": sum(t.status == "pending" for t in tasks),
                 "lessons_delivered": sum(bool(x.get("delivered_at")) for x in state.lessons.values()),
-                "quizzes_completed": sum(a.status == "completed" for a in state.assessments.values()),
-                "answers_recorded": sum(len(a.answers) for a in state.assessments.values()),
+                "quizzes_completed": sum(
+                    a.status == "completed" and a.kind in ("daily", "weekly")
+                    for a in state.assessments.values()
+                ),
+                "answers_recorded": sum(
+                    len(a.answers) for a in state.assessments.values() if a.kind in ("daily", "weekly")
+                ),
                 "interviews_completed": sum(i.status == "completed" for i in state.interviews.values()),
                 "minutes_logged": sum(t.actual_minutes for t in tasks if t.status == "done"),
                 "paused": state.paused,

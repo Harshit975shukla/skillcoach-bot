@@ -436,6 +436,29 @@ and more rewarding:
 - **Late-delivery alerts.** When a scheduled lesson or quiz finishes reaching learners more than 20
   minutes after its slot, or still has parts waiting, the owner gets one alert for that slot.
 
+### Spaced review, mistake practice and the roadmap
+
+- **Spaced review (`/review`).** Every missed daily or weekly quiz question becomes a review card due the
+  next study day; correct daily answers are checked again after a week. Remembered cards move through
+  1, 3, 7, 14 and 30-day gaps and retire after a month; a miss sends a card back to one day. Sessions
+  hold up to five due questions, reuse the quiz's validated question (no AI call) and use the same
+  question-bound buttons and unique answer receipts. Due reviews become the Today/Home next step as a
+  short warm-up, and never replace an open quiz.
+- **Practise my mistakes.** A daily quiz with mistakes offers one AI-generated fresh question per
+  mistake (a new angle, never the original wording), once per quiz. Practice and review answers never
+  change quiz scores or quiz accuracy; they are reported separately.
+- **Understanding checks.** After **I understand**, the bot offers five quick questions immediately
+  (or shows the quiz score if already taken), because self-reported understanding is weak evidence.
+- **Evidence-based roadmap.** The dashboard's lesson library shows each started topic as Learning,
+  Needs review (due reviews or under 60% recently) or Solid (80%+ over at least four answers and a
+  question still remembered a week later), plus the next recommended topic. These describe practice
+  evidence, not certification.
+- **Adaptive plans and better questions.** Plan proposals see recent quiz results by topic and lesson
+  fit feedback, schedule revision for weak or confusing topics and move ahead when results are strong
+  and lessons feel too easy. Quizzes mix scenario/troubleshooting and command/config questions with
+  explanations of the tempting wrong option. The weekly assessment points to `/interview` for a graded
+  written explanation.
+
 Help is generated from `skillcoach/commands.py`. `/profile` displays the private profile or enters setup; `/profile setup` replaces it only after successful validation.
 
 | Commands | Behavior |
@@ -447,6 +470,7 @@ Help is generated from `skillcoach/commands.py`. `/profile` displays the private
 | `/learn <topic>`, `/ask <question>`, `/tip` | Full lesson with tracked tasks, personalized coaching or practice tip |
 | `/resources [cloud\|devops\|linux\|topic\|search]` | Curated free learning links; `--page 2` for more; no AI call |
 | `/q A` (or B/C/D), question buttons | Answer only the active question; old buttons cannot grade a different question |
+| `/review` | Spaced review of missed and previously correct questions that are due; up to five per session |
 | `/quizzes`, `/quiz <id or lesson date>` | Resume unfinished daily quizzes through Sunday 23:59 IST without resetting answers; also available from the private dashboard |
 | `/interview [topic]`, `/interview next` | Question first, learner answer, rubric feedback and hypothetical model answer afterward |
 | `/mock [topic]` | Clearly labeled sample Q&A, **not** a graded interview |

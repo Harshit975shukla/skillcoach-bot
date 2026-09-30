@@ -6,6 +6,7 @@ COMMANDS = {
     "quizzes": "Quizzes to finish (open until Sunday 23:59 IST)",
     "quiz": "<id|date> resume a quiz; saved answers kept",
     "q": "<A|B|C|D> answer the current question",
+    "review": "Spaced review of questions you met before",
     "progress": "Study days, streak, quiz accuracy and lessons",
     "ask": "<question> ask the AI tutor",
     "dashboard": "Open your private dashboard",
@@ -54,7 +55,7 @@ COMMANDS = {
 }
 
 GROUPS = (
-    ("Every day", ("menu", "today", "quizzes", "quiz", "q", "progress", "ask", "dashboard")),
+    ("Every day", ("menu", "today", "review", "quizzes", "quiz", "q", "progress", "ask", "dashboard")),
     (
         "Practice",
         (

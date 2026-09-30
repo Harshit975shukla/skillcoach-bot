@@ -67,6 +67,13 @@
         <h2 id="lessons-heading">Your lesson library</h2>
         <p class="section-description">Ready-to-read Cloud and DevOps courses. Explore ahead without waiting for a
           daily delivery. Reading does not complete a tracked task or lab.</p>
+        <div id="roadmap" class="roadmap" hidden>
+          <p id="roadmap-summary"></p>
+          <p id="roadmap-next" class="task-meta"></p>
+          <button id="roadmap-open" type="button" hidden>Read it</button>
+          <p class="task-meta">Topic states come from your quizzes and spaced reviews: Learning, Needs review, or
+            Solid once you still remember it a week later. They are practice evidence, not certification.</p>
+        </div>
         <div class="resource-filters">
           <div>
             <label for="course-module">Module</label>
@@ -143,13 +150,13 @@
           <div><dt>Exercises done</dt><dd id="done"></dd></div>
           <div><dt>Logged practice</dt><dd id="minutes"></dd></div>
           <div><dt>Labs verified</dt><dd id="labs-verified"></dd></div>
-          <div><dt>Interviews graded</dt><dd id="graded"></dd></div>
+          <div><dt>Reviews remembered</dt><dd id="reviews"></dd></div>
         </dl>
         <p class="section-description">Study days start at 04:00 IST and count any learning action. Sundays are rest days
           and one missed day a week is forgiven. Receiving a lesson does not count as mastery.</p>
         <h3>Skill practice</h3>
         <ul id="skills" class="skill-list"></ul>
-        <h3>Recent interview feedback</h3>
+        <h3>Recent interview feedback <span id="graded" class="heading-note"></span></h3>
         <ul id="interviews" class="interview-list"></ul>
       </section>
       <section id="documents" aria-labelledby="documents-heading">

@@ -67,7 +67,11 @@ def safe_learning_view(state, now, *, labs_enabled=True):
                     "tasks_total": len(tasks),
                 }
             )
-    finished = [a for a in state.assessments.values() if a.status == "completed" and a.completed_at]
+    finished = [
+        a
+        for a in state.assessments.values()
+        if a.status == "completed" and a.completed_at and a.kind in ("daily", "weekly")
+    ]
     finished.sort(key=lambda a: a.completed_at)
     from skillcoach.timeutil import study_day
 
@@ -340,6 +344,9 @@ class Learning:
             "remain available. Each objective and practice should fit that pacing. Dates, lesson_key and "
             "understood_at must be null: the application schedules and tracks these. Give a concise private "
             "rationale with uncertainty, not a promise of mastery. No fabricated credentials. "
+            "Adapt to the evidence: include a 'revision' session for a topic under 60% in "
+            "recent_quiz_results_by_topic or rated confusing/too hard; move to more advanced topics when "
+            "recent results are 80%+ and lessons were rated too easy. "
             f"Goal: {self.j.goal}\nLevel: {self.j.level}; minutes: {self.j.minutes}\n"
             f"Diagnostic: {json.dumps(self.s.state.profile.readiness.model_dump() if active and self.s.state.profile and self.s.state.profile.readiness else self.j.diagnostic_rating)}\n"
             f"Requested revision: {self.j.revision_request}\n"
@@ -762,10 +769,7 @@ class Learning:
                 else:
                     day.understood_at = day.understood_at or self.s.now
                     self.s.practice()
-                    self.s.say(
-                        "Understanding recorded. Tasks and assessment scores were not changed. "
-                        "Check yourself with Quiz me now on the lesson, or /today."
-                    )
+                    self.understanding_check(day.lesson_key)
             else:
                 self.s.say("Invalid lesson button.")
         elif parts[0] == "suggestion" and len(parts) == 3:
@@ -793,6 +797,36 @@ class Learning:
                 self.s.say("Unsupported suggestion action.")
         else:
             self.s.say("Unsupported onboarding button.")
+
+    def understanding_check(self, key):
+        """Self-reported understanding is weak evidence, so offer a quick retrieval check right away."""
+        from skillcoach.lesson_delivery import lesson_id
+
+        record = self.s.state.lessons.get(key, {})
+        quiz = [
+            a
+            for a in self.s.state.assessments.values()
+            if a.kind == "daily" and a.date.isoformat() == record.get("date") and a.status == "completed"
+        ]
+        if quiz:
+            score = sum(x.correct for x in quiz[-1].answers)
+            self.s.say(
+                f"Understanding recorded, and your quiz on it scored {score}/{len(quiz[-1].questions)}. "
+                "Missed questions come back in /review."
+            )
+            return
+        self.s.say(
+            "Understanding recorded. Check it with five quick questions while it is fresh; it takes about "
+            "3 minutes and never blocks anything.",
+            buttons=[
+                [
+                    {
+                        "text": "📝 Check myself now",
+                        "callback_data": f"qnow:{record.get('id') or lesson_id(key)}",
+                    }
+                ]
+            ],
+        )
 
     def recover_lesson(self, plan_id=None, index=None):
         plan = approved_plan(self.s.state)

@@ -89,6 +89,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
     from skillcoach.course_library import index
     from skillcoach.formatting import md_blocks
     from skillcoach.lesson_delivery import display_name, recent_lessons
+    from skillcoach.mastery import mastery_view
     from skillcoach.progress import summary, today_view
     from skillcoach.quizzes import catalogue
     from skillcoach.resources import library_view
@@ -123,6 +124,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
         "stats": stats(state, now),
         "progress": summary(state, now),
         "today": today_view(state, now),
+        "mastery": mastery_view(state, now),
         "preferences": {
             "paused": state.paused,
             "media": state.media,

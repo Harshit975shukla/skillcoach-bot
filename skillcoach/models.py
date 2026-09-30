@@ -94,7 +94,7 @@ class Answer(Model):
 
 class Assessment(Model):
     id: str
-    kind: Literal["daily", "weekly"]
+    kind: Literal["daily", "weekly", "review", "practice"]
     date: date
     week: str
     status: Literal["active", "completed", "expired", "cancelled"] = "active"
@@ -102,6 +102,23 @@ class Assessment(Model):
     question_ids: list[str]
     answers: list[Answer] = Field(default_factory=list)
     completed_at: datetime | None = None
+    # Review sessions: the spaced-review card behind each question, in order.
+    cards: list[str] = Field(default_factory=list)
+    # Practice sessions: the quiz whose mistakes they revisit.
+    source: str | None = None
+
+
+class ReviewCard(Model):
+    """One question scheduled for spaced retrieval (Leitner boxes 0-4; box 5 means retired)."""
+
+    id: str
+    session: str
+    index: Annotated[int, Field(strict=True, ge=0, le=9)]
+    box: Annotated[int, Field(strict=True, ge=0, le=5)] = 0
+    due: date
+    reviews: int = 0
+    lapses: int = 0
+    last_result: bool | None = None
 
 
 class InterviewFeedback(Model):
@@ -247,6 +264,7 @@ class State(Model):
     # Streak milestones already celebrated, so each is announced once.
     milestones: list[int] = Field(default_factory=list)
     ask_session: str | None = None
+    review: dict[str, ReviewCard] = Field(default_factory=dict)
 
     def target(self) -> dict | None:
         if self.focus == "ask" and self.ask_session:

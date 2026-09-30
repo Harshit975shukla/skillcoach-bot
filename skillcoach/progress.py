@@ -12,8 +12,13 @@ def pct(part, whole):
     return round(100 * part / whole) if whole else None
 
 
-def answered(state):
+QUIZ_KINDS = ("daily", "weekly")
+
+
+def answered(state, kinds=QUIZ_KINDS):
     for session in state.assessments.values():
+        if session.kind not in kinds:
+            continue
         for index, answer in enumerate(session.answers):
             if index < len(session.questions):
                 yield session, session.questions[index], answer
@@ -41,10 +46,13 @@ def focus_topics(entries):
 
 
 def summary(state, now):
+    from skillcoach.review import review_summary
+
     today = study_day(now)
     start = monday(today)
     entries = list(answered(state))
     week = [e for e in entries if study_day(e[2].created_at) >= start]
+    reviews = list(answered(state, ("review",)))
     tasks = list(state.tasks.values())
     delivered = {key for key, record in state.lessons.items() if record.get("delivered_at")}
     return {
@@ -57,7 +65,12 @@ def summary(state, now):
         "week_accuracy": pct(sum(e[2].correct for e in week), len(week)),
         "lessons_delivered": len(delivered),
         "lessons_understood": len(understood_keys(state) & delivered),
-        "quizzes_completed": sum(s.status == "completed" for s in state.assessments.values()),
+        "quizzes_completed": sum(
+            s.status == "completed" and s.kind in QUIZ_KINDS for s in state.assessments.values()
+        ),
+        "reviews_answered": len(reviews),
+        "review_accuracy": pct(sum(e[2].correct for e in reviews), len(reviews)),
+        "review_due": review_summary(state, now)["due"],
         "exercises_done": sum(t.status == "done" for t in tasks),
         "exercises_skipped": sum(t.status == "skipped" for t in tasks),
         "exercises_open": sum(t.status == "pending" for t in tasks),
@@ -76,6 +89,7 @@ def recap_text(state, now):
         for key, record in state.lessons.items()
         if record.get("delivered_at") and start.isoformat() <= (record.get("date") or "") <= today.isoformat()
     }
+    reviews = [e for e in answered(state, ("review",)) if study_day(e[2].created_at) >= start]
     closed = [t for t in state.tasks.values() if t.completed_at and study_day(t.completed_at) >= start]
     done = sum(t.status == "done" for t in closed)
     skipped = sum(t.status == "skipped" for t in closed)
@@ -101,6 +115,8 @@ def recap_text(state, now):
         lines.append(
             "📝 Quiz questions: none yet. Missed daily quizzes stay open until Sunday 23:59 IST: /quizzes"
         )
+    if reviews:
+        lines.append(f"🔁 Reviews: {len(reviews)} answered · {sum(e[2].correct for e in reviews)} remembered")
     if done or skipped:
         lines.append(f"🛠 Exercises: {done} done" + (f" · {skipped} skipped" if skipped else ""))
     if labs:
@@ -109,7 +125,7 @@ def recap_text(state, now):
         lines.append(f"💪 Strongest: {strong[0]} ({strong[1]}/{strong[2]})")
     if weak:
         lines.append(f"🎯 Focus next: {weak[0]} ({weak[1]}/{weak[2]}). Re-read its lesson or ask with /ask.")
-    if not (lessons or entries or done or labs or s["study_days_week"]):
+    if not (lessons or entries or reviews or done or labs or s["study_days_week"]):
         lines.append("A quiet week is fine. Start small next week: one lesson and its 5-question quiz.")
     lines.append("This counts practice you actually did. It is evidence, not proof of mastery.")
     return "\n".join(lines)
@@ -125,6 +141,9 @@ def progress_text(state, now):
         f"📝 Quiz questions: {s['questions_answered']} answered · {s['accuracy']}% correct"
         if s["questions_answered"]
         else "📝 Quiz questions: none answered yet",
+        f"🔁 Reviews: {s['reviews_answered']} answered · {s['review_accuracy']}% remembered · {s['review_due']} due"
+        if s["reviews_answered"]
+        else f"🔁 Reviews due: {s['review_due']}. Missed quiz questions return after 1, 3, 7, 14 and 30 days.",
         f"🛠 Exercises: {s['exercises_done']} done · {s['exercises_open']} open",
         f"🧪 Labs verified: {s['labs_verified']}",
     ]
@@ -152,6 +171,7 @@ def today_view(state, now):
     """The learner's current lesson, its quiz and exercises, and one next action."""
     from skillcoach.lesson_delivery import display_name, lesson_id, lesson_tasks
     from skillcoach.quizzes import catalogue, is_open
+    from skillcoach.review import review_summary
 
     today = study_day(now)
     key, record = latest_lesson(state, today)
@@ -179,17 +199,27 @@ def today_view(state, now):
     open_quizzes = [q for q in quizzes if q["can_resume"]]
     active = state.assessments.get(state.active_assessment) if state.active_assessment else None
     pending = [e for e in exercises if e["status"] == "pending"]
+    review_due = review_summary(state, now)["due"]
     if (
         active
         and active.status == "active"
         and len(active.answers) < len(active.questions)
         and is_open(active, now)
     ):
+        label = {"daily": "quiz", "weekly": "weekly assessment"}.get(active.kind, active.kind)
         action = {
-            "kind": "quiz",
-            "text": f"Continue your quiz ({len(active.answers)}/{len(active.questions)} answered)",
-            "callback": f"quiz:{active.id}",
-            "start": f"quiz_{active.id}",
+            "kind": "quiz" if active.kind == "daily" else "resume",
+            "text": f"Continue your {label} ({len(active.answers)}/{len(active.questions)} answered)",
+            "callback": f"quiz:{active.id}" if active.kind == "daily" else f"resume:{active.id}",
+            "start": f"quiz_{active.id}" if active.kind == "daily" else "resume",
+        }
+    elif review_due:
+        action = {
+            "kind": "review",
+            "text": f"Warm up: {review_due} review question{'s' if review_due > 1 else ''} "
+            f"(about {max(1, review_due // 2)} min)",
+            "callback": "review:start",
+            "start": "review",
         }
     elif lesson and lesson["delivered"] and quiz and quiz["can_resume"]:
         action = {
@@ -228,6 +258,7 @@ def today_view(state, now):
         "lesson": lesson,
         "quiz": quiz,
         "catch_up": len(open_quizzes),
+        "review_due": review_due,
         "exercises": exercises,
         "next": action,
     }

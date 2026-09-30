@@ -66,8 +66,13 @@ const fixture = {
       assigned_date: "2026-09-10", detail: "Review permissions.", earlier: true},
   ],
   progress: {study_days_week: 2, weekly_goal: 4, streak: 3, questions_answered: 10, accuracy: 60,
-    lessons_delivered: 3, lessons_understood: 2, exercises_done: 4, labs_verified: 0},
-  today: {date: "2026-09-29", catch_up: 2,
+    lessons_delivered: 3, lessons_understood: 2, exercises_done: 4, labs_verified: 0,
+    reviews_answered: 4, review_accuracy: 75, review_due: 2},
+  mastery: {summary: {total: 199, started: 3, solid: 1, needs_review: 1},
+    states: {[courses.index.modules.find(m => m.id === "linux").topics[0].id]: {state: "needs_review", label: "Needs review"}},
+    next: {id: courses.index.modules.find(m => m.id === "linux").topics[0].id,
+      title: courses.index.modules.find(m => m.id === "linux").topics[0].title, reason: "Review what slipped"}},
+  today: {date: "2026-09-29", catch_up: 2, review_due: 2,
     lesson: {id: LESSON_ID, topic: "CI pipeline design", date: "2026-09-29", delivered: true, today: true, understood: false},
     quiz: {id: LESSON_ID, title: "CI pipeline quiz", date: "2026-09-29", status: "in_progress", answered: 2, total: 5,
       score: null, can_resume: true, deadline: "2026-10-05T00:00:00+05:30"},
@@ -263,6 +268,13 @@ try {
     assert.equal(await page.$eval("#accuracy", e => e.textContent), "60% · 10 answered");
     assert.equal(await page.$eval("#understood", e => e.textContent), "2 of 3");
     assert.equal(await page.$eval("#streak", e => e.textContent), "3 days");
+    assert.equal(await page.$eval("#reviews", e => e.textContent), "75% · 4 answered");
+    assert.equal(await page.$eval("#graded", e => e.textContent), "(1 graded)");
+    assert.match(await page.$eval("#today-status", e => e.textContent), /Reviews due: 2/);
+    assert.equal(await page.$eval("#roadmap", e => e.hidden), false);
+    assert.equal(await page.$eval("#roadmap-summary", e => e.textContent),
+                 "Roadmap: 3 of 199 topics started · 1 solid · 1 needs review");
+    assert.match(await page.$eval("#roadmap-next", e => e.textContent), /^Review what slipped: /);
     if (process.env.DASHBOARD_SCREENSHOT_DIR) {
       await page.$eval("#today", e => e.scrollIntoView());
       await page.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, `today-${label}.png`)});
@@ -304,6 +316,11 @@ try {
     assert.match(await page.$eval("#course-list", e => e.textContent), /No matching lessons/);
     await page.$eval("#course-search", e => { e.value = ""; e.dispatchEvent(new Event("input")); });
     await page.select("#course-module", "linux");
+    assert.equal(await page.$eval("#course-list .state-badge.needs_review", e => e.textContent), "Needs review");
+    if (process.env.DASHBOARD_SCREENSHOT_DIR) {
+      await page.$eval("#lessons", e => e.scrollIntoView());
+      await page.screenshot({path: join(process.env.DASHBOARD_SCREENSHOT_DIR, `roadmap-${label}.png`)});
+    }
     assert.equal(await page.$$eval("#course-list > li", e => e.length),
       courses.index.modules.find(module => module.id === "linux").topics.length);
     assert.equal(courseRequests, coursesBeforeSearch, "course filtering is local");

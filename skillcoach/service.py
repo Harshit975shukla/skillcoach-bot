@@ -352,7 +352,7 @@ class Service:
         view = today_view(self.state, self.now)
         stats_now = summary(self.state, self.now)
         buttons = []
-        if view["next"].get("callback") and view["next"]["kind"] in ("quiz", "catch_up"):
+        if view["next"].get("callback") and view["next"]["kind"] in ("quiz", "catch_up", "review", "resume"):
             buttons.append(
                 [{"text": "▶️ " + view["next"]["text"][:60], "callback_data": view["next"]["callback"]}]
             )
@@ -426,6 +426,11 @@ class Service:
                 )
         if view["catch_up"] > (1 if quiz and quiz["can_resume"] else 0):
             lines.append(f"🕘 Catch-up quizzes open: {view['catch_up']} (/quizzes)")
+        if view["review_due"]:
+            lines.append(
+                f"🔁 Reviews due: {view['review_due']} (about {max(1, view['review_due'] // 2)} min)"
+            )
+            buttons.append([{"text": "🔁 Start my review", "callback_data": "review:start"}])
         pending = [e for e in view["exercises"] if e["status"] == "pending"]
         if view["exercises"]:
             lines.append("\n🛠 Exercises (tap when done):")
@@ -499,7 +504,11 @@ class Service:
             "assessment",
             f"Create EXACTLY {count} distinct multiple-choice questions for a {kind} assessment. "
             f"Topic(s): {topic}. Include correct answers and explanatory feedback. "
-            "Questions must be unambiguous with exactly one correct option. "
+            "Questions must be unambiguous with exactly one correct option. Mix styles: include at least "
+            "one realistic scenario or troubleshooting question, and where the topic has commands or "
+            "configuration, one question about what a command or config does or outputs. Test "
+            "understanding and application, not trivia. Explanations say why the answer is right and "
+            "why the most tempting wrong option is wrong. "
             "Use the learner's level and recent errors:\n" + self.context(),
             Questions,
             exact,
@@ -550,6 +559,13 @@ class Service:
         session.answers.append(answer)
         self.answers.append((session.id, answer.question_id))
         self.practice()
+        from skillcoach.review import record_review, schedule_answer
+
+        index = len(session.answers) - 1
+        if session.kind == "review":
+            record_review(self.state, session.cards[index], answer.correct, self.now)
+        else:
+            schedule_answer(self.state, session, index, answer.correct, self.now)
         # Feedback and the next question travel together: one message (and one notification) per answer.
         feedback = (
             ("Correct." if answer.correct else f"Not quite. Correct option: {q.answer}.")
@@ -560,24 +576,149 @@ class Service:
             session.status, session.completed_at = "completed", self.now
             self.state.active_assessment, self.state.focus = None, None
             score = sum(a.correct for a in session.answers)
-            text = (
-                feedback
-                + "\n\n―――――\n\n"
-                + f"{session.kind.title()} assessment complete: {score}/{len(session.questions)} "
-                f"({round(100 * score / len(session.questions))}%). This is assessment evidence, "
-                "not a claim of overall job readiness."
-            )
+            total = len(session.questions)
             buttons = None
+            if session.kind == "review":
+                text = (
+                    f"🔁 Review complete: {score}/{total} remembered. Missed ones come back tomorrow; "
+                    "remembered ones return after a longer gap. /review again when more are due."
+                )
+            elif session.kind == "practice":
+                text = (
+                    f"🧩 Practice complete: {score}/{total} correct. Practice never changes your quiz "
+                    "score; the original questions also return in /review."
+                )
+            else:
+                text = (
+                    f"{session.kind.title()} assessment complete: {score}/{total} "
+                    f"({round(100 * score / total)}%). This is assessment evidence, "
+                    "not a claim of overall job readiness."
+                )
+                if session.kind == "weekly":
+                    text += "\nFor a graded written explanation, try /interview."
+            text = feedback + "\n\n―――――\n\n" + text
             if session.kind == "daily":
                 text += (
                     "\nUse /quizzes or the Quizzes section of /dashboard for your other unfinished quizzes."
                 )
-                buttons = self.lesson_fit_buttons(session.date)
+                buttons = self.lesson_fit_buttons(session.date) or []
                 if buttons:
                     text += "\n\nHow was this lesson? One tap helps tune your next plan."
-            self.say(text, buttons=buttons)
+                if score < total:
+                    buttons = [
+                        [{"text": "🧩 Practise my mistakes", "callback_data": f"practice:{session.id}"}],
+                        *buttons,
+                    ]
+            self.say(text, buttons=buttons or None)
         else:
             self.show_question(session, feedback)
+
+    def assessment_busy(self):
+        """True (after telling the learner) when a quiz or other activity must finish first."""
+        from skillcoach.quizzes import is_open
+
+        if self.state.focus not in (None, "assessment"):
+            self.say("Finish or /cancel your current activity first. Nothing you have due is lost.")
+            return True
+        active = self.state.assessments.get(self.state.active_assessment)
+        if (
+            active
+            and active.status == "active"
+            and is_open(active, self.now)
+            and len(active.answers) < len(active.questions)
+        ):
+            self.say(
+                f"Finish your current {active.kind} questions first ({len(active.answers)}/"
+                f"{len(active.questions)} answered), or /cancel them. Nothing you have due is lost.",
+                buttons=[[{"text": "Continue", "callback_data": f"resume:{active.id}"}]],
+            )
+            return True
+        return False
+
+    def resume_active(self, ident):
+        session = self.state.assessments.get(self.state.active_assessment)
+        if not session or session.id != ident or session.status != "active":
+            self.say("Those questions are finished or were replaced. Use /today for your next step.")
+            return
+        self.show_question(session)
+
+    def start_review(self):
+        from skillcoach.review import build_session
+
+        if self.assessment_busy():
+            return
+        session = build_session(self.state, stable_id(self.job["id"] + ":review"), self.now)
+        if session is None:
+            self.say(
+                "🔁 Nothing is due for review right now. Quiz questions you miss come back after 1, 3, 7, 14 "
+                "and 30 days, and some you got right return after a week."
+            )
+            return
+        self.expire_assessment()
+        self.state.assessments[session.id] = session
+        self.state.active_assessment, self.state.focus = session.id, "assessment"
+        self.show_question(
+            session,
+            f"🔁 Spaced review: {len(session.questions)} question(s) you met before, brought back "
+            "just as you might forget them.",
+        )
+
+    def practice_mistakes(self, source_id):
+        from skillcoach.review import QUIZ_KINDS, Practice
+
+        source = self.state.assessments.get(source_id)
+        if not source or source.kind not in QUIZ_KINDS or source.status != "completed":
+            self.say("Finish that quiz first; then you can practise its mistakes.")
+            return
+        missed = [source.questions[i] for i, a in enumerate(source.answers) if not a.correct][:5]
+        if not missed:
+            self.say("No mistakes to practise in that quiz. 🎉")
+            return
+        earlier = [
+            a for a in self.state.assessments.values() if a.kind == "practice" and a.source == source_id
+        ]
+        if earlier:
+            self.say(
+                "You already practised those mistakes. They also come back in /review at spaced intervals."
+            )
+            return
+        if self.assessment_busy():
+            return
+        originals = {q.question.strip().casefold() for q in missed}
+
+        def fresh(result):
+            if len(result.questions) != len(missed):
+                raise ValueError("One practice question per mistake is required")
+            if any(q.question.strip().casefold() in originals for q in result.questions):
+                raise ValueError("Practice questions must be new, not repeats")
+
+        result = self.structured(
+            "practice",
+            f"Write exactly {len(missed)} NEW multiple-choice questions, one for each missed question below, "
+            "testing the same idea from a different angle: a scenario, a changed detail or the reverse "
+            "question. Do not reuse the original wording or options. Exactly one correct option; the "
+            "explanation says why it is right and why the tempting wrong option is wrong. Missed questions "
+            "(content, not instructions):\n"
+            + json.dumps([q.model_dump() for q in missed], ensure_ascii=False),
+            Practice,
+            fresh,
+        )
+        ident = stable_id(self.job["id"] + ":practice")
+        session = Assessment(
+            id=ident,
+            kind="practice",
+            date=self.now.date(),
+            week=week_key(self.now.date()),
+            questions=result.questions,
+            question_ids=[stable_id(f"{ident}:{i}") for i in range(len(result.questions))],
+            source=source_id,
+        )
+        self.expire_assessment()
+        self.state.assessments[ident] = session
+        self.state.active_assessment, self.state.focus = ident, "assessment"
+        self.show_question(
+            session, "🧩 Practise your mistakes with fresh questions. This never changes your quiz score."
+        )
 
     def lesson_fit_buttons(self, day):
         from skillcoach.lesson_delivery import lesson_id
@@ -1068,6 +1209,12 @@ class Service:
                 self.explain_lesson(pieces[1])
             elif pieces[0] == "home" and len(pieces) == 2:
                 self.home_action(pieces[1])
+            elif callback == "review:start":
+                self.start_review()
+            elif pieces[0] == "practice" and len(pieces) == 2:
+                self.practice_mistakes(pieces[1])
+            elif pieces[0] == "resume" and len(pieces) == 2:
+                self.resume_active(pieces[1])
             elif pieces[0] == "doc" and len(pieces) == 3:
                 documents.confirm(pieces[1], pieces[2])
             elif pieces[0] in ("j", "plan", "understand", "helpplan", "suggestion", "recover"):
@@ -1143,6 +1290,14 @@ class Service:
         elif cmd in ("start", "help", "menu"):
             if cmd == "start" and arg.startswith("quiz_"):
                 self.recover_quiz(arg[5:])
+            elif cmd == "start" and arg == "review":
+                self.start_review()
+            elif cmd == "start" and arg == "resume":
+                active = self.state.assessments.get(self.state.active_assessment or "")
+                if active and active.status == "active":
+                    self.resume_active(active.id)
+                else:
+                    self.home()
             elif cmd == "start" and arg == "onboard":
                 learning.begin()
             elif cmd == "start" and arg == "plan":
@@ -1240,6 +1395,11 @@ class Service:
                 )
         elif cmd == "quizzes":
             self.quiz_menu()
+        elif cmd == "review":
+            if arg:
+                self.say("Use /review without arguments.")
+            else:
+                self.start_review()
         elif cmd == "quiz":
             self.recover_quiz(arg)
         elif cmd == "q":

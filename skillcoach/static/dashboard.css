@@ -146,6 +146,14 @@ code { font-family: ui-monospace, "Cascadia Mono", monospace; font-size: .875em;
 #task-status { margin: 0 0 8px; }
 .earlier { margin-top: 22px; }
 .earlier > summary { font-weight: 650; }
+.roadmap { margin: 4px 0 18px; padding: 16px 18px; background: var(--soft); border-radius: 8px; }
+.roadmap > * + * { margin-top: 8px; }
+#roadmap-summary { font-weight: 650; overflow-wrap: anywhere; }
+.state-badge { display: inline-block; margin-top: 6px; padding: 1px 8px; border-radius: 5px; font-size: .8rem;
+  font-weight: 650; background: var(--soft); color: var(--ink); }
+.state-badge.needs_review { color: var(--danger); }
+.state-badge.solid { color: var(--accent); }
+.heading-note { color: var(--muted); font-size: .875rem; font-weight: 500; }
 .quiz-link { display: inline-flex; align-items: center; min-height: 44px; padding: 9px 12px;
   border: 1px solid var(--line); border-radius: 8px; font-weight: 650; text-decoration: none; }
 .quiz-link:hover { background: var(--soft); }

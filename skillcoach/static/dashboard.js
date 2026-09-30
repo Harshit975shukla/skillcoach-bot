@@ -10,7 +10,7 @@
   let labBusy = false, labController, labRequests = {};
   let exerciseBusy = false, exerciseController;
   let resourceCatalog = [], resourceLimit = 6;
-  let courseModules = [], courseLimit = 10, lastLessonButton = null;
+  let courseModules = [], courseLimit = 10, lastLessonButton = null, mastery = null;
   const LESSON = /^[0-9a-f]{20}$/;
   const TOPIC = /^[a-z0-9-]+\/[a-z0-9-]+$/;
   const linked = new URLSearchParams(location.search).get("lesson");
@@ -43,7 +43,8 @@
     hideLesson();
     documentCsrf = "";
     resourceCatalog = []; resourceLimit = 6;
-    courseModules = []; courseLimit = 10; lastLessonButton = null;
+    courseModules = []; courseLimit = 10; lastLessonButton = null; mastery = null;
+    $("roadmap").hidden = true; $("roadmap-open").hidden = true;
     $("course-search").value = ""; $("course-module").replaceChildren(node("option", "All modules"));
     $("course-module").firstChild.value = ""; $("course-more").hidden = true;
     $("resource-search").value = ""; $("resource-group").value = ""; $("resource-no-account").checked = false;
@@ -52,6 +53,7 @@
     $("content").hidden = true;
     for (const id of ["learner-name", "target-role", "tasks", "earlier-list", "plan-days", "skills", "interviews",
                       "done", "streak", "minutes", "graded", "study-days", "accuracy", "understood", "labs-verified",
+                      "reviews", "roadmap-summary", "roadmap-next",
                       "preferences", "updated", "task-count", "quiz-list", "quiz-count",
                       "today-next", "today-actions", "today-status",
                       "plan-status", "plan-rationale", "lab-items", "lab-catalog", "lab-count", "lab-status",
@@ -67,7 +69,7 @@
     clearTimeout(expiryTimer); clearTimeout(warningTimer);
   }
   function empty(id, message) { $(id).append(node("li", message, "empty")); }
-  const QUIZ_START = /^quiz_(?:[a-f0-9]{20}|\d{4}-\d{2}-\d{2})$/;
+  const QUIZ_START = /^(?:quiz_(?:[a-f0-9]{20}|\d{4}-\d{2}-\d{2})|review|resume)$/;
   function telegramLink(botUrl, start, label) {
     if (!botUrl || !/^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(botUrl) || !QUIZ_START.test(start || "")) return null;
     const link = node("a", label, "quiz-link");
@@ -90,7 +92,8 @@
       read.addEventListener("click", () => { lastLessonButton = read; openLesson(next.lesson); });
       actions.append(read);
     }
-    const link = telegramLink(botUrl, next.start, next.kind === "quiz" ? "Take the quiz in Telegram" : "Catch up in Telegram");
+    const labels = {quiz: "Take the quiz in Telegram", review: "Start the review in Telegram", resume: "Continue in Telegram"};
+    const link = telegramLink(botUrl, next.start, labels[next.kind] || "Catch up in Telegram");
     if (link) actions.append(link);
     else if (next.kind === "exercise") {
       const jump = node("a", "Go to your exercises", "quiz-link");
@@ -109,6 +112,7 @@
     if (exercises.length) {
       status.append(node("li", `Exercises: ${exercises.filter(e => e.status === "done").length} of ${exercises.length} done`));
     }
+    if (today.review_due) status.append(node("li", `Reviews due: ${today.review_due}`));
     if (progress) {
       status.append(node("li", `Study days this week: ${progress.study_days_week} of ${progress.weekly_goal} · streak ${progress.streak}`));
     }
@@ -220,6 +224,18 @@
     $("lesson-view").hidden = true; $("lesson-page").hidden = true;
     if (app && app.BackButton) app.BackButton.hide();
   }
+  function renderRoadmap(view) {
+    mastery = view || null;
+    if (!view) { $("roadmap").hidden = true; return; }
+    const s = view.summary;
+    $("roadmap-summary").textContent = `Roadmap: ${s.started} of ${s.total} topics started · ${s.solid} solid · `
+      + `${s.needs_review} need${s.needs_review === 1 ? "s" : ""} review`;
+    const next = view.next;
+    $("roadmap-next").textContent = next ? `${next.reason}: ${next.title}` : "";
+    $("roadmap-open").hidden = !(next && TOPIC.test(next.id));
+    $("roadmap").hidden = false;
+    renderCourses();
+  }
   function renderCourses() {
     const group = $("course-module").value;
     const words = $("course-search").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -230,6 +246,8 @@
     for (const topic of topics.slice(0, courseLimit)) {
       const item = node("li"), detail = node("div"), button = node("button", "Read lesson");
       detail.append(node("span", topic.title, "plan-topic"), node("p", topic.module.title, "task-meta"));
+      const state = mastery && mastery.states[topic.id];
+      if (state) detail.append(node("span", state.label, "state-badge " + state.state));
       button.type = "button"; button.setAttribute("aria-label", `Read ${topic.title}`);
       button.addEventListener("click", () => { lastLessonButton = button; openLesson("course:" + topic.id); });
       item.append(detail, button); list.append(item);
@@ -581,7 +599,13 @@
     $("done").textContent = `${data.stats.done} / ${data.stats.total}`;
     $("minutes").textContent = `${data.stats.minutes_practiced} min`;
     $("labs-verified").textContent = progress.labs_verified ?? 0;
-    $("graded").textContent = data.stats.answers_graded;
+    $("reviews").replaceChildren();
+    if (progress.reviews_answered) {
+      $("reviews").append(document.createTextNode(`${progress.review_accuracy}%`),
+                          node("span", ` · ${progress.reviews_answered} answered`, "metric-note"));
+    } else $("reviews").textContent = progress.review_due ? `${progress.review_due} due` : "None yet";
+    $("graded").textContent = data.stats.answers_graded ? `(${data.stats.answers_graded} graded)` : "";
+    renderRoadmap(data.mastery);
     for (const skill of data.skills) {
       const item = node("li");
       item.append(node("span", skill.skill), node("span", `${skill.done} / ${skill.total} tasks`));
@@ -624,6 +648,11 @@
     $(id).addEventListener(id === "course-search" ? "input" : "change", () => { courseLimit = 10; renderCourses(); });
   }
   $("course-more").addEventListener("click", () => { courseLimit += 10; renderCourses(); });
+  $("roadmap-open").addEventListener("click", () => {
+    if (mastery && mastery.next && TOPIC.test(mastery.next.id)) {
+      lastLessonButton = $("roadmap-open"); openLesson("course:" + mastery.next.id);
+    }
+  });
   async function refresh() {
     if (uploadBusy || labBusy) return;
     if (!app || !app.initData) {

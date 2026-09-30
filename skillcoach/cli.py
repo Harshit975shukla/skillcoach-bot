@@ -86,6 +86,7 @@ def alert_late(runtime: Runtime, kind: str, day: date):
 MENU = (
     ("menu", "Home: your next step"),
     ("today", "Today's lesson, quiz and exercises"),
+    ("review", "Spaced review of past questions"),
     ("quizzes", "Quizzes to finish this week"),
     ("progress", "Study days, streak and accuracy"),
     ("ask", "Ask the AI tutor"),
