@@ -142,6 +142,24 @@ def test_paused_days_never_count_as_missed_days(harness):
     assert h.repo.state.resumed_at == datetime(2026, 10, 26, 10, tzinfo=IST)
 
 
+def test_mentor_encouragement_sends_only_presets_and_respects_a_pause(harness):
+    h = harness
+    h.repo.enqueue("admin:one", {"type": "encouragement", "message": "checkin"})
+    h.runtime.recover(media=False)
+    text, buttons = h.telegram.messages[-1]
+    assert text == ENCOURAGEMENTS["checkin"]
+    assert buttons[-1] == [{"text": "📅 Today", "callback_data": "home:today"}]
+    count = len(h.telegram.messages)
+    h.repo.enqueue("admin:two", {"type": "encouragement", "message": "Any free text"})
+    h.runtime.recover(media=False)
+    assert len(h.telegram.messages) == count  # Unknown keys send nothing.
+    command(h, "/pause")
+    count = len(h.telegram.messages)
+    h.repo.enqueue("admin:three", {"type": "encouragement", "message": "progress"})
+    h.runtime.recover(media=False)
+    assert len(h.telegram.messages) == count  # Paused after the owner confirmed: not sent.
+
+
 def test_feature_keys_never_include_arguments_or_typed_text():
     assert action_of({"type": "telegram", "text": "/ask what is my secret project?"}) == "/ask"
     assert action_of({"type": "telegram", "text": "My private answer"}) is None
@@ -159,16 +177,18 @@ def test_adoption_funnel_risk_counters_and_encouragement_are_private_and_scoped(
 
     bot = Bot(pg_repo, config)
     now = datetime.now(timezone.utc)
-    bot.runtime.clock = lambda: now
+    bot.runtime.clock = lambda: now  # Reads `now` when called, so reassigning it below moves the clock.
     active, quiet = bot.join(101), bot.join(102)
     bot.join(103, approve=False)
+    # Telegram signs launches after approval; a launch older than the approval is refused as stale.
+    now = datetime.now(timezone.utc) + timedelta(seconds=3)
 
     def studied(state):
         state.profile = Profile(**PROFILE)
         state.lessons["l"] = {
             "topic": "IAM",
-            "date": (now - timedelta(days=9)).date().isoformat(),
-            "delivered_at": "x",
+            "date": (now - timedelta(days=9)).astimezone(IST).date().isoformat(),
+            "delivered_at": (now - timedelta(days=9)).isoformat(),
         }
         state.activity = [(now - timedelta(days=d)).astimezone(IST).date() for d in (9, 8, 7)]
 
@@ -184,9 +204,10 @@ def test_adoption_funnel_risk_counters_and_encouragement_are_private_and_scoped(
     assert client.post("/app/course", json={"init_data": launch, "topic": topic}).status_code == 200
     with pg_repo.connection() as conn:
         counts = {
-            r["event"]: r["count"]
+            r["event"]: r["n"]
             for r in conn.execute(
-                "SELECT event,count FROM usage_daily WHERE learner_id=%s", (active.learner_id,)
+                "SELECT event,sum(count) AS n FROM usage_daily WHERE learner_id=%s GROUP BY event",
+                (active.learner_id,),
             )
         }
     assert counts == {"dashboard_open": 2, "course_page": 1}
@@ -209,6 +230,7 @@ def test_adoption_funnel_risk_counters_and_encouragement_are_private_and_scoped(
     body = preview(admin, "encourage", active.learner_id, {"message": "checkin"}).json
     assert ENCOURAGEMENTS["checkin"] in body["preview"]["details"]
     assert confirm(admin, body).json["state"] == "queued"
+    bot.runtime.ai.responses.append({"text": "Answer."})  # For the /ask queued earlier.
     bot.runtime.recover(media=False)
     received = bot.runtime.telegram.chat_messages[101][-1]
     assert received[0] == ENCOURAGEMENTS["checkin"] and received[1][-1][0]["callback_data"] == "home:today"

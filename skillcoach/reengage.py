@@ -99,7 +99,8 @@ class Reengage:
 
     def encourage(self, key):
         text = ENCOURAGEMENTS.get(key)
-        if text is None:
+        # Only prepared messages, and never to a learner who paused after the owner confirmed it.
+        if text is None or self.s.state.paused:
             return
         self.s.say(text, buttons=next_step_buttons(self.s))
 
