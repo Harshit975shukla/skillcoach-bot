@@ -94,11 +94,11 @@ def test_answer_feedback_and_next_question_fit_budget_despite_slow_connect(pg_re
     monkeypatch.setattr("skillcoach.clients.time.monotonic", lambda: elapsed[0])
     before_send = runtime.telegram.send
 
-    def checked_send(text, budget, buttons=None):
+    def checked_send(text, budget, buttons=None, *, parse_mode=None, silent=False):
         assert pg_repo._session_connection.get().info.transaction_status == TransactionStatus.IDLE
         assert budget.remaining() > 0
         elapsed[0] += 1
-        return before_send(text, budget, buttons)
+        return before_send(text, budget, buttons, silent=silent)
 
     monkeypatch.setattr(runtime.telegram, "send", checked_send)
     client = create_app(runtime).test_client()
@@ -116,11 +116,12 @@ def test_answer_feedback_and_next_question_fit_budget_despite_slow_connect(pg_re
     )
     assert response.status_code == 202
     assert len(connects) == 1
-    assert elapsed[0] == 7
-    assert len(runtime.telegram.messages) == 2
-    assert "Correct." in runtime.telegram.messages[0][0]
-    assert "question 2/5" in runtime.telegram.messages[1][0]
-    assert runtime.telegram.messages[1][1] is not None
+    # Feedback and the next question now travel as one message, so one send fits the budget.
+    assert elapsed[0] == 6
+    assert len(runtime.telegram.messages) == 1
+    text, buttons = runtime.telegram.messages[0]
+    assert text.startswith("Correct.") and "question 2/5" in text
+    assert buttons is not None
     assert pg_repo._session_connection.get() is None
     monkeypatch.setattr("skillcoach.storage.psycopg.connect", original_connect)
     state = pg_repo.read()[1]
