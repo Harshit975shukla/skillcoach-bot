@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from conftest import FakeEmail
+from psycopg.types.json import Jsonb
 
 from skillcoach import web_channel
 from skillcoach.cli import email_test, main
@@ -567,6 +568,40 @@ def test_inbox_follows_delivery_order_when_an_old_message_is_sent_again(web):
     assert resent["status"] == "sent" and resent["delivered_seq"] > cursor
     assert [message["id"] for message in later] == [resent["delivered_seq"]]
     assert post(web, "/web/feed").json["messages"][-1]["id"] == resent["delivered_seq"]
+
+
+@pytest.mark.postgres
+def test_web_migration_numbers_existing_sent_messages_in_delivery_order(pg_repo):
+    now = datetime(2026, 9, 30, 12, tzinfo=timezone.utc)
+    with pg_repo.connection() as conn:
+        # Return this schema to version 10, as on the live database before the upgrade.
+        conn.execute("DROP TABLE web_sessions, web_logins")
+        conn.execute("ALTER TABLE learners DROP COLUMN email")
+        conn.execute("ALTER TABLE outbox DROP COLUMN delivered_seq")
+        conn.execute("DROP SEQUENCE outbox_delivery_order")
+        conn.execute("DELETE FROM schema_migrations WHERE version=11")
+        conn.execute("INSERT INTO jobs(id,payload,status) VALUES ('before-upgrade','{}','done')")
+        # Inserted in this order; the first was retried and delivered last.
+        for key, status, delivered in (
+            ("retried", "sent", now + timedelta(minutes=5)),
+            ("prompt", "sent", now),
+            ("waiting", "pending", None),
+            ("undated", "sent", None),
+        ):
+            conn.execute(
+                "INSERT INTO outbox(id,job_id,body,status,delivered_at) VALUES (%s,'before-upgrade',%s,%s,%s)",
+                (key, Jsonb({"kind": "text", "text": key}), status, delivered),
+            )
+    pg_repo.migrate()
+    with pg_repo.connection() as conn:
+        rows = conn.execute(
+            "SELECT id, delivered_seq FROM outbox WHERE job_id='before-upgrade' ORDER BY delivered_seq NULLS LAST"
+        ).fetchall()
+        following = conn.execute("SELECT nextval('outbox_delivery_order') AS n").fetchone()["n"]
+        highest = conn.execute("SELECT max(delivered_seq) AS n FROM outbox").fetchone()["n"]
+        assert conn.execute("SELECT max(version) AS v FROM schema_migrations").fetchone()["v"] == 11
+    assert [row["id"] for row in rows] == ["undated", "prompt", "retried", "waiting"]
+    assert rows[-1]["delivered_seq"] is None and following == highest + 1
 
 
 @pytest.mark.postgres
