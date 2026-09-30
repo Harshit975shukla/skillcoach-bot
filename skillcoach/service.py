@@ -537,6 +537,7 @@ class Service:
             self.state.focus = None
 
     def answer_assessment(self, choice: str, target: dict | None):
+        self.ensure_review_deck()
         if choice not in ("A", "B", "C", "D"):
             self.say("Use exactly /q A, /q B, /q C or /q D.")
             return
@@ -642,9 +643,18 @@ class Service:
             return
         self.show_question(session)
 
+    def ensure_review_deck(self):
+        """One-time: learning actions bring pre-existing quiz answers into spaced review; browsing never does."""
+        if not self.state.review_backfilled:
+            from skillcoach.review import backfill
+
+            backfill(self.state)
+            self.state.review_backfilled = True
+
     def start_review(self):
         from skillcoach.review import build_session
 
+        self.ensure_review_deck()
         if self.assessment_busy():
             return
         session = build_session(self.state, stable_id(self.job["id"] + ":review"), self.now)
@@ -1088,6 +1098,7 @@ class Service:
         self.messages[-1]["lesson_key"] = key
 
     def schedule(self):
+        self.ensure_review_deck()
         kind, day = self.payload["kind"], date.fromisoformat(self.payload["date"])
         if day != self.now.date() or self.state.paused:
             return

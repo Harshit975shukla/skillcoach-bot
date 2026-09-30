@@ -265,6 +265,7 @@ class State(Model):
     milestones: list[int] = Field(default_factory=list)
     ask_session: str | None = None
     review: dict[str, ReviewCard] = Field(default_factory=dict)
+    review_backfilled: bool = False
 
     def target(self) -> dict | None:
         if self.focus == "ask" and self.ask_session:

@@ -443,7 +443,9 @@ and more rewarding:
   1, 3, 7, 14 and 30-day gaps and retire after a month; a miss sends a card back to one day. Sessions
   hold up to five due questions, reuse the quiz's validated question (no AI call) and use the same
   question-bound buttons and unique answer receipts. Due reviews become the Today/Home next step as a
-  short warm-up, and never replace an open quiz.
+  short warm-up, and never replace an open quiz. Quiz answers given before spaced review existed are
+  brought into the deck once, at the learner's next scheduled run, `/review` or quiz answer, using
+  their original answer times; browsing commands never trigger this.
 - **Practise my mistakes.** A daily quiz with mistakes offers one AI-generated fresh question per
   mistake (a new angle, never the original wording), once per quiz. Practice and review answers never
   change quiz scores or quiz accuracy; they are reported separately.

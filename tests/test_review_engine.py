@@ -4,9 +4,9 @@ from test_flows import PROFILE, command, question_set
 from test_journey import TOPIC, callback, shared_journey
 
 from skillcoach.mastery import mastery_view
-from skillcoach.models import Profile
+from skillcoach.models import Answer, Assessment, Profile, State
 from skillcoach.progress import summary, today_view
-from skillcoach.review import INTERVALS, due_cards
+from skillcoach.review import INTERVALS, backfill, due_cards
 from skillcoach.timeutil import IST
 
 
@@ -150,3 +150,61 @@ def test_roadmap_states_follow_evidence_not_exposure(harness):
     view = mastery_view(h.repo.state, h.clock.now)
     assert view["states"][TOPIC] == {"state": "solid", "label": "Solid"}
     assert view["next"]["reason"] == "Next on your roadmap" and view["next"]["id"] != TOPIC
+
+
+def test_answers_from_before_spaced_review_are_backfilled_once_with_their_real_spacing(harness):
+    h = harness
+    old = Assessment(
+        id="old-quiz",
+        kind="daily",
+        date=date(2026, 9, 22),
+        week="2026-W39",
+        status="completed",
+        questions=question_set(5)["questions"],
+        question_ids=[f"q{i}" for i in range(5)],
+        answers=[
+            Answer(
+                question_id=f"q{i}",
+                given=g,
+                correct=g == "B",
+                created_at=datetime(2026, 9, 23, 1, 30, tzinfo=IST),
+            )
+            for i, g in enumerate("ABBBA")
+        ],
+    )
+    h.repo.state.assessments[old.id] = old
+    h.repo.state.review_backfilled = False
+    before = h.repo.state.model_dump(mode="json")
+    command(h, "/progress")
+    command(h, "/resources")
+    assert h.repo.state.model_dump(mode="json") == before  # Browsing never migrates or mutates.
+    h.repo.enqueue("quiz-1800", {"type": "schedule", "kind": "quiz", "date": "2026-09-25"})
+    h.runtime.recover(media=False)
+    state = h.repo.state
+    assert state.review_backfilled and len(state.review) == 5
+    # Answered at 01:30 on 23 Sep, which is study day 22 Sep: misses were due 23 Sep, correct ones 29 Sep.
+    assert sorted((c.box, c.due) for c in state.review.values()) == [
+        (0, date(2026, 9, 23)),
+        (0, date(2026, 9, 23)),
+        (2, date(2026, 9, 29)),
+        (2, date(2026, 9, 29)),
+        (2, date(2026, 9, 29)),
+    ]
+    assert len(due_cards(state, h.clock.now)) == 2  # 25 Sep: only the two misses are due.
+    assert today_view(state, h.clock.now)["next"]["kind"] == "review"
+    h.clock.now = datetime(2026, 9, 30, 12, tzinfo=IST)
+    assert len(due_cards(state, h.clock.now)) == 5
+    before = {k: v.model_copy() for k, v in state.review.items()}
+    backfill(state)
+    assert state.review == before
+    # Once marked, later jobs never re-seed cards that a learner already reviewed.
+    command(h, "/review")
+    for _ in range(5):
+        command(h, "/q B")
+    assert all(c.reviews == 1 for c in h.repo.state.review.values())
+    command(h, "/progress")
+    assert all(c.reviews == 1 for c in h.repo.state.review.values())
+
+
+def test_new_state_marks_backfill_pending_for_existing_learners():
+    assert State().review_backfilled is False

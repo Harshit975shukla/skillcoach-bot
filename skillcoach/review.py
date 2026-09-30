@@ -33,8 +33,11 @@ def question_for(state, card):
     return session.questions[card.index] if session and card.index < len(session.questions) else None
 
 
-def schedule_answer(state, session, index, correct, now):
-    """A missed quiz question returns tomorrow; a correct daily answer is checked again in a week."""
+def schedule_answer(state, session, index, correct, when):
+    """A missed quiz question returns the next study day; a correct daily answer is checked after a week.
+
+    Due dates count from when the question was answered, so older answers keep their real spacing.
+    """
     if session.kind not in QUIZ_KINDS:
         return
     ident = card_id(session.id, index)
@@ -46,8 +49,16 @@ def schedule_answer(state, session, index, correct, now):
         session=session.id,
         index=index,
         box=box,
-        due=study_day(now) + timedelta(days=INTERVALS[box]),
+        due=study_day(when) + timedelta(days=INTERVALS[box]),
     )
+
+
+def backfill(state):
+    """One-time: bring quiz answers given before spaced review existed into the deck."""
+    for session in list(state.assessments.values()):
+        for index, answer in enumerate(session.answers):
+            if index < len(session.questions):
+                schedule_answer(state, session, index, answer.correct, answer.created_at)
 
 
 def record_review(state, ident, correct, now):
