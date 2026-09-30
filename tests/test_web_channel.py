@@ -543,24 +543,30 @@ def test_sessions_end_when_the_sign_in_address_changes(web):
 @pytest.mark.postgres
 def test_inbox_follows_delivery_order_when_an_old_message_is_sent_again(web):
     sign_in(web, "learner@example.test")
+    first = str(uuid4())
+    assert post(web, "/web/send", {"request_id": first, "text": "/help"}).json["status"] == "queued"
     assert send(web, text="/help").json["status"] == "queued"
     cursor = post(web, "/web/feed").json["messages"][-1]["id"]
     with web.bot.repo.connection() as conn:
         old = conn.execute(
-            "SELECT id, sequence FROM outbox WHERE learner_id=%s AND status='sent' "
-            "AND body->>'kind'='text' ORDER BY sequence LIMIT 1",
-            (web.learner.learner_id,),
+            "SELECT id, sequence FROM outbox WHERE job_id=%s AND status='sent' AND body->>'kind'='text' "
+            "ORDER BY sequence LIMIT 1",
+            ("web:" + first,),
         ).fetchone()
         newest = conn.execute(
-            "SELECT max(sequence) AS n FROM outbox WHERE learner_id=%s", (web.learner.learner_id,)
+            "SELECT max(sequence) AS n FROM outbox WHERE learner_id=%s AND status='sent'",
+            (web.learner.learner_id,),
         ).fetchone()["n"]
         assert old["sequence"] < newest
         # As after a failed send that /retry queues again.
         conn.execute("UPDATE outbox SET status='failed', available_at=now() WHERE id=%s", (old["id"],))
     web.bot.runtime.recover(media=False)
     later = post(web, "/web/feed", {"after": cursor}).json["messages"]
-    assert len(later) == 1 and later[0]["id"] > cursor
-    assert post(web, "/web/feed").json["messages"][-1]["id"] == later[0]["id"]
+    with web.bot.repo.connection() as conn:
+        resent = conn.execute("SELECT status, delivered_seq FROM outbox WHERE id=%s", (old["id"],)).fetchone()
+    assert resent["status"] == "sent" and resent["delivered_seq"] > cursor
+    assert [message["id"] for message in later] == [resent["delivered_seq"]]
+    assert post(web, "/web/feed").json["messages"][-1]["id"] == resent["delivered_seq"]
 
 
 @pytest.mark.postgres
