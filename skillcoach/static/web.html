@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex">
+  <title>SkillCoach</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <link rel="stylesheet" href="/static/web.css">
+  <script src="/static/lesson-content.js" defer></script>
+  <script src="/static/web.js" defer></script>
+</head>
+<body>
+  <!-- THESIS: the bot, in the browser. One conversation column where every message keeps its
+       buttons, so learners continue exactly where Telegram left off; refuses a dashboard of cards.
+       OWN-WORLD: SkillCoach's existing system: system-ui, slate ink on a cool page, white message
+       surfaces with 1px lines, one blue accent for actions, light/dark from the device.
+       STORY: sign in with an emailed code, see the latest lesson and quiz, tap answers, read full
+       lessons, trust that email reminds you. FIRST VIEWPORT: signed out, one email field and one
+       primary button; signed in, the conversation fills the view, newest last, above a docked
+       composer with shortcuts. FORM: chat transcript with docked composer (1 of 3: transcript,
+       inbox list, today-first dashboard); narrow request, no seed. -->
+  <main class="workspace web-workspace">
+    <header class="header">
+      <a class="brand" href="/web">SkillCoach</a>
+      <button id="logout" type="button" hidden>Sign out</button>
+    </header>
+    <div id="notice" class="notice" role="status" aria-live="polite">Loading SkillCoach…</div>
+
+    <section id="signin" hidden aria-labelledby="signin-title">
+      <h1 id="signin-title">Continue your learning</h1>
+      <p class="web-lead">SkillCoach’s Telegram bot is unavailable for now, so your coach runs here.
+        Your lessons, quizzes, answers and progress are all saved.</p>
+      <form id="email-form" class="signin-form" novalidate>
+        <label for="email">The email your coach registered</label>
+        <input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+        <div class="form-actions">
+          <button id="email-submit" class="primary" type="submit">Email me a code</button>
+        </div>
+      </form>
+      <form id="code-form" class="signin-form" hidden novalidate>
+        <h2 id="code-title">Check your email</h2>
+        <p id="code-sent"></p>
+        <label for="code">Six-digit code</label>
+        <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code"
+               pattern="[0-9]{6}" minlength="6" maxlength="6" required aria-describedby="code-help">
+        <p id="code-help" class="field-help">It expires in 10 minutes and works once, in this browser.</p>
+        <div class="form-actions">
+          <button id="code-submit" class="primary" type="submit">Sign in</button>
+          <button id="code-resend" type="button" disabled>Send a new code</button>
+          <button id="code-back" type="button">Use a different email</button>
+        </div>
+      </form>
+      <p id="signin-error" class="signin-error" role="alert"></p>
+      <p class="privacy">No password is needed. Never share your code: SkillCoach will never ask you for it.</p>
+    </section>
+
+    <section id="chat" hidden aria-label="Your conversation with SkillCoach">
+      <button id="older" class="older" type="button" hidden>Show earlier messages</button>
+      <ol id="feed" class="feed" role="log" aria-live="polite" aria-label="Messages"></ol>
+      <p id="working" class="working" role="status" hidden>Your coach is working on it…</p>
+      <form id="composer" class="composer">
+        <div class="quick" role="group" aria-label="Shortcuts">
+          <button type="button" data-command="/today">Today</button>
+          <button type="button" data-command="/quizzes">Quizzes</button>
+          <button type="button" data-command="/review">Review</button>
+          <button type="button" data-command="/progress">Progress</button>
+          <button type="button" data-command="/help">Help</button>
+        </div>
+        <div class="compose-row">
+          <label for="message" class="visually-hidden">Message your coach</label>
+          <textarea id="message" rows="1" maxlength="16000"
+                    placeholder="Message your coach"></textarea>
+          <button id="send" class="primary" type="submit">Send</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="reader" hidden aria-labelledby="lesson-title">
+      <button id="reader-back" class="reader-back" type="button">Back to your conversation</button>
+      <h1 id="lesson-title" tabindex="-1"></h1>
+      <p id="lesson-meta" class="task-meta"></p>
+      <div id="lesson-body"></div>
+    </section>
+  </main>
+</body>
+</html>

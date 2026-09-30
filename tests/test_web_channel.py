@@ -1,0 +1,571 @@
+import re
+import smtplib
+from dataclasses import replace
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+from conftest import FakeEmail
+
+from skillcoach.cli import email_test, main
+from skillcoach.clients import Budget, ExternalError
+from skillcoach.config import Config, ConfigurationError, normalize_email
+from skillcoach.email_client import Email
+from skillcoach.reengage import ENCOURAGEMENTS
+from skillcoach.web import create_app
+from skillcoach.web_channel import LOGIN_COOKIE, WEB_COOKIE, feed_item, notification, web_button, web_payload
+
+ORIGIN = "https://localhost"
+WEB_ENV = (
+    "DELIVERY_CHANNEL",
+    "WEB_APP_URL",
+    "OWNER_EMAIL",
+    "EMAIL_FROM",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
+)
+
+
+def web_config(config):
+    return replace(
+        config,
+        delivery_channel="web",
+        web_app_url="https://coach.example.test",
+        owner_email="owner@example.test",
+        email_from="SkillCoach <coach@example.test>",
+        smtp_host="smtp.example.test",
+        smtp_username="coach@example.test",
+        smtp_password="app-password",
+    )
+
+
+# Configuration -------------------------------------------------------------------------------
+
+
+def test_web_mode_is_off_by_default_and_needs_complete_email_settings(monkeypatch):
+    for name in WEB_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://test-only")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
+    monkeypatch.setenv("OWNER_ID", "42")
+    config = Config.from_env()
+    assert config.delivery_channel == "telegram" and not config.web_mode and not config.email_configured
+    monkeypatch.setenv("DELIVERY_CHANNEL", "web")
+    with pytest.raises(ConfigurationError, match="WEB_APP_URL, OWNER_EMAIL, EMAIL_FROM, SMTP_HOST"):
+        Config.from_env()
+    settings = {
+        "WEB_APP_URL": "https://coach.example.test/",
+        "OWNER_EMAIL": " Owner@Example.TEST ",
+        "EMAIL_FROM": "SkillCoach <coach@example.test>",
+        "SMTP_HOST": "smtp.example.test",
+        "SMTP_USERNAME": "coach@example.test",
+        "SMTP_PASSWORD": "app-password",
+    }
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+    config = Config.from_env()
+    assert config.web_mode and config.email_configured and config.smtp_port == 587
+    assert config.owner_email == "owner@example.test" and config.web_app_url == "https://coach.example.test"
+    for name, value, message in (
+        ("DELIVERY_CHANNEL", "sms", "telegram or web"),
+        ("WEB_APP_URL", "http://coach.example.test", "HTTPS origin"),
+        ("WEB_APP_URL", "https://coach.example.test/web", "HTTPS origin"),
+        ("OWNER_EMAIL", "owner@example", "one email"),
+        ("EMAIL_FROM", "SkillCoach <coach@example.test>\nBcc: x@example.test", "single line"),
+        ("SMTP_HOST", "smtp.example.test;rm", "host name"),
+        ("SMTP_PORT", "25", "587"),
+    ):
+        monkeypatch.setenv(name, value)
+        with pytest.raises(ConfigurationError, match=message):
+            Config.from_env()
+        monkeypatch.setenv(name, settings.get(name, "587" if name == "SMTP_PORT" else "web"))
+    assert normalize_email("A.B+tag@Mail.Example.org") == "a.b+tag@mail.example.org"
+    assert normalize_email("two@example.test,three@example.test") is None
+    assert normalize_email(None) is None
+
+
+# SMTP ----------------------------------------------------------------------------------------
+
+
+class FakeSMTP:
+    instances = []
+
+    def __init__(self, host, port, timeout=None, context=None):
+        if host == "down.example.test":
+            raise OSError("connection refused")
+        self.host, self.port, self.timeout, self.calls = host, port, timeout, []
+        FakeSMTP.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.calls.append("quit")
+
+    def starttls(self, context=None):
+        self.calls.append("starttls")
+
+    def login(self, username, password):
+        self.calls.append(("login", username, password))
+        if password == "wrong":
+            raise smtplib.SMTPAuthenticationError(535, b"rejected")
+
+    def send_message(self, message):
+        self.calls.append(("send", message))
+        return {}
+
+
+def test_email_client_uses_tls_bounded_steps_and_maps_failures(config, monkeypatch):
+    FakeSMTP.instances.clear()
+    monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
+    monkeypatch.setattr("smtplib.SMTP_SSL", FakeSMTP)
+    settings = web_config(config)
+    Email(settings).send("Learner@Example.test", "Your code", "Body text", Budget(30))
+    client = FakeSMTP.instances[-1]
+    assert (client.host, client.port) == ("smtp.example.test", 587) and client.timeout <= 10
+    assert client.calls[0] == "starttls" and client.calls[1] == (
+        "login",
+        "coach@example.test",
+        "app-password",
+    )
+    message = client.calls[2][1]
+    assert message["To"] == "learner@example.test" and message["Subject"] == "Your code"
+    assert (
+        message["From"] == "SkillCoach <coach@example.test>" and message["Auto-Submitted"] == "auto-generated"
+    )
+    assert client.calls[-1] == "quit"
+    Email(replace(settings, smtp_port=465)).send("learner@example.test", "Code", "Body", Budget(30))
+    assert FakeSMTP.instances[-1].port == 465 and "starttls" not in FakeSMTP.instances[-1].calls
+    for broken, code, retryable in (
+        (replace(settings, smtp_password="wrong"), "email_auth_failed", False),
+        (replace(settings, smtp_host="down.example.test"), "email_failed", True),
+        (replace(settings, smtp_password=""), "email_not_configured", False),
+    ):
+        with pytest.raises(ExternalError) as failure:
+            Email(broken).send("learner@example.test", "Code", "Body", Budget(30))
+        assert failure.value.code == code and failure.value.retryable is retryable
+    for recipient, subject, code in (
+        ("not-an-address", "Code", "email_recipient_invalid"),
+        ("learner@example.test", "Code\r\nBcc: x@example.test", "email_subject_invalid"),
+    ):
+        with pytest.raises(ExternalError, match=code):
+            Email(settings).send(recipient, subject, "Body", Budget(30))
+
+
+# Delivery in web mode ------------------------------------------------------------------------
+
+
+def test_web_mode_uses_the_inbox_and_sends_one_email_per_mentor_note(harness):
+    h = harness
+    h.runtime.config = web_config(h.runtime.config)
+    h.repo.enqueue("admin:note", {"type": "encouragement", "message": "checkin"})
+    h.runtime.recover(media=False)
+    rows = [row for row in h.repo.outbox.values() if row["job_id"] == "admin:note"]
+    assert [row["body"]["kind"] for row in rows] == ["text", "email"]
+    assert all(row["status"] == "sent" for row in rows) and not h.telegram.messages
+    assert h.email.sent == [
+        {
+            "to": "owner@example.test",
+            "subject": "A note from your SkillCoach mentor",
+            "text": h.email.sent[0]["text"],
+        }
+    ]
+    assert ENCOURAGEMENTS["checkin"] in h.email.sent[0]["text"]
+    assert "https://coach.example.test/web" in h.email.sent[0]["text"]
+    # The learner's own browser messages are answered in the inbox only: no email, no Telegram.
+    h.repo.enqueue(f"web:{uuid4()}", {"type": "telegram", "channel": "web", "text": "/help", "target": None})
+    h.runtime.recover(media=False)
+    assert len(h.email.sent) == 1 and not h.telegram.messages
+    assert all(row["status"] == "sent" for row in h.repo.outbox.values())
+
+
+def test_web_mode_never_renders_video_and_failed_email_is_recoverable(harness):
+    h = harness
+    h.runtime.config = web_config(h.runtime.config)
+    h.repo.outbox["lesson:0"] = {
+        "id": "lesson:0",
+        "job_id": "lesson",
+        "status": "pending",
+        "body": {"kind": "media", "storyboard": {"title": "Not rendered"}, "mode": "video"},
+    }
+    assert h.runtime.deliver_one(Budget(60), media=False)
+    assert h.repo.outbox["lesson:0"]["status"] == "sent" and not h.telegram.messages
+    h.email.fail = True
+    h.repo.enqueue("admin:second", {"type": "encouragement", "message": "goal"})
+    h.runtime.recover(media=False)
+    email = next(row for row in h.repo.outbox.values() if row["body"]["kind"] == "email")
+    assert email["status"] == "failed" and not h.email.sent
+    notice = h.repo.outbox[email["id"] + ":delivery-error"]
+    assert notice["status"] == "sent"  # The learner sees the recoverable failure in the inbox.
+
+
+def test_email_rows_without_an_address_are_suppressed_and_telegram_mode_is_unchanged(harness):
+    h = harness
+    h.repo.outbox["note:0"] = {
+        "id": "note:0",
+        "job_id": "note",
+        "status": "pending",
+        "body": {"kind": "email", "subject": "Hello", "text": "Hi"},
+    }
+    assert h.runtime.deliver_one(Budget(60))
+    assert h.repo.outbox["note:0"]["status"] == "suppressed" and not h.email.sent
+    h.repo.enqueue("admin:note", {"type": "encouragement", "message": "progress"})
+    h.runtime.recover(media=False)
+    assert h.telegram.messages[-1][0] == ENCOURAGEMENTS["progress"]
+    assert all(
+        row["body"]["kind"] != "email" for row in h.repo.outbox.values() if row["job_id"] == "admin:note"
+    )
+
+
+def test_notifications_cover_scheduled_and_mentor_work_only(config):
+    settings = web_config(config)
+    lesson = {
+        "kind": "text",
+        "text": "**Today:** IAM roles " + "word " * 400,
+        "format": "md",
+        "scheduled": True,
+        "scheduled_date": "2026-10-01",
+    }
+    job = {"payload": {"type": "schedule", "kind": "lesson", "date": "2026-10-01"}}
+    body = notification(job, [{"kind": "media"}, lesson], settings)
+    assert body["kind"] == "email" and body["subject"] == "Today's SkillCoach lesson is ready"
+    assert body["text"].startswith("Today: IAM roles") and "**" not in body["text"] and "…" in body["text"]
+    assert body["scheduled"] is True and body["scheduled_date"] == "2026-10-01"
+    assert body["text"].rstrip().endswith("Replies to this address are not read.")
+    quiz = {"payload": {"type": "schedule", "kind": "quiz"}}
+    assert (
+        notification(quiz, [{"kind": "text", "text": "Q1"}], settings)["subject"]
+        == "Your SkillCoach quiz is ready"
+    )
+    admin = {"payload": {"type": "telegram", "text": "/learn IAM", "requested_by": "owner_admin"}}
+    assert (
+        notification(admin, [{"kind": "text", "text": "Lesson"}], settings)["subject"]
+        == "New from SkillCoach"
+    )
+    web = {"payload": {"type": "telegram", "channel": "web", "text": "/today"}}
+    assert notification(web, [{"kind": "text", "text": "Today"}], settings) is None
+    assert notification(job, [lesson], config) is None  # Telegram mode never emails.
+    assert notification(job, [], settings) is None
+
+
+def test_buttons_map_to_safe_web_actions(config):
+    settings = web_config(config)
+    lesson = "0123456789abcdef0123"
+    cases = [
+        ({"text": "B", "callback_data": "a:1:B"}, {"kind": "callback", "text": "B", "data": "a:1:B"}),
+        (
+            {
+                "text": "Open lesson page",
+                "web_app": {"url": f"https://coach.example.test/app?lesson={lesson}"},
+            },
+            {"kind": "lesson", "text": "Open lesson page", "lesson": lesson},
+        ),
+        (
+            {"text": "📊 Open my dashboard", "web_app": {"url": "https://coach.example.test/app"}},
+            {"kind": "command", "text": "📊 My progress", "command": "/progress"},
+        ),
+        (
+            {"text": "Admin", "web_app": {"url": "https://coach.example.test/admin"}},
+            {"kind": "link", "text": "Admin", "url": "/admin"},
+        ),
+        (
+            {"text": "Resume", "url": "https://t.me/SkillCoachTestBot?start=quiz_2026-09-29"},
+            {"kind": "command", "text": "Resume", "command": "/start quiz_2026-09-29"},
+        ),
+        (
+            {"text": "Docs", "url": "https://docs.aws.amazon.com/iam/"},
+            {"kind": "link", "text": "Docs", "url": "https://docs.aws.amazon.com/iam/"},
+        ),
+    ]
+    for raw, expected in cases:
+        assert web_button(raw, settings) == expected
+    for raw in (
+        {"text": "x", "url": "javascript:alert(1)"},
+        {"text": "x", "url": "http://example.test"},
+        {"text": "x", "url": "https://user@example.test/"},
+        {"text": "x", "callback_data": "x" * 65},
+        {"text": "x", "url": "https://t.me/SkillCoachTestBot?start=bad token"},
+        "not a button",
+    ):
+        assert web_button(raw, settings) is None
+    row = {
+        "sequence": 7,
+        "delivered_at": datetime(2026, 10, 1, 3, 30, tzinfo=timezone.utc),
+        "body": {
+            "kind": "text",
+            "text": "**Hi** `code`",
+            "format": "md",
+            "buttons": [[{"text": "x", "url": "javascript:x"}], [{"text": "A", "callback_data": "a"}], "bad"],
+        },
+    }
+    item = feed_item(row, settings)
+    assert item["id"] == 7 and item["blocks"] and "text" not in item
+    assert item["buttons"] == [[{"kind": "callback", "text": "A", "data": "a"}]]
+    media = feed_item({"sequence": 8, "delivered_at": None, "body": {"kind": "media"}}, settings)
+    assert "Open lesson page" in media["text"] and media["buttons"] == []
+
+
+def test_browser_payloads_are_strict():
+    request_id = str(uuid4())
+    assert web_payload({"request_id": request_id, "text": "/today"}) == {"text": "/today"}
+    assert web_payload({"request_id": request_id, "callback": "home:today"}) == {"callback": "home:today"}
+    for body in (
+        {"request_id": request_id},
+        {"request_id": request_id, "text": "a", "callback": "b"},
+        {"request_id": "not-a-uuid", "text": "a"},
+        {"request_id": request_id, "text": "   "},
+        {"request_id": request_id, "text": "x" * 16001},
+        {"request_id": request_id, "callback": "é" * 33},
+        {"request_id": request_id, "text": "a", "learner_id": "someone"},
+    ):
+        with pytest.raises(ValueError):
+            web_payload(body)
+
+
+def test_cli_skips_video_tooling_and_tests_email_without_learners(harness, monkeypatch):
+    monkeypatch.setenv("DELIVERY_CHANNEL", "web")
+    assert main(["needs-media"]) == 3  # Returns before any database connection.
+    h = harness
+    h.runtime.config = web_config(h.runtime.config)
+    assert email_test(h.runtime) == {"sent": True, "to": "OWNER_EMAIL"}
+    assert (
+        h.email.sent[0]["to"] == "owner@example.test"
+        and h.email.sent[0]["subject"] == "SkillCoach email test"
+    )
+    h.runtime.config = replace(h.runtime.config, smtp_password="")
+    with pytest.raises(ConfigurationError):
+        email_test(h.runtime)
+
+
+def test_web_routes_are_off_in_telegram_mode(harness):
+    client = create_app(harness.runtime).test_client()
+    page = client.get("/web", base_url=ORIGIN)
+    assert page.status_code == 200 and b"Continue your learning" in page.data
+    assert page.headers["Cache-Control"] == "no-store, private"
+    assert "frame-ancestors 'none'" in page.headers["Content-Security-Policy"]
+    assert client.get("/web/session", base_url=ORIGIN).status_code == 404
+    response = client.post(
+        "/web/login/start", base_url=ORIGIN, json={"email": "a@example.test"}, headers={"Origin": ORIGIN}
+    )
+    assert response.status_code == 404 and response.json["enabled"] is False
+    assert client.get("/admin/login/options", base_url=ORIGIN).json == {"pin_channel": "telegram"}
+
+
+# PostgreSQL: sign-in, inbox and administration ------------------------------------------------
+
+
+@pytest.fixture
+def web(pg_repo, config):
+    from test_multiuser import Bot
+
+    bot = Bot(pg_repo, config)
+    learner, silent = bot.join(101), bot.join(102)
+    with pg_repo.connection() as conn:
+        conn.execute("UPDATE learners SET email='learner@example.test' WHERE id=%s", (learner.learner_id,))
+    clock = SimpleNamespace(now=datetime.now(timezone.utc))
+    bot.runtime.clock = lambda: clock.now
+    bot.runtime.config = web_config(bot.config)
+    bot.runtime.email = FakeEmail()
+    app = create_app(bot.runtime)
+    return SimpleNamespace(
+        bot=bot,
+        app=app,
+        client=app.test_client(),
+        email=bot.runtime.email,
+        csrf=None,
+        learner=learner,
+        silent=silent,
+        clock=clock,
+    )
+
+
+def post(web, path, body=None, *, client=None, csrf=True, origin=ORIGIN):
+    headers = {"Origin": origin} if origin else {}
+    if csrf and web.csrf:
+        headers["X-CSRF-Token"] = web.csrf
+    return (client or web.client).post(
+        path, base_url=ORIGIN, json=body if body is not None else {}, headers=headers
+    )
+
+
+def emailed_code(web):
+    return re.search(r"code is ([0-9]{6})", web.email.sent[-1]["text"]).group(1)
+
+
+def sign_in(web, email, client=None):
+    assert post(web, "/web/login/start", {"email": email}, client=client).status_code == 200
+    response = post(web, "/web/login/verify", {"code": emailed_code(web)}, client=client)
+    assert response.status_code == 200, response.json
+    web.csrf = response.json["csrf"]
+    return response
+
+
+def send(web, **payload):
+    return post(web, "/web/send", {"request_id": str(uuid4()), **payload})
+
+
+@pytest.mark.postgres
+def test_email_code_sign_in_is_private_rate_limited_and_single_use(web):
+    unknown = post(web, "/web/login/start", {"email": "nobody@example.test"})
+    known = post(web, "/web/login/start", {"email": " Learner@Example.TEST "})
+    assert unknown.status_code == known.status_code == 200
+    assert set(unknown.json) == set(known.json) == {"pending", "expires_at", "resend_at"}
+    assert [mail["to"] for mail in web.email.sent] == ["learner@example.test"]
+    assert web.email.sent[0]["subject"] == "Your SkillCoach sign-in code"
+    code = emailed_code(web)
+    assert post(web, "/web/login/start", {"email": "learner@example.test"}).status_code == 429
+    wrong = "000000" if code != "000000" else "111111"
+    failed = post(web, "/web/login/verify", {"code": wrong})
+    assert failed.status_code == 400 and "4 attempts remaining" in failed.json["error"]
+    assert post(web, "/web/login/verify", {"code": "12"}).status_code == 400
+    verifier = web.client.get_cookie(LOGIN_COOKIE).value
+    assert post(web, "/web/login/verify", {"code": code}, origin="https://evil.invalid").status_code == 403
+    response = post(web, "/web/login/verify", {"code": code})
+    assert response.status_code == 200 and response.json["name"] == "Learner 101"
+    cookie = [value for value in response.headers.getlist("Set-Cookie") if value.startswith(WEB_COOKIE)][0]
+    for flag in ("HttpOnly", "Secure", "SameSite=Strict", "Path=/", "Max-Age=1209600"):
+        assert flag in cookie
+    assert web.client.get_cookie(LOGIN_COOKIE) is None
+    replay = web.app.test_client()
+    replay.set_cookie(LOGIN_COOKIE, verifier)
+    assert post(web, "/web/login/verify", {"code": code}, client=replay).status_code == 403
+    session = web.client.get("/web/session", base_url=ORIGIN)
+    assert session.status_code == 200 and session.json["name"] == "Learner 101"
+    with web.bot.repo.connection() as conn:
+        row = conn.execute("SELECT * FROM web_logins WHERE learner_id IS NOT NULL").fetchone()
+        assert code not in (row["code_hash"], row["email_hash"]) and "learner" not in row["email_hash"]
+        assert conn.execute("SELECT count(*) AS n FROM web_sessions").fetchone()["n"] == 1
+    owner = web.app.test_client()
+    assert sign_in(web, "owner@example.test", client=owner).json["name"] == "You (owner)"
+    assert post(web, "/web/login/start", {"email": "not an email"}).status_code == 403
+    assert (
+        post(web, "/web/login/start", {"email": "a@example.test"}, origin="https://evil.invalid").status_code
+        == 403
+    )
+
+
+@pytest.mark.postgres
+def test_browser_conversation_runs_the_same_coach_through_the_inbox(web):
+    sign_in(web, "learner@example.test")
+    telegram_before = len(web.bot.runtime.telegram.chat_messages.get(101, []))
+    first = post(web, "/web/feed")
+    assert first.status_code == 200 and set(first.json) == {"messages", "working", "older"}
+    last = first.json["messages"][-1]["id"] if first.json["messages"] else 0
+    request_id = str(uuid4())
+    accepted = post(web, "/web/send", {"request_id": request_id, "text": "/help"})
+    assert accepted.status_code == 202 and accepted.json["status"] == "queued"
+    assert post(web, "/web/send", {"request_id": request_id, "text": "/help"}).json["status"] == "duplicate"
+    reply = post(web, "/web/feed", {"after": last}).json
+    text = "\n".join(message.get("text", "") for message in reply["messages"])
+    assert "/resources" in text and not reply["working"]
+    assert len(web.bot.runtime.telegram.chat_messages.get(101, [])) == telegram_before
+    with web.bot.repo.connection() as conn:
+        assert (
+            conn.execute("SELECT count(*) AS n FROM jobs WHERE id=%s", ("web:" + request_id,)).fetchone()["n"]
+            == 1
+        )
+    assert send(web, callback="home:today").json["status"] == "queued"
+    denied = send(web, text="/invite someone")
+    assert denied.json["status"] == "admin_elsewhere"
+    latest = post(web, "/web/feed").json["messages"][-1]
+    assert "admin console" in latest["text"]
+    for body in ({"request_id": "bad", "text": "/help"}, {"request_id": str(uuid4())}):
+        assert post(web, "/web/send", body).status_code == 403
+    assert (
+        post(web, "/web/send", {"request_id": str(uuid4()), "text": "/help"}, csrf=False).status_code == 403
+    )
+    assert post(web, "/web/feed", {"after": -1}).status_code == 403
+    web.bot.input(web.bot.config.owner_id, "/revoke " + web.learner.learner_id)
+    assert web.client.get("/web/session", base_url=ORIGIN).status_code == 403
+    assert post(web, "/web/feed").status_code == 403
+
+
+@pytest.mark.postgres
+def test_mentor_notes_reach_the_inbox_and_the_learner_email_only(web):
+    web.learner.enqueue("admin:note", {"type": "encouragement", "message": "goal"})
+    web.silent.enqueue("admin:note", {"type": "encouragement", "message": "goal"})
+    telegram_before = sum(len(v) for v in web.bot.runtime.telegram.chat_messages.values())
+    web.bot.runtime.recover(media=False)
+    assert sum(len(v) for v in web.bot.runtime.telegram.chat_messages.values()) == telegram_before
+    assert [(mail["to"], mail["subject"]) for mail in web.email.sent] == [
+        ("learner@example.test", "A note from your SkillCoach mentor")
+    ]
+    with web.bot.repo.connection() as conn:
+        rows = conn.execute(
+            "SELECT learner_id, status, body->>'kind' AS kind FROM outbox WHERE job_id LIKE '%%admin:note' "
+            "ORDER BY learner_id, sequence"
+        ).fetchall()
+    by_learner = {}
+    for row in rows:
+        by_learner.setdefault(row["learner_id"], []).append((row["kind"], row["status"]))
+    assert by_learner[web.learner.learner_id] == [("text", "sent"), ("email", "sent")]
+    assert by_learner[web.silent.learner_id] == [("text", "sent"), ("email", "suppressed")]
+
+
+@pytest.mark.postgres
+def test_owner_pin_arrives_by_email_and_learner_emails_are_managed_in_admin(web):
+    from test_admin import confirm, preview
+
+    admin = SimpleNamespace(bot=web.bot, client=web.app.test_client(), csrf=None, clock=web.clock)
+    assert admin.client.get("/admin/login/options", base_url=ORIGIN).json == {"pin_channel": "email"}
+    telegram_before = len(web.bot.runtime.telegram.chat_messages.get(web.bot.config.owner_id, []))
+    start = post(admin, "/admin/login/pin/start", client=admin.client, csrf=False)
+    assert start.status_code == 200
+    mail = web.email.sent[-1]
+    assert mail["to"] == "owner@example.test" and mail["subject"] == "Your SkillCoach admin PIN"
+    assert len(web.bot.runtime.telegram.chat_messages.get(web.bot.config.owner_id, [])) == telegram_before
+    pin = re.search(r"PIN: ([0-9]{4})", mail["text"]).group(1)
+    verified = post(admin, "/admin/login/pin/verify", {"pin": pin}, client=admin.client, csrf=False)
+    assert verified.status_code == 200
+    admin.csrf = verified.json["csrf"]
+    overview = post(admin, "/admin/data", client=admin.client).json
+    assert overview["web_mode"] is True
+    emails = {member["id"]: member["web_email"] for member in overview["learners"]}
+    assert emails["owner"] == "o•••@example.test" and emails[web.learner.learner_id] == "l•••@example.test"
+    assert emails[web.silent.learner_id] is None
+    learner_browser = web.app.test_client()
+    sign_in(web, "learner@example.test", client=learner_browser)
+    assert learner_browser.get("/web/session", base_url=ORIGIN).status_code == 200
+    target = web.learner.learner_id
+    for arguments, status in (
+        ({"email": "owner@example.test"}, 409),
+        ({"email": "not-an-address"}, 403),
+    ):
+        assert preview(admin, "set_email", target, arguments).status_code == status
+    assert preview(admin, "set_email", "owner", {"email": "x@example.test"}).status_code == 403
+    assert (
+        preview(admin, "set_email", web.silent.learner_id, {"email": "learner@example.test"}).status_code
+        == 409
+    )
+    pending = preview(admin, "set_email", target, {"email": "New.Address@Example.test"})
+    assert (
+        pending.status_code == 200
+        and "Web sign-in email: n•••@example.test" in pending.json["preview"]["details"]
+    )
+    assert confirm(admin, pending.json).json["messages"] == ["Web sign-in email saved."]
+    with web.bot.repo.connection() as conn:
+        assert conn.execute("SELECT email FROM learners WHERE id=%s", (target,)).fetchone()["email"] == (
+            "new.address@example.test"
+        )
+    # A changed address ends that learner's browser sessions.
+    assert learner_browser.get("/web/session", base_url=ORIGIN).status_code == 403
+    removal = preview(admin, "set_email", target, {"email": ""})
+    assert confirm(admin, removal.json).json["messages"] == ["Web sign-in email removed."]
+
+
+@pytest.mark.postgres
+def test_lesson_reader_serves_only_the_learners_lessons_and_library(web):
+    from skillcoach.catalog import TOPICS
+
+    sign_in(web, "learner@example.test")
+    topic = next(iter(TOPICS))
+    library = post(web, "/web/lesson", {"topic": topic})
+    assert library.status_code == 200 and library.json["lesson"]["library"] and library.json["private"]
+    assert post(web, "/web/lesson", {"topic": "../../x"}).status_code == 404
+    assert post(web, "/web/lesson", {"lesson": "0123456789abcdef0123"}).status_code == 404
+    assert post(web, "/web/lesson", {"lesson": "bad"}).status_code == 404
+    assert post(web, "/web/lesson", {"lesson": "0123456789abcdef0123", "topic": topic}).status_code == 403
+    assert post(web, "/web/lesson", {"topic": topic}, csrf=False).status_code == 403

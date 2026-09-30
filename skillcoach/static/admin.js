@@ -178,6 +178,9 @@
       const row = node("tr");
       const name = node("td");
       name.append(node("strong", member.name), node("span", member.id, "member-id"));
+      if (data.web_mode && member.status === "active") {
+        name.append(node("span", member.web_email ? `Web sign-in: ${member.web_email}` : "Web sign-in: not set", "detail"));
+      }
       const state = node("td"); state.append(node("span", member.status, `status status-${member.status}`));
       const progress = node("td");
       if (member.progress) {
@@ -193,6 +196,9 @@
         group.append(actionButton("Revoke", "revoke", member.id));
       }
       if (member.status === "active") group.append(actionButton("Choose action", "send_lesson", member.id));
+      if (data.web_mode && member.status === "active" && member.id !== "owner") {
+        group.append(actionButton("Set web email", "set_email", member.id));
+      }
       const inspect = node("button", "Learning details"); inspect.type = "button";
       inspect.addEventListener("click", () => {
         $("learner-select").value = member.id; loadLearner();
@@ -583,6 +589,10 @@
     if (action === "revokeinvite") field("Invitation ID", "invite_id");
     if (["send_lesson", "schedule_quiz"].includes(action)) field("Cloud / DevOps topic", "topic");
     if (action === "schedule_quiz") field("Due date and time (Asia/Kolkata)", "at", "input", "datetime-local");
+    if (action === "set_email") {
+      const email = field("Learner's email for web sign-in (empty removes it)", "email", "input", "email");
+      email.autocomplete = "off"; email.maxLength = 254;
+    }
     if (action === "encourage") {
       const select = field("Message", "message", "select");
       for (const [key, text] of Object.entries(overview.encouragements || {})) {
@@ -806,4 +816,16 @@
   }
   if (framed && !(telegram && telegram.initData)) browserFallback();
   else signIn();
+  // In web + email mode the PIN arrives by email; the page text follows the server setting.
+  // Framed Telegram launches never use the browser PIN form, so they make no extra request.
+  if (!framed) fetch("/admin/login/options", {credentials: "same-origin", cache: "no-store"})
+    .then(response => response.ok ? response.json() : null)
+    .then(options => {
+      if (!options || options.pin_channel !== "email") return;
+      $("start-login").textContent = "Email me a PIN";
+      $("login-intro").textContent = "SkillCoach is running on the web. Receive a four-digit PIN at your owner email address and enter it here.";
+      $("pin-heading").textContent = "Check your email";
+      $("pin-help").textContent = "Enter the PIN from your SkillCoach email. It works once, in this browser only. Never share it.";
+    })
+    .catch(() => {});
 })();

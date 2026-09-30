@@ -54,8 +54,11 @@ jobs:
           DATABASE_CA_CERT_FILE: ${{ vars.DATABASE_CA_CERT_FILE }}
           OPERATION: ${{ inputs.kind }}
           VERIFY_MEDIA: ${{ inputs.verify_media }}
+          DELIVERY_CHANNEL: ${{ vars.DELIVERY_CHANNEL || 'telegram' }}
         run: |
-          if [ "$VERIFY_MEDIA" = "true" ] || [ "$OPERATION" = "lesson" ] || python -m skillcoach.cli needs-media; then
+          if [ "$DELIVERY_CHANNEL" = "web" ] && [ "$VERIFY_MEDIA" != "true" ]; then
+            echo "Web + email mode never renders video; skipping renderer installation."
+          elif [ "$VERIFY_MEDIA" = "true" ] || [ "$OPERATION" = "lesson" ] || python -m skillcoach.cli needs-media; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
           else
             RESULT=$?
@@ -135,6 +138,16 @@ jobs:
           DASHBOARD_REPO: ${{ vars.DASHBOARD_REPO }}
           DASHBOARD_PATH: ${{ vars.DASHBOARD_PATH || 'docs/data.json' }}
           DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
+          # Web + email fallback (off unless DELIVERY_CHANNEL=web). Addresses are secrets because
+          # this public repository's run logs show variable values.
+          DELIVERY_CHANNEL: ${{ vars.DELIVERY_CHANNEL || 'telegram' }}
+          WEB_APP_URL: ${{ vars.WEB_APP_URL }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          SMTP_HOST: ${{ vars.SMTP_HOST }}
+          SMTP_PORT: ${{ vars.SMTP_PORT || '587' }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           OPERATION: ${{ inputs.kind }}
           INTENDED_DATE: ${{ inputs.intended_date }}
           MEDIA_READY: ${{ steps.media.outputs.needed }}

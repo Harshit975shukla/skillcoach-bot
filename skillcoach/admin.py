@@ -35,6 +35,7 @@ from skillcoach.commands import COMMANDS
 from skillcoach.models import State
 from skillcoach.reengage import ENCOURAGEMENTS
 from skillcoach.timeutil import IST, requested_quiz_payload
+from skillcoach.web_channel import masked
 
 OWNER_COMMANDS = {
     key: value
@@ -77,6 +78,7 @@ ACTIONS = {
     "owner_command": ("Run a command in your own bot chat", {"command", "argument"}),
     "suggest_plan": ("Suggest a plan topic (learner decides)", {"topic_id", "plan_id"}),
     "encourage": ("Send encouragement", {"message"}),
+    "set_email": ("Set web sign-in email", {"email"}),
 }
 
 
@@ -181,6 +183,31 @@ def _validate_action(conn, action, target, arguments, config, now):
         if not invite:
             raise AdminConflict("This invitation is no longer open.")
         details.append("The unused link will stop working. Existing members are unaffected.")
+    elif action == "set_email":
+        from skillcoach.config import normalize_email
+        from skillcoach.web_channel import masked
+
+        if target == "owner":
+            raise AdminDenied("Your own web sign-in address is OWNER_EMAIL in the deployment settings.")
+        if member["status"] != "active":
+            raise AdminConflict("Only active learners can sign in to the web app.")
+        email = normalize_email(args["email"]) if args["email"] else ""
+        if email is None:
+            raise AdminDenied("Enter one valid email address, or leave it empty to remove it.")
+        if email and email == config.owner_email:
+            raise AdminConflict("That address is the owner's sign-in email.")
+        if (
+            email
+            and conn.execute("SELECT 1 FROM learners WHERE email=%s AND id<>%s", (email, target)).fetchone()
+        ):
+            raise AdminConflict("Another learner already uses that email address.")
+        args["email"] = email
+        details.append(
+            f"Web sign-in email: {masked(email)}" if email else "Remove this learner's web sign-in email."
+        )
+        warnings.append(
+            "The learner signs in at /web with a code sent to this address. Their current web sessions end."
+        )
     else:
         if member["status"] != "active":
             raise AdminConflict("Only active learners can receive coaching commands.")
@@ -422,6 +449,20 @@ def execute_action(runtime, session, body):
                 conn, row["id"], key, owner, row["action"], argument, runtime.config, owner_output=response
             )
             result = {"state": "handled", "messages": response, "request_id": row["id"]}
+        elif row["action"] == "set_email":
+            conn.execute("UPDATE learners SET email=%s WHERE id=%s", (args["email"] or None, member["id"]))
+            # A changed address must not keep an older browser signed in or a pending code valid.
+            conn.execute("DELETE FROM web_sessions WHERE learner_id=%s", (member["id"],))
+            conn.execute(
+                "UPDATE web_logins SET status='rejected' WHERE learner_id=%s AND status='pending'",
+                (member["id"],),
+            )
+            _audit(conn, row["id"], "set_email", member["id"])
+            result = {
+                "state": "handled",
+                "messages": ["Web sign-in email saved." if args["email"] else "Web sign-in email removed."],
+                "request_id": row["id"],
+            }
         else:
             if row["action"] == "schedule_quiz":
                 due, payload = requested_quiz_payload(
@@ -494,9 +535,10 @@ def admin_overview(runtime):
     now = runtime.clock()
     with runtime.repo.connection() as conn:
         rows = conn.execute(
-            "SELECT l.id,l.display_name,l.status,l.joined_at,c.body,"
-            "(SELECT max(r.created_at) FROM telegram_receipts r WHERE r.learner_id=l.id "
-            "AND r.disposition='queued') AS last_interaction FROM learners l "
+            "SELECT l.id,l.display_name,l.status,l.joined_at,l.email,c.body,"
+            "GREATEST((SELECT max(r.created_at) FROM telegram_receipts r WHERE r.learner_id=l.id "
+            "AND r.disposition='queued'),(SELECT max(j.created_at) FROM jobs j WHERE j.learner_id=l.id "
+            "AND left(j.id,4)='web:')) AS last_interaction FROM learners l "
             "JOIN coach_state c ON c.learner_id=l.id ORDER BY l.joined_at,l.id LIMIT 100"
         ).fetchall()
         invites = conn.execute(
@@ -563,6 +605,7 @@ def admin_overview(runtime):
                 "progress": progress,
                 "learning": learning,
                 "ai_operations_today": usage.get(row["id"], 0),
+                "web_email": masked(runtime.config.owner_email if row["id"] == "owner" else row["email"]),
             }
         )
 
@@ -592,6 +635,7 @@ def admin_overview(runtime):
         "encouragements": ENCOURAGEMENTS,
         "topics": {key: value[1] for key, value in TOPICS.items()},
         "join_url": "/join",
+        "web_mode": runtime.config.web_mode,
         "limits": {
             "members": runtime.config.max_learners,
             "ai_operations_per_learner": runtime.config.daily_ai_operations,
@@ -654,6 +698,13 @@ def register_admin(app, runtime_factory):
     @app.get("/admin")
     def page():
         return app.send_static_file("admin.html")
+
+    @app.get("/admin/login/options")
+    @endpoint
+    def login_options():
+        # Tells the sign-in screen where the PIN goes; no identity or address is disclosed.
+        runtime = runtime_factory()
+        return jsonify(pin_channel="email" if runtime.config.web_mode else "telegram")
 
     @app.get("/admin/session")
     @endpoint

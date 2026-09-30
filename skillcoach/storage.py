@@ -75,6 +75,12 @@ class Repository:
             raise ValueError("Recipient is not configured")
         return destination
 
+    def email_address(self, owner_email: str = "") -> str | None:
+        """Where web-mode reminders go: OWNER_EMAIL for the owner, the saved address for others."""
+        if self.is_owner:
+            return owner_email or None
+        return self.member().get("email")
+
     def accept_update(self, update_id: int, payload: dict, config):
         from skillcoach.access import accept_update
 

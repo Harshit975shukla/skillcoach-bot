@@ -1,0 +1,101 @@
+/* SkillCoach on the web: extends dashboard.css (tokens, type, buttons, lesson prose). */
+.web-workspace { max-width: 760px; padding-bottom: 0; }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+.primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+.primary:hover { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.primary:disabled { background: var(--muted); border-color: var(--muted); color: var(--surface); }
+
+/* Sign-in */
+#signin { max-width: 520px; padding: 20px 0 56px; }
+.web-lead { margin-top: 14px; max-width: 60ch; }
+.signin-form { display: grid; gap: 10px; margin-top: 30px; }
+.signin-form h2 { margin-bottom: 4px; }
+.signin-form label { margin-top: 8px; font-weight: 650; }
+.signin-form input {
+  min-height: 48px; padding: 10px 12px; font: inherit; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+}
+#code { max-width: 11ch; font-size: 1.5rem; letter-spacing: .18em; font-variant-numeric: tabular-nums; }
+.signin-form input:focus-visible, .composer textarea:focus-visible {
+  outline: 3px solid var(--accent); outline-offset: 2px;
+}
+.field-help { color: var(--muted); font-size: .875rem; }
+.form-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.signin-error { margin-top: 16px; color: var(--danger); font-weight: 600; }
+.signin-error:empty { display: none; }
+
+/* Conversation: the composer stays docked at the bottom even when there are few messages. */
+#chat { display: flex; flex-direction: column; min-height: calc(100dvh - 84px); }
+.older { align-self: flex-start; margin: 14px 0 0; }
+.feed { display: grid; gap: 12px; padding: 16px 0 12px; }
+/* Keeps a message scrolled into view clear of the docked composer. */
+.feed > li { scroll-margin-bottom: 160px; }
+.message {
+  justify-self: start; width: fit-content; max-width: min(66ch, 100%); padding: 14px 16px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px 14px 14px 4px;
+  overflow-wrap: anywhere;
+}
+.message .text { white-space: pre-line; }
+.message .prose { max-width: none; }
+.message time { display: block; margin-top: 8px; color: var(--muted); font-size: .78rem; }
+.message .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.message .actions + .actions { margin-top: 8px; }
+.message .actions button, .message .actions a {
+  min-height: 40px; padding: 8px 13px; font-size: .92rem; line-height: 1.3; text-align: left;
+}
+.message .actions a {
+  display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px;
+  font-weight: 650; text-decoration: none; background: var(--surface);
+}
+.message .actions a:hover { background: var(--soft); }
+.message.mine {
+  justify-self: end; background: var(--soft); border-color: transparent;
+  border-radius: 14px 14px 4px 14px;
+}
+.message.mine.pending { color: var(--muted); }
+.message.mine.failed { border-color: var(--danger); }
+.message.mine .retry { margin-top: 10px; min-height: 40px; padding: 7px 12px; }
+.message.mine .state { margin-top: 6px; font-size: .8rem; color: var(--muted); }
+.message.mine.failed .state { color: var(--danger); }
+.feed .empty { padding: 22px; background: var(--surface); border: 1px dashed var(--line); border-radius: 10px; }
+.working { color: var(--muted); font-size: .9rem; padding-bottom: 10px; }
+
+.composer {
+  position: sticky; bottom: 0; z-index: 2; margin: auto -24px 0; padding: 12px 24px max(14px, env(safe-area-inset-bottom));
+  background: var(--page); border-top: 1px solid var(--line); box-shadow: 0 -6px 16px -12px rgb(23 42 58 / .35);
+}
+.quick { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 10px; scrollbar-width: thin; }
+.quick button { flex: none; min-height: 40px; padding: 7px 14px; font-size: .92rem; border-radius: 20px; }
+.compose-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+.composer textarea {
+  min-height: 48px; max-height: 40vh; padding: 11px 12px; font: inherit; line-height: 1.45;
+  color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  resize: none;
+}
+.composer textarea::placeholder { color: var(--muted); opacity: 1; }
+.compose-row .primary { min-height: 48px; }
+
+/* Lesson reader */
+#reader { padding-bottom: 56px; }
+.reader-back { margin: 6px 0 22px; }
+#lesson-title:focus { outline: none; }
+#lesson-meta { margin-top: 8px; }
+
+/* One authored moment: a newly arrived coach message settles in and its highlight fades. */
+@media (prefers-reduced-motion: no-preference) {
+  .message.arrived { animation: arrive 1.2s cubic-bezier(.16, 1, .3, 1); }
+  @keyframes arrive {
+    0% { transform: translateY(8px); background: var(--soft); }
+    25% { transform: none; }
+    100% { background: var(--surface); }
+  }
+}
+@media (max-width: 520px) {
+  #chat { min-height: calc(100dvh - 72px); }
+  .composer { margin: auto -18px 0; padding-left: 18px; padding-right: 18px; }
+  .message { max-width: 100%; }
+  #code { font-size: 1.35rem; }
+}

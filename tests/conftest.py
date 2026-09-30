@@ -27,6 +27,9 @@ def block_external_http(monkeypatch):
     monkeypatch.setattr("requests.Session.request", forbidden)
     # The transport choke point also covers sessions that bypass Session.request (lab checks).
     monkeypatch.setattr("requests.adapters.HTTPAdapter.send", forbidden)
+    # Email is SMTP, not HTTP: tests use FakeEmail and must never reach a mail server.
+    monkeypatch.setattr("smtplib.SMTP", forbidden)
+    monkeypatch.setattr("smtplib.SMTP_SSL", forbidden)
 
 
 @pytest.fixture
@@ -82,6 +85,20 @@ class FakeTelegram:
         self.acks.append(callback)
 
 
+class FakeEmail:
+    """Records mail instead of sending it; `fail` simulates an SMTP outage."""
+
+    def __init__(self, configured=True):
+        self.sent = []
+        self.fail = False
+        self.configured = configured
+
+    def send(self, to, subject, text, budget):
+        if self.fail:
+            raise ExternalError("email_failed")
+        self.sent.append({"to": to, "subject": subject, "text": text})
+
+
 class FakePublisher:
     def __init__(self):
         self.documents = []
@@ -130,6 +147,9 @@ class MemoryRepository:
 
     def member(self):
         return {"id": "owner", "status": "active", "generation": 1}
+
+    def email_address(self, owner_email=""):
+        return owner_email or None
 
     def active_learners(self):
         return ["owner"]
@@ -332,9 +352,10 @@ class MemoryRepository:
 def harness(config):
     repo, ai, telegram, publisher = MemoryRepository(), FakeAI(), FakeTelegram(), FakePublisher()
     clock = SimpleNamespace(now=datetime(2026, 9, 25, 18, tzinfo=IST))
-    runtime = Runtime(config, repo, ai, telegram, publisher, lambda: clock.now)
+    email = FakeEmail()
+    runtime = Runtime(config, repo, ai, telegram, publisher, lambda: clock.now, email=email)
     return SimpleNamespace(
-        repo=repo, ai=ai, telegram=telegram, publisher=publisher, runtime=runtime, clock=clock
+        repo=repo, ai=ai, telegram=telegram, publisher=publisher, runtime=runtime, clock=clock, email=email
     )
 
 

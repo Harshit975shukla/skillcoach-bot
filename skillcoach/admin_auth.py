@@ -198,15 +198,16 @@ def _pin_limits(conn, config, now, *, sending=False):
             now - timedelta(days=1, minutes=5),
         ),
     ).fetchone()
+    hint = "Try later." if config.web_mode else "Try later or use /admin inside Telegram."
     if counts["hourly_failures"] >= 5 or counts["daily_failures"] >= 10:
-        raise PinRateLimited("Too many incorrect PIN attempts. Try later or use /admin inside Telegram.")
+        raise PinRateLimited("Too many incorrect PIN attempts. " + hint)
     if sending and (
         counts["hourly"] >= 5
         or counts["daily"] >= 10
         or (counts["latest"] and counts["latest"] > now - timedelta(seconds=60))
     ):
         raise PinRateLimited(
-            "PIN requests are limited to one per minute, five per hour and ten per day. Try later or use /admin inside Telegram."
+            "PIN requests are limited to one per minute, five per hour and ten per day. " + hint
         )
 
 
@@ -236,20 +237,25 @@ def start_pin(runtime):
         ).fetchone()
     # Authentication delivery is a single bounded attempt, outside all DB locks. Never persist
     # plaintext PINs in the learning outbox or retry an uncertain send with a still-valid PIN.
+    web = runtime.config.web_mode
+    text = (
+        f"SkillCoach Admin sign-in PIN: {pin}\n\n"
+        "Enter this four-digit PIN only in the browser where you requested it. "
+        "It expires in five minutes and works once. Never share it. "
+        "If you did not request it, ignore this message."
+    )
     try:
-        runtime.telegram.for_chat(runtime.config.owner_id).send(
-            f"SkillCoach Admin sign-in PIN: {pin}\n\n"
-            "Enter this four-digit PIN only in the browser where you requested it. "
-            "It expires in five minutes and works once. Never share it. "
-            "If you did not request it, ignore this message.",
-            Budget(12),
-        )
+        if web:
+            runtime.email.send(runtime.config.owner_email, "Your SkillCoach admin PIN", text, Budget(12))
+        else:
+            runtime.telegram.for_chat(runtime.config.owner_id).send(text, Budget(12))
     except ExternalError as exc:
         with runtime.repo.connection() as conn:
             conn.execute("UPDATE admin_logins SET status='rejected' WHERE id=%s", (identifier,))
         log.warning("admin_pin_delivery_failed code=%s", exc.code)
         raise PinDeliveryFailed(
-            "Telegram could not confirm delivery. Any PIN from this attempt is invalid. Wait one minute, then request a new PIN."
+            ("The email could not be sent" if web else "Telegram could not confirm delivery")
+            + ". Any PIN from this attempt is invalid. Wait one minute, then request a new PIN."
         ) from None
     with runtime.repo.connection() as conn:
         conn.execute("UPDATE admin_logins SET notified=true WHERE id=%s", (identifier,))
@@ -258,7 +264,10 @@ def start_pin(runtime):
 
 def verify_pin(runtime, verifier, pin):
     if not isinstance(pin, str) or not re.fullmatch(r"[0-9]{4}", pin):
-        raise PinIncorrect("Enter exactly four digits from your Telegram message.")
+        raise PinIncorrect(
+            "Enter exactly four digits from your "
+            + ("PIN email." if runtime.config.web_mode else "Telegram message.")
+        )
     if not re.fullmatch(r"[A-Za-z0-9_-]{43}", verifier or ""):
         raise AdminDenied("Request a PIN from this browser first. Cookies must be enabled.")
     now = runtime.clock()

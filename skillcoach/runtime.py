@@ -44,10 +44,30 @@ class DeliveryDeferred(Exception):
     """Leave unsent work pending when the request lacks time for a safe network attempt."""
 
 
+def require_send_budget(budget: Budget):
+    try:
+        if budget.remaining() < 8:
+            raise DeliveryDeferred()
+    except ExternalError as exc:
+        if exc.code == "request_budget_exhausted":
+            raise DeliveryDeferred() from None
+        raise
+
+
 class Runtime:
     def __init__(
-        self, config, repository=None, ai=None, telegram=None, publisher=None, clock=now_ist, labs=None
+        self,
+        config,
+        repository=None,
+        ai=None,
+        telegram=None,
+        publisher=None,
+        clock=now_ist,
+        labs=None,
+        email=None,
     ):
+        from skillcoach.email_client import Email
+
         self.config = config
         self.repo = repository or Repository(config.database_url)
         self.repo.owner_id = config.owner_id
@@ -56,6 +76,7 @@ class Runtime:
         self.publisher = publisher or Publisher(config)
         self.clock = clock
         self.labs = labs
+        self.email = email or Email(config)
 
     @classmethod
     def from_env(cls, *, webhook=False):
@@ -87,6 +108,13 @@ class Runtime:
             result = Service(scoped, self.ai, self.config, self.clock, labs=self.labs).apply(
                 job, state, token, budget
             )
+            if self.config.web_mode:
+                from skillcoach.web_channel import notification
+
+                # In web mode, scheduled and mentor messages also send one email reminder.
+                note = notification(job, result[1], self.config)
+                if note:
+                    result = (result[0], [*result[1], note], *result[2:])
             scoped.finish(job["id"], token, revision, *result)
             return True
         except WorkDeferred:
@@ -111,6 +139,10 @@ class Runtime:
             self.repo.release("domain", token)
 
     def followup_proposal(self, update_id: int, budget: Budget):
+        self.followup(f"telegram:{update_id}", budget)
+
+    def followup(self, key: str, budget: Budget):
+        """Prepare a queued plan proposal that belongs to this interaction, if time allows."""
         try:
             if budget.remaining() < 12:
                 return
@@ -118,30 +150,23 @@ class Runtime:
             if exc.code == "request_budget_exhausted":
                 return
             raise
-        if self.process_one(budget, proposal_for=f"telegram:{update_id}"):
+        if self.process_one(budget, proposal_for=key):
             for _ in range(3):
                 if not self.deliver_one(budget, media=False):
                     break
 
     def deliver_one(self, budget: Budget, *, media=False) -> bool:
-        def require_send_budget():
-            try:
-                if budget.remaining() < 8:
-                    raise DeliveryDeferred()
-            except ExternalError as exc:
-                if exc.code == "request_budget_exhausted":
-                    raise DeliveryDeferred() from None
-                raise
-
         try:
-            require_send_budget()
+            require_send_budget(budget)
         except DeliveryDeferred:
             return False
+        web = self.config.web_mode
         token = self.repo.acquire("delivery", 240 if media else 60)
         if not token:
             return False
         try:
-            item = self.repo.next_delivery(token, media=media)
+            # Web mode never renders video, so media placeholders are always ready.
+            item = self.repo.next_delivery(token, media=media or web)
             if item is None:
                 return False
             body = dict(item["body"])
@@ -177,6 +202,17 @@ class Runtime:
             ) or (body.get("target") and body["target"] != state.target()):
                 scoped.delivery_result(item["id"], token, "suppressed")
                 return True
+            if body["kind"] == "email":
+                return self._deliver_email(scoped, item, body, token, budget)
+            if web and body["kind"] in ("text", "media"):
+                # The learner's private web inbox shows sent messages; nothing goes to Telegram.
+                try:
+                    scoped.ensure_delivery_authorized(item["id"], token)
+                except MembershipChanged:
+                    scoped.delivery_result(item["id"], token, "suppressed")
+                    return True
+                scoped.delivery_result(item["id"], token, "sent")
+                return True
             telegram = self.telegram if scoped.is_owner else self.telegram.for_chat(scoped.recipient())
             # One sound per lesson, quiz or reply: follow-up parts and quiet-hour messages arrive silently.
             quiet = {"silent": True} if silent_delivery(item["id"], state, self.clock()) else {}
@@ -187,7 +223,7 @@ class Runtime:
                 scoped.ensure_delivery_authorized(item["id"], token)
                 if body.get("voice") and not scoped.read()[1].voice:
                     raise DeliveryDeferred()
-                require_send_budget()
+                require_send_budget(budget)
 
             try:
                 if body["kind"] == "text":
@@ -266,6 +302,27 @@ class Runtime:
             return True
         finally:
             self.repo.release("delivery", token)
+
+    def _deliver_email(self, scoped, item, body, token, budget) -> bool:
+        address = scoped.email_address(self.config.owner_email)
+        if not address or not self.email.configured:
+            scoped.delivery_result(item["id"], token, "suppressed")
+            return True
+        try:
+            scoped.ensure_delivery_authorized(item["id"], token)
+            require_send_budget(budget)
+            self.email.send(address, body["subject"], body["text"], budget)
+        except DeliveryDeferred:
+            return False
+        except MembershipChanged:
+            scoped.delivery_result(item["id"], token, "suppressed")
+            return True
+        except ExternalError as exc:
+            log.warning("delivery_failed kind=email code=%s", exc.code)
+            scoped.delivery_result(item["id"], token, "failed", exc.code)
+            return True
+        scoped.delivery_result(item["id"], token, "sent")
+        return True
 
     def recover(self, *, limit=200, media=True, max_seconds=900):
         deadline = time.monotonic() + max_seconds

@@ -27,12 +27,12 @@
     <div id="message" class="notice" role="status" aria-live="polite">Checking owner access…</div>
     <section id="login" class="login-panel" hidden aria-labelledby="login-title">
       <h1 id="login-title">Your bot, under your control.</h1>
-      <p>Receive a four-digit PIN in your owner's Telegram chat and enter it here. Or send <code>/admin</code> to the bot and tap <strong>Open Admin in Telegram</strong> for automatic owner verification.</p>
+      <p id="login-intro">Receive a four-digit PIN in your owner's Telegram chat and enter it here. Or send <code>/admin</code> to the bot and tap <strong>Open Admin in Telegram</strong> for automatic owner verification.</p>
       <button id="start-login" class="primary" type="button">Send PIN to Telegram</button>
       <a id="open-browser" class="button-link" target="_blank" rel="noopener noreferrer" hidden>Open admin in browser</a>
       <div id="login-challenge" hidden>
         <form id="pin-form" hidden>
-          <h2>Check your Telegram</h2>
+          <h2 id="pin-heading">Check your Telegram</h2>
           <label for="login-pin">Four-digit PIN
             <input id="login-pin" name="pin" type="text" inputmode="numeric" autocomplete="one-time-code"
                    pattern="[0-9]{4}" minlength="4" maxlength="4" required aria-describedby="pin-help">

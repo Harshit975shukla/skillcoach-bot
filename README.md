@@ -793,8 +793,46 @@ See `.env.example`; environment variables are loaded at operation startup, not n
 | `LABS_GITHUB_TOKEN` | Optional secret: a fine-grained token with no repository permissions, used only for rate limits; never `GH_PAT` |
 | `CRON_SECRET` | Vercel-only secret (at least 32 random characters) that Vercel sends as `Authorization: Bearer ...` to `/cron/*`; unset or short fails closed |
 | `SCHEDULER_REPO`, `SCHEDULER_GITHUB_TOKEN` | Vercel-only: this bot's `owner/repository` and a token allowed to dispatch its workflows (Actions: write). The token falls back to `GITHUB_TOKEN` |
+| `DELIVERY_CHANNEL` | `telegram` (default) or `web` for the web + email fallback below |
+| `WEB_APP_URL`, `OWNER_EMAIL`, `EMAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | Web + email settings, all required in web mode and ignored otherwise. In GitHub Actions, `OWNER_EMAIL`, `EMAIL_FROM`, `SMTP_USERNAME` and `SMTP_PASSWORD` are **secrets**, because this public repository's run logs show variable values |
 
 At least one AI provider is needed for generated coaching. Model quotas/free tiers are not promised. GitHub `DASHBOARD_*` and model settings are repository variables; database/Telegram/AI/PAT values are secrets. No secrets are needed for offline tests.
+
+## Web + email fallback (off by default)
+
+If the Telegram bot becomes unavailable, `DELIVERY_CHANNEL=web` keeps coaching running without
+Telegram. The coaching service, schedules, lessons, quizzes, reviews, labs and progress are unchanged;
+only the transport changes:
+
+- **Sign-in:** learners open `WEB_APP_URL/web`, enter the email their coach registered and type the
+  six-digit code sent to it. Codes expire in 10 minutes, work once in the requesting browser, allow
+  five attempts and are limited to one a minute, five an hour and ten a day per address (60 an hour
+  overall). Unknown addresses get the same response and no email. Only keyed hashes of codes and
+  addresses are stored. Sessions last 14 days in a `__Host-` HttpOnly, Secure, SameSite=Strict cookie,
+  are bound to the learner's access generation (revocation ends them at once) and every change needs
+  the page's CSRF token and a same-origin request.
+- **Conversation:** the page is the bot. Messages the coach would have sent to Telegram are shown in a
+  private inbox, with the same buttons: quiz answers stay bound to the current question, and a retry
+  reuses its request ID so nothing is processed twice. Typed commands and answers work as in Telegram.
+  Admin commands such as `/invite` are refused in the conversation; use the admin console.
+- **Lessons:** "Open lesson page" shows the full lesson, exercises and step-by-step walkthrough in the
+  browser. Web mode never renders video, so scheduled workers skip installing the renderer.
+- **Email:** each scheduled lesson, quiz, Saturday assessment, Sunday review and mentor note sends one
+  reminder with a short summary and a link back. Answers to a learner's own actions appear only on the
+  page. Failed emails retry through the normal delivery queue and stale ones are suppressed the next
+  day, like any scheduled message.
+- **Owner:** in web mode the admin PIN is emailed to `OWNER_EMAIL`, which is also the owner's own
+  `/web` sign-in address. **Set web email** on an active learner's row (preview, then confirm) saves
+  their sign-in address; changing or removing it ends their web sessions. Addresses are shown masked.
+
+Not included: new learners joining while in web mode (invitation links are Telegram links), the
+Telegram Mini App dashboard (use `/today`, `/progress` and `/quizzes` in the conversation), and video.
+
+**Switching on** needs migration `011_web_email_channel.sql` (learner emails, sign-in codes and web
+sessions; additive), the settings above in Vercel and GitHub (Gmail works with an app password on port
+587), a release of this code, then `python -m skillcoach.cli email-test` to confirm the owner receives
+mail. **Switching back** is `DELIVERY_CHANNEL=telegram` and a redeploy; web sessions simply stop working
+and Telegram delivery resumes, with nothing replayed.
 
 ## Private import and privacy-safe dashboard
 

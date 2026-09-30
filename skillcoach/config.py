@@ -12,6 +12,18 @@ DEFAULT_GROQ_MODELS = "openai/gpt-oss-120b,openai/gpt-oss-20b"
 DEFAULT_GEMINI_MODELS = "gemini-3.8-flash,gemini-3.5-flash,gemini-2.5-flash"
 
 
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+")
+DELIVERY_CHANNELS = ("telegram", "web")
+
+
+def normalize_email(value) -> str | None:
+    """A lowercase address if `value` is a plausible single email address, else None."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip().lower()
+    return value if len(value) <= 254 and EMAIL.fullmatch(value) else None
+
+
 def model_chain(value: str) -> list[str]:
     """Comma-separated provider models in fallback order, without duplicates."""
     models = []
@@ -45,6 +57,23 @@ class Config:
     labs_enabled: bool = True
     labs_template_repo: str = "Harshit975shukla/skillcoach-labs"
     labs_github_token: str = ""
+    # Fallback while Telegram is unavailable: learners use the web app and receive email reminders.
+    delivery_channel: str = "telegram"
+    web_app_url: str = ""
+    owner_email: str = ""
+    email_from: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+
+    @property
+    def web_mode(self) -> bool:
+        return self.delivery_channel == "web"
+
+    @property
+    def email_configured(self) -> bool:
+        return bool(self.email_from and self.smtp_host and self.smtp_username and self.smtp_password)
 
     @classmethod
     def from_env(cls, *, webhook: bool = False) -> "Config":
@@ -106,6 +135,7 @@ class Config:
             raise ConfigurationError("DAILY_AI_OPERATIONS must be between 1 and 200 per learner.")
         if username and not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
             raise ConfigurationError("TELEGRAM_BOT_USERNAME must be the bot username, without @.")
+        web = web_settings()
         return cls(
             database,
             token,
@@ -128,4 +158,63 @@ class Config:
             labs == "true",
             labs_repo,
             os.getenv("LABS_GITHUB_TOKEN", ""),
+            **web,
         )
+
+
+def web_settings() -> dict:
+    """Web + email delivery settings. Everything is optional until DELIVERY_CHANNEL=web."""
+    from urllib.parse import urlsplit
+
+    channel = os.getenv("DELIVERY_CHANNEL", "").strip().lower() or "telegram"
+    if channel not in DELIVERY_CHANNELS:
+        raise ConfigurationError("DELIVERY_CHANNEL must be telegram or web.")
+    url = os.getenv("WEB_APP_URL", "").strip().rstrip("/")
+    owner_raw = os.getenv("OWNER_EMAIL", "").strip()
+    sender = os.getenv("EMAIL_FROM", "").strip()
+    host = os.getenv("SMTP_HOST", "").strip()
+    port = os.getenv("SMTP_PORT", "").strip() or "587"
+    username = os.getenv("SMTP_USERNAME", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "")
+    if url:
+        parsed = urlsplit(url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.query or parsed.path:
+            raise ConfigurationError(
+                "WEB_APP_URL must be the app's HTTPS origin, such as https://example.app."
+            )
+    owner = normalize_email(owner_raw) if owner_raw else ""
+    if owner is None:
+        raise ConfigurationError("OWNER_EMAIL must be one email address.")
+    if any(ch in sender for ch in "\r\n") or len(sender) > 200:
+        raise ConfigurationError("EMAIL_FROM must be a single line.")
+    if sender and normalize_email(sender.rsplit("<", 1)[-1].rstrip(">")) is None:
+        raise ConfigurationError("EMAIL_FROM must be an address, optionally as Name <address>.")
+    if host and not re.fullmatch(r"[A-Za-z0-9.-]{1,253}", host):
+        raise ConfigurationError("SMTP_HOST must be a host name.")
+    if not port.isdecimal() or int(port) not in (465, 587, 2525):
+        raise ConfigurationError("SMTP_PORT must be 587 (STARTTLS), 465 (TLS) or 2525.")
+    if channel == "web":
+        missing = [
+            name
+            for name, value in (
+                ("WEB_APP_URL", url),
+                ("OWNER_EMAIL", owner),
+                ("EMAIL_FROM", sender),
+                ("SMTP_HOST", host),
+                ("SMTP_USERNAME", username),
+                ("SMTP_PASSWORD", password),
+            )
+            if not value
+        ]
+        if missing:
+            raise ConfigurationError("Web mode requires " + ", ".join(missing) + ".")
+    return {
+        "delivery_channel": channel,
+        "web_app_url": url,
+        "owner_email": owner,
+        "email_from": sender,
+        "smtp_host": host,
+        "smtp_port": int(port),
+        "smtp_username": username,
+        "smtp_password": password,
+    }

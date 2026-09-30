@@ -112,6 +112,21 @@ def configure_telegram(runtime: Runtime):
     return {"commands": len(MENU), "menu_button": bool(url)}
 
 
+def email_test(runtime: Runtime):
+    """Check SMTP settings by emailing the owner; nothing is stored and no learner is contacted."""
+    config = runtime.config
+    if not config.email_configured or not config.owner_email:
+        raise ConfigurationError("Set OWNER_EMAIL, EMAIL_FROM, SMTP_HOST, SMTP_USERNAME and SMTP_PASSWORD.")
+    runtime.email.send(
+        config.owner_email,
+        "SkillCoach email test",
+        "SkillCoach can send email with these settings. Web sign-in codes and reminders will arrive "
+        "from this address when web mode is switched on.",
+        Budget(30),
+    )
+    return {"sent": True, "to": "OWNER_EMAIL"}
+
+
 def queue_owner_quiz(runtime: Runtime, due: datetime, topic: str):
     due, payload = requested_quiz_payload(runtime.clock(), due, topic)
     _, state = runtime.repo.read()
@@ -172,6 +187,7 @@ def main(argv=None):
     announce = sub.add_parser("announce-ready", help="Send one idempotent owner help message for a release")
     announce.add_argument("--release", required=True)
     sub.add_parser("needs-media", help="Exit 0 for queued media/lesson work, 3 if absent")
+    sub.add_parser("email-test", help="Send one test email to OWNER_EMAIL to check SMTP settings")
     sub.add_parser("poll", help="Explicit local polling adapter; refuses an active webhook")
     sub.add_parser("configure-telegram", help="Set the bot command menu and dashboard menu button")
     run = sub.add_parser("schedule")
@@ -240,8 +256,14 @@ def main(argv=None):
             print(json.dumps(Repository(database_url()).status(all_learners=True), indent=2))
             return 0
         if args.command == "needs-media":
+            # Web mode never renders video, so workers skip installing the browser and ffmpeg.
+            if os.getenv("DELIVERY_CHANNEL", "").strip().lower() == "web":
+                return 3
             return 0 if Repository(database_url()).needs_media() else 3
         runtime = Runtime.from_env()
+        if args.command == "email-test":
+            print(json.dumps(email_test(runtime)))
+            return 0
         if args.command == "configure-telegram":
             print(json.dumps(configure_telegram(runtime)))
             return 0

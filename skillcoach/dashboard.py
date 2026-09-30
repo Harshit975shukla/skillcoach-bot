@@ -515,15 +515,31 @@ def register_dashboard(app, runtime_factory):
     @app.after_request
     def private_headers(response):
         if request.path.startswith(
-            ("/app", "/admin", "/join", "/static/join", "/static/dashboard", "/static/admin", "/portfolio")
+            (
+                "/app",
+                "/admin",
+                "/join",
+                "/static/join",
+                "/static/dashboard",
+                "/static/admin",
+                "/portfolio",
+                "/web",
+                "/static/web",
+            )
         ):
             response.headers["Cache-Control"] = "no-store, private"
             response.headers["Pragma"] = "no-cache"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["X-Content-Type-Options"] = "nosniff"
+            # The web app is never framed; Telegram Mini App pages may be embedded by Telegram only.
+            ancestors = (
+                "'none'"
+                if request.path.startswith(("/web", "/static/web"))
+                else "https://web.telegram.org https://*.telegram.org"
+            )
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self'; "
                 "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
-                "frame-ancestors https://web.telegram.org https://*.telegram.org"
+                "frame-ancestors " + ancestors
             )
         return response

@@ -80,9 +80,11 @@ def create_app(runtime=None):
 
     from skillcoach.admin import register_admin
     from skillcoach.dashboard import register_dashboard
+    from skillcoach.web_routes import register_web
 
     register_dashboard(app, lambda: runtime or Runtime.from_env(webhook=True))
     register_admin(app, lambda: runtime or Runtime.from_env(webhook=True))
+    register_web(app, lambda: runtime or Runtime.from_env(webhook=True))
 
     @app.get("/join")
     def join_page():

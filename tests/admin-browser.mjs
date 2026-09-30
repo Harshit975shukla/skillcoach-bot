@@ -6,7 +6,7 @@ import { join } from "node:path";
 import puppeteer from "puppeteer";
 
 let authenticated = false, approved = false, executions = 0, authRequests = 0;
-let loginChallenge = null, loginStarts = 0, statusFailures = 0;
+let loginChallenge = null, loginStarts = 0, statusFailures = 0, pinChannel = "telegram";
 let telegramFrameEnabled = false, rejectTelegramFrame = false;
 const memoryRequests = [];
 const received = [];
@@ -97,6 +97,7 @@ const server = createServer(async (request, response) => {
     response.setHeader("Content-Type", "application/json");
     response.setHeader("Cache-Control", "no-store");
     const output = (code, value) => { response.writeHead(code); response.end(JSON.stringify(value)); };
+    if (request.url === "/admin/login/options") return output(200, {pin_channel: pinChannel});
     if (request.url === "/admin/session") {
       authRequests += 1;
       return output(authenticated ? 200 : 403, authenticated ? session() : {error: "Sign in"});
@@ -483,6 +484,45 @@ try {
     assert.equal(await page.$eval("#login-pin", e => e.value), "");
     await page.close();
     console.log(`Admin PIN sign-in passed: ${reason}.`);
+  }
+  {
+    // Web + email mode: the PIN goes to the owner's email and learners' web sign-in emails are managed here.
+    authenticated = false; approved = false; loginChallenge = null; loginStarts = 0; pinChannel = "email";
+    fixture.web_mode = true;
+    fixture.learners[0].web_email = "o•••@example.test";
+    fixture.learners[2].web_email = null;
+    fixture.actions.set_email = "Set web sign-in email";
+    const page = await browser.newPage();
+    await page.setRequestInterception(true);
+    page.on("request", request => {
+      if (request.url().startsWith("https://telegram.org/")) request.respond({status: 200, contentType: "text/javascript", body: ""});
+      else if (request.url().startsWith(origin)) request.continue();
+      else request.abort();
+    });
+    await page.goto(origin + "/admin");
+    await page.waitForFunction(() => document.getElementById("start-login").textContent === "Email me a PIN");
+    assert.match(await page.$eval("#login-intro", e => e.textContent), /owner email address/);
+    assert.doesNotMatch(await page.$eval("#login-intro", e => e.textContent), /Telegram chat/);
+    await page.click("#start-login");
+    await page.waitForFunction(() => !document.getElementById("pin-form").hidden);
+    assert.equal(await page.$eval("#pin-heading", e => e.textContent), "Check your email");
+    assert.match(await page.$eval("#pin-help", e => e.textContent), /SkillCoach email/);
+    await page.type("#login-pin", "0042");
+    await page.click("#verify-pin");
+    await page.waitForFunction(() => !document.getElementById("console").hidden);
+    const members = await page.$eval("#members", e => e.textContent);
+    assert.match(members, /Web sign-in: o•••@example\.test/);
+    assert.match(members, /Web sign-in: not set/);
+    const setButtons = await page.$$eval("#members button", buttons => buttons.filter(b => b.textContent === "Set web email").length);
+    assert.equal(setButtons, 1, "only the active non-owner learner gets a web email control");
+    await page.$$eval("#members button", buttons => buttons.find(b => b.textContent === "Set web email").click());
+    assert.equal(await page.$eval("#action-kind", e => e.value), "set_email");
+    assert.equal(await page.$eval('[name="email"]', e => e.type), "email");
+    assert.equal(await page.$eval("#action-target", e => e.value), "u_bbbbbbbbbbbb");
+    await page.close();
+    pinChannel = "telegram"; fixture.web_mode = false;
+    delete fixture.learners[0].web_email; delete fixture.learners[2].web_email; delete fixture.actions.set_email;
+    console.log("Admin web + email mode PIN and learner email controls passed.");
   }
   for (const reason of ["expiry", "hidden", "late-login"]) {
     authenticated = true;

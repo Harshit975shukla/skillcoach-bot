@@ -29,7 +29,7 @@ td:first-child { max-width: 230px; overflow-wrap: anywhere; }
 .admin-list p { overflow-wrap: anywhere; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 18px 0; }
 label { display: flex; flex-direction: column; gap: 7px; font-size: .91rem; font-weight: 650; }
-select, input[type="text"], input[type="datetime-local"], textarea {
+select, input[type="text"], input[type="email"], input[type="datetime-local"], textarea {
   min-width: 0; width: 100%; min-height: 46px; padding: 10px 12px; background: var(--surface);
   color: var(--ink); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-weight: 400;
 }
