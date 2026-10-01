@@ -9,7 +9,7 @@
 .primary:disabled { background: var(--muted); border-color: var(--muted); color: var(--surface); }
 
 /* Sign-in */
-#signin { max-width: 520px; padding: 20px 0 56px; }
+#signin, #join { max-width: 520px; padding: 20px 0 56px; }
 .web-lead { margin-top: 14px; max-width: 60ch; }
 .signin-form { display: grid; gap: 10px; margin-top: 30px; }
 .signin-form h2 { margin-bottom: 4px; }

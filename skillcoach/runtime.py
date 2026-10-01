@@ -1,3 +1,4 @@
+import hmac
 import logging
 import time
 
@@ -308,6 +309,13 @@ class Runtime:
         if not address or not self.email.configured:
             scoped.delivery_result(item["id"], token, "suppressed")
             return True
+        if body.get("to_hash"):
+            from skillcoach.web_channel import keyed
+
+            # Access decisions go only to the address that was verified, never to a later one.
+            if not hmac.compare_digest(body["to_hash"], keyed(self.config, "email", address)):
+                scoped.delivery_result(item["id"], token, "suppressed")
+                return True
         try:
             scoped.ensure_delivery_authorized(item["id"], token)
             require_send_budget(budget)

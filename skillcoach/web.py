@@ -96,7 +96,8 @@ def create_app(runtime=None):
 
         try:
             config = runtime.config if runtime else Config.from_env(webhook=True)
-            if not config.access_requests_enabled or not config.bot_username:
+            # Public requests open the Telegram bot; in web mode people join only by invitation.
+            if not config.access_requests_enabled or not config.bot_username or config.web_mode:
                 return jsonify(available=False, telegram_url=None)
             return jsonify(available=True, telegram_url=f"https://t.me/{config.bot_username}?start=request")
         except ConfigurationError:

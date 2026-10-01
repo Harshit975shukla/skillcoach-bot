@@ -18,6 +18,7 @@ def register_web(app, runtime_factory):
         WebCodeIncorrect,
         WebDenied,
         WebLimited,
+        WebUnavailable,
         accept_web,
         authenticate,
         csrf_token,
@@ -28,6 +29,7 @@ def register_web(app, runtime_factory):
         verify_login,
         web_payload,
     )
+    from skillcoach.web_join import JOIN_COOKIE, deliver_now, start_join, verify_join
 
     class Disabled(Exception):
         pass
@@ -45,6 +47,8 @@ def register_web(app, runtime_factory):
                 return jsonify(error=str(exc)), 429
             except WebDenied as exc:
                 return jsonify(error=str(exc)), 403
+            except WebUnavailable as exc:
+                return jsonify(error=str(exc)), 503
             except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
                 return jsonify(error="SkillCoach is temporarily unavailable. Try again shortly."), 503
 
@@ -114,6 +118,30 @@ def register_web(app, runtime_factory):
         )
         cookie(response, WEB_COOKIE, token, SESSION_SECONDS)
         forget(response, LOGIN_COOKIE)
+        return response
+
+    @app.post("/web/join/start")
+    @endpoint
+    def web_join_start():
+        same_origin(request)
+        body = body_of({"invite", "name", "email"})
+        runtime = runtime_on()
+        data, verifier = start_join(runtime, body.get("invite"), body.get("name"), body.get("email"))
+        response = jsonify(data)
+        cookie(response, JOIN_COOKIE, verifier, 600)
+        return response
+
+    @app.post("/web/join/verify")
+    @endpoint
+    def web_join_verify():
+        same_origin(request)
+        body = body_of({"code"})
+        runtime = runtime_on()
+        result = verify_join(runtime, request.cookies.get(JOIN_COOKIE, ""), body.get("code"))
+        # The owner's "new request" email goes out now rather than at the next worker run.
+        deliver_now(runtime)
+        response = jsonify(result)
+        forget(response, JOIN_COOKIE)
         return response
 
     @app.post("/web/logout")

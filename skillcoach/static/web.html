@@ -56,6 +56,43 @@
       <p class="privacy">No password is needed. Never share your code: SkillCoach will never ask you for it.</p>
     </section>
 
+    <section id="join" hidden aria-labelledby="join-title">
+      <h1 id="join-title">Join SkillCoach</h1>
+      <p class="web-lead">Your coach invited you. Confirm your email address with a code; your coach then
+        approves your access and you sign in here.</p>
+      <form id="join-form" class="signin-form" novalidate>
+        <label for="join-name">Your name</label>
+        <input id="join-name" name="name" type="text" autocomplete="name" maxlength="60" required>
+        <label for="join-email">Your email</label>
+        <input id="join-email" name="email" type="email" autocomplete="email" maxlength="254" required>
+        <div class="form-actions">
+          <button id="join-submit" class="primary" type="submit">Email me a code</button>
+        </div>
+      </form>
+      <form id="join-code-form" class="signin-form" hidden novalidate>
+        <h2>Check your email</h2>
+        <p id="join-code-sent"></p>
+        <label for="join-code">Six-digit code</label>
+        <input id="join-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code"
+               pattern="[0-9]{6}" minlength="6" maxlength="6" required aria-describedby="join-code-help">
+        <p id="join-code-help" class="field-help">It expires in 10 minutes and works once, in this browser.</p>
+        <div class="form-actions">
+          <button id="join-code-submit" class="primary" type="submit">Confirm my email</button>
+          <button id="join-resend" type="button" disabled>Send a new code</button>
+          <button id="join-back" type="button">Use a different email</button>
+        </div>
+      </form>
+      <div id="join-done" class="signin-form" hidden>
+        <h2 tabindex="-1">Request sent</h2>
+        <p id="join-done-text"></p>
+        <div class="form-actions">
+          <button id="join-signin" type="button">Go to sign in</button>
+        </div>
+      </div>
+      <p id="join-error" class="signin-error" role="alert"></p>
+      <p class="privacy">Only your coach can approve you. Never share your code: SkillCoach will never ask you for it.</p>
+    </section>
+
     <section id="chat" hidden aria-label="Your conversation with SkillCoach">
       <button id="older" class="older" type="button" hidden>Show earlier messages</button>
       <ol id="feed" class="feed" role="log" aria-live="polite" aria-label="Messages"></ol>

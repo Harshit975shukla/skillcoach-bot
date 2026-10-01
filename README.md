@@ -830,14 +830,28 @@ only the transport changes:
 - **Owner:** in web mode the admin PIN is emailed to `OWNER_EMAIL`, which is also the owner's own
   `/web` sign-in address. **Set web email** on an active learner's row (preview, then confirm) saves
   their sign-in address; changing or removing it ends their web sessions. Addresses are shown masked.
+- **Joining by invitation:** **Create invitation** in the admin console gives a one-use web link
+  (24 hours). Its token sits in the address fragment, which browsers never send to servers or other
+  sites, and the page removes it from the address bar at once. The invited person enters a name and
+  email and confirms the address with a six-digit code in the same browser (10 minutes, five
+  attempts, the same email limits as sign-in, and at most one code a minute and five an hour per
+  invitation). Only then, in one transaction, does the request become a pending learner and the
+  invitation become claimed; a link cancelled or expired meanwhile is refused. Addresses are trimmed
+  and lowercased, but plus tags and dots are kept, so they count as different addresses. An address
+  that already has access, is waiting for approval or is `OWNER_EMAIL` is refused and never
+  reassigned; a rejected or revoked learner returning with a new invitation keeps their record and
+  history. The owner gets an email, then approves or rejects in the admin console; the decision is
+  emailed once, and only while the verified address is still the learner's. Unconfirmed requests
+  are deleted after two days, and the public `/join` request page is closed in web mode.
 
-Not included: new learners joining while in web mode (invitation links are Telegram links), the
-Telegram Mini App dashboard (use `/today`, `/progress` and `/quizzes` in the conversation), and video.
+Not included: public join requests without an invitation, the Telegram Mini App dashboard (use
+`/today`, `/progress` and `/quizzes` in the conversation), and video.
 
-**Before deploying this code in either mode**, apply migrations `010_usage_counters.sql` and
-`011_web_email_channel.sql` (both additive). Migration 011 adds learner emails, sign-in codes, web
-sessions and the delivery order that every delivery now records, Telegram included, so this code must
-not run against an older schema.
+**Before deploying this code in either mode**, apply migrations `010_usage_counters.sql`,
+`011_web_email_channel.sql` and `012_web_joins.sql` (all additive). Migration 011 adds learner emails,
+sign-in codes, web sessions and the delivery order that every delivery now records, Telegram
+included; 012 adds unconfirmed web join requests, which web sign-in limits also count. This code
+must not run against an older schema.
 
 **Switching on** needs the settings above in Vercel and GitHub (Gmail works with an app password on
 port 587), a release of this code, then `python -m skillcoach.cli email-test` to confirm the owner

@@ -165,14 +165,19 @@ def _validate_action(conn, action, target, arguments, config, now):
             warnings.append("Queued coaching is cancelled. Private learning history is retained.")
     elif action == "invite":
         args["label"] = args["label"].strip()
-        if len(args["label"]) > 100 or not config.bot_username:
+        if len(args["label"]) > 100 or not (config.bot_username or config.web_mode):
             raise AdminConflict("Use a label up to 100 characters and configure the bot username.")
         count = conn.execute(
             "SELECT count(*) AS n FROM invitations WHERE status='open' AND expires_at>now()"
         ).fetchone()["n"]
         if count >= 50:
             raise AdminConflict("Cancel an unused invitation before creating another.")
-        details.append("One-use link, expires in 24 hours. Joining still requires your approval.")
+        details.append(
+            "One-use web link, expires in 24 hours. The person confirms their email with a code, then you "
+            "approve or reject them."
+            if config.web_mode
+            else "One-use link, expires in 24 hours. Joining still requires your approval."
+        )
     elif action == "revokeinvite":
         if not re.fullmatch(r"i_[a-f0-9]{12}", args["invite_id"]):
             raise AdminDenied("Choose a valid invitation.")
@@ -876,4 +881,10 @@ def register_admin(app, runtime_factory):
         runtime = runtime_factory()
         session, _ = authenticate(request, runtime, mutate=True)
         body = _json_body(request, {"request_id", "confirmation"})
-        return jsonify(execute_action(runtime, session, body))
+        result = execute_action(runtime, session, body)
+        if result.get("state") == "handled" and not result.get("duplicate"):
+            from skillcoach.web_join import deliver_now
+
+            # Web mode: an approval or rejection email goes out now rather than at the next worker run.
+            deliver_now(runtime)
+        return jsonify(result)

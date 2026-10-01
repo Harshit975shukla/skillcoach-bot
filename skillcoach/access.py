@@ -111,7 +111,7 @@ def _admin(conn, update_id, key, owner, command, argument, config, *, owner_outp
                 ],
             )
     elif command == "invite":
-        if not config.bot_username:
+        if not config.bot_username and not config.web_mode:
             reply("Invites are unavailable until TELEGRAM_BOT_USERNAME is configured.")
             return
         open_count = conn.execute(
@@ -128,6 +128,15 @@ def _admin(conn, update_id, key, owner, command, argument, config, *, owner_outp
             (ident, digest, argument[:100]),
         )
         _audit(conn, update_id, "invite", ident)
+        if config.web_mode:
+            from skillcoach.web_join import invite_link
+
+            reply(
+                f"Invitation {ident} (one use, expires in 24 hours).\n{invite_link(config, token)}\n\n"
+                "Share it privately with one person. They confirm their email address with a code, then you "
+                "approve or reject them here. Cancel an unused link with “Cancel unused invitation”."
+            )
+            return
         reply(
             f"Invitation {ident} (one use, expires in 24 hours).\n"
             f"https://t.me/{config.bot_username}?start=invite_{token}\n\n"
@@ -215,6 +224,10 @@ def _admin(conn, update_id, key, owner, command, argument, config, *, owner_outp
             if status == "active"
             else None,
         )
+        # In web mode the decision is also emailed, only to the learner's verified address.
+        from skillcoach.web_join import access_email
+
+        access_email(conn, key, member, status, config)
 
 
 def _pending_member(conn, actor, display_name, current=None, *, guided=False):

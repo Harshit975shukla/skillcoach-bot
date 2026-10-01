@@ -432,8 +432,8 @@ def test_web_routes_are_off_in_telegram_mode(harness):
 # PostgreSQL: sign-in, inbox and administration ------------------------------------------------
 
 
-@pytest.fixture
-def web(pg_repo, config, monkeypatch):
+def build_web(pg_repo, config, monkeypatch):
+    """A web-mode app on a real database with the owner and two invited learners (one with an email)."""
     from test_multiuser import Bot
 
     # The response-time floor is covered by its own test; skip the real wait here.
@@ -457,6 +457,11 @@ def web(pg_repo, config, monkeypatch):
         silent=silent,
         clock=clock,
     )
+
+
+@pytest.fixture
+def web(pg_repo, config, monkeypatch):
+    return build_web(pg_repo, config, monkeypatch)
 
 
 def post(web, path, body=None, *, client=None, csrf=True, origin=ORIGIN):

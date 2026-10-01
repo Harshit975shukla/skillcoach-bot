@@ -56,6 +56,10 @@ class WebLimited(WebDenied):
     pass
 
 
+class WebUnavailable(RuntimeError):
+    """A code email could not be sent; nothing was granted and the request can be repeated."""
+
+
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -134,13 +138,25 @@ def start_login(runtime, raw_email):
         conn.execute("SELECT id FROM learners WHERE id='owner' FOR UPDATE")
         conn.execute("DELETE FROM web_logins WHERE requested_at<%s", (now - timedelta(days=2),))
         counts = conn.execute(
-            "SELECT count(*) FILTER (WHERE email_hash=%s AND requested_at>%s) AS hourly, "
+            "SELECT count(*) FILTER (WHERE email_hash=%s AND at>%s) AS hourly, "
             "count(*) FILTER (WHERE email_hash=%s) AS daily, "
-            "max(requested_at) FILTER (WHERE email_hash=%s) AS latest, "
-            "count(*) FILTER (WHERE requested_at>%s AND notified) AS sent, "
-            "count(*) FILTER (WHERE requested_at>%s AND learner_id IS NULL) AS unknown "
-            "FROM web_logins WHERE requested_at>%s",
-            (email_hash, hour, email_hash, email_hash, hour, hour, now - timedelta(days=1)),
+            "max(at) FILTER (WHERE email_hash=%s) AS latest, "
+            "count(*) FILTER (WHERE at>%s AND notified) AS sent, "
+            "count(*) FILTER (WHERE at>%s AND kind='login' AND unknown) AS unknown FROM ("
+            # Join codes from web invitations share the same per-address and hourly email limits.
+            "SELECT 'login' AS kind, email_hash, requested_at AS at, notified, learner_id IS NULL AS unknown "
+            "FROM web_logins WHERE requested_at>%s UNION ALL "
+            "SELECT 'join', email_hash, requested_at, notified, false FROM web_joins WHERE requested_at>%s) r",
+            (
+                email_hash,
+                hour,
+                email_hash,
+                email_hash,
+                hour,
+                hour,
+                now - timedelta(days=1),
+                now - timedelta(days=1),
+            ),
         ).fetchone()
         if (
             (counts["latest"] and counts["latest"] > now - timedelta(seconds=60))

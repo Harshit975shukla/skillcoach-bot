@@ -11,6 +11,9 @@
   const FAST_POLL = 3000, SLOW_POLL = 15000, FAST_WINDOW = 45000;
   let csrf = "", lastId = null, firstId = null, epoch = 0, sending = false, working = false;
   let fastUntil = 0, pollTimer = null, resendTimer = null, pendingEmail = "", feedScroll = 0, loadingFeed = false;
+  // A web invitation token lives only in memory: it is read from the address fragment, which is
+  // removed at once, and is sent only in the body of the join request.
+  let invite = "", joinDetails = null, joinTimer = null;
   const controllers = new Set();
 
   function notice(text, error = false) {
@@ -34,14 +37,14 @@
     } finally { controllers.delete(controller); }
   }
   function show(view) {
-    for (const id of ["signin", "chat", "reader"]) $(id).hidden = id !== view;
+    for (const id of ["signin", "join", "chat", "reader"]) $(id).hidden = id !== view;
     $("logout").hidden = !["chat", "reader"].includes(view);
   }
   function reset() {
     epoch += 1;
     for (const controller of controllers) controller.abort();
     controllers.clear();
-    clearTimeout(pollTimer); clearInterval(resendTimer);
+    clearTimeout(pollTimer); clearInterval(resendTimer); clearInterval(joinTimer);
     csrf = ""; lastId = null; firstId = null; sending = false; working = false; fastUntil = 0; loadingFeed = false;
     $("feed").replaceChildren(); $("lesson-body").replaceChildren();
     $("lesson-title").textContent = ""; $("lesson-meta").textContent = "";
@@ -117,6 +120,83 @@
       startChat(result.data);
     } catch { signinError("SkillCoach could not be reached. Check your connection and try again."); }
     finally { $("code-submit").disabled = false; }
+  });
+
+  // Joining by invitation ----------------------------------------------------------------------
+  function joinError(text) { $("join-error").textContent = text; }
+  function joinView(message = "") {
+    reset();
+    show("join"); notice("");
+    $("join-form").hidden = false; $("join-code-form").hidden = true; $("join-done").hidden = true;
+    joinError(message);
+    $("join-name").focus();
+  }
+  function joinCodeStep(data) {
+    $("join-form").hidden = true; $("join-code-form").hidden = false;
+    $("join-code-sent").textContent = `We sent a six-digit code to ${joinDetails.email}. ` +
+      "Check spam if it has not arrived in a minute.";
+    joinError(""); $("join-code").value = ""; $("join-code").focus();
+    const resendAt = new Date(data.resend_at).getTime();
+    const tick = () => {
+      const seconds = Math.ceil((resendAt - Date.now()) / 1000);
+      $("join-resend").disabled = seconds > 0;
+      $("join-resend").textContent = seconds > 0 ? `Send a new code (${seconds}s)` : "Send a new code";
+      if (seconds <= 0) clearInterval(joinTimer);
+    };
+    clearInterval(joinTimer); joinTimer = setInterval(tick, 1000); tick();
+  }
+  async function requestJoinCode(button) {
+    button.disabled = true; joinError("");
+    let sent = false;
+    try {
+      const result = await call("/web/join/start", {invite, name: joinDetails.name, email: joinDetails.email});
+      if (result.status === 404) { disabled(); return; }
+      if (!result.ok) { joinError(result.data.error || "A code could not be sent. Try again."); return; }
+      sent = true;
+      joinCodeStep(result.data);
+    } catch { joinError("SkillCoach could not be reached. Check your connection and try again."); }
+    finally { if (button.id === "join-submit" || !sent) button.disabled = false; }
+  }
+  $("join-form").addEventListener("submit", event => {
+    event.preventDefault();
+    const name = $("join-name").value.trim(), email = $("join-email").value.trim();
+    if (!name || name.length > 60) { joinError("Enter your name, up to 60 characters."); $("join-name").focus(); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { joinError("Enter a valid email address."); $("join-email").focus(); return; }
+    joinDetails = {name, email};
+    requestJoinCode($("join-submit"));
+  });
+  $("join-resend").addEventListener("click", () => requestJoinCode($("join-resend")));
+  $("join-back").addEventListener("click", () => {
+    clearInterval(joinTimer);
+    $("join-code-form").hidden = true; $("join-form").hidden = false; joinError(""); $("join-email").focus();
+  });
+  $("join-code-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const code = $("join-code").value.trim();
+    if (!/^[0-9]{6}$/.test(code)) { joinError("Enter the six digits from your email."); $("join-code").focus(); return; }
+    $("join-code-submit").disabled = true; joinError("");
+    try {
+      const result = await call("/web/join/verify", {code});
+      if (result.status === 404) { disabled(); return; }
+      if (!result.ok) {
+        joinError(result.data.error || "That code did not work. Try again.");
+        $("join-code").value = ""; $("join-code").focus();
+        return;
+      }
+      clearInterval(joinTimer);
+      invite = "";
+      $("join-code-form").hidden = true; $("join-done").hidden = false;
+      $("join-done-text").textContent = "Your coach will review your request. When you are approved you get an " +
+        `email at ${joinDetails.email}; then sign in on this page with that address.`;
+      $("join-done").querySelector("h2").focus();
+    } catch { joinError("SkillCoach could not be reached. Check your connection and try again."); }
+    finally { $("join-code-submit").disabled = false; }
+  });
+  $("join-signin").addEventListener("click", () => {
+    const email = joinDetails ? joinDetails.email : "";
+    joinDetails = null;
+    signInView();
+    $("email").value = email;
   });
 
   // Conversation -----------------------------------------------------------------------------
@@ -461,6 +541,16 @@
   });
   async function boot() {
     const requestEpoch = epoch;
+    const fragment = location.hash;
+    if (fragment.startsWith("#invite=")) {
+      // Remove the token from the address bar and history before anything else happens.
+      history.replaceState(null, "", location.pathname);
+      const match = /^#invite=([A-Za-z0-9_-]{32})$/.exec(fragment);
+      invite = match ? match[1] : "";
+      joinView(match ? "" : "This invitation link is incomplete. Ask your coach to send it again.");
+      if (!match) $("join-submit").disabled = true;
+      return;
+    }
     try {
       const result = await call("/web/session", null, {method: "GET"});
       if (requestEpoch !== epoch) return;
@@ -472,5 +562,7 @@
       notice("SkillCoach could not be reached. Check your connection and reload.", true);
     }
   }
+  // An invitation opened in a tab that is already on this page only changes the fragment.
+  window.addEventListener("hashchange", () => { if (location.hash.startsWith("#invite=")) boot(); });
   boot();
 })();

@@ -35,6 +35,7 @@ TABLES = (
     "usage_daily",
     "web_logins",
     "web_sessions",
+    "web_joins",
 )
 log = logging.getLogger(__name__)
 
