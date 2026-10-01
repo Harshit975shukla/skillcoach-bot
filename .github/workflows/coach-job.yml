@@ -148,6 +148,10 @@ jobs:
           SMTP_PORT: ${{ vars.SMTP_PORT || '587' }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          # Optional web push for the installable web app: the public key is public, the private
+          # key is a secret.
+          WEB_PUSH_PUBLIC_KEY: ${{ vars.WEB_PUSH_PUBLIC_KEY }}
+          WEB_PUSH_PRIVATE_KEY: ${{ secrets.WEB_PUSH_PRIVATE_KEY }}
           OPERATION: ${{ inputs.kind }}
           INTENDED_DATE: ${{ inputs.intended_date }}
           MEDIA_READY: ${{ steps.media.outputs.needed }}

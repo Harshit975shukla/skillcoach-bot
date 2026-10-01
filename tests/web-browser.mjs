@@ -49,6 +49,11 @@ const server = createServer(async (request, response) => {
   state.urls.push(request.url);
   if (path.startsWith("/web/")) {
     assert.equal(request.url.includes("?"), false, "no credentials or identity in URLs");
+    // The service worker, manifest and offline page are covered by web-app-browser.mjs.
+    if (["/web/sw.js", "/web/manifest.webmanifest", "/web/offline"].includes(path)) {
+      response.writeHead(404).end();
+      return;
+    }
     if (!state.web) return json(404, {error: "The web app is not switched on.", enabled: false});
     const body = raw ? JSON.parse(raw) : {};
     if (path === "/web/join/start") {

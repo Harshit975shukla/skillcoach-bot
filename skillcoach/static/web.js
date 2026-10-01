@@ -17,6 +17,9 @@
   // A dashboard action arrives as /web#start=<payload>. It is removed from the address at once and
   // offered as one tap after sign-in; it is never sent by itself.
   let pendingStart = "";
+  // Installable app and notifications (see web-sw.js). Permission is only ever asked after a tap.
+  const PUSH_READY = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  let worker = null, installPrompt = null, pushKey = null, pushOn = false, pushBusy = false;
   const controllers = new Set();
 
   function notice(text, error = false) {
@@ -53,7 +56,8 @@
     $("feed").replaceChildren(); $("lesson-body").replaceChildren();
     $("lesson-title").textContent = ""; $("lesson-meta").textContent = "";
     $("message").value = ""; $("older").hidden = true; $("working").hidden = true;
-    $("start-prompt").hidden = true;
+    $("start-prompt").hidden = true; $("offer").hidden = true; $("notify").hidden = true;
+    pushKey = null; pushOn = false; pushBusy = false;
     updateControls();
   }
 
@@ -208,9 +212,11 @@
   function startChat(session) {
     reset();
     csrf = session.csrf;
+    pushKey = typeof session.push_key === "string" && session.push_key ? session.push_key : null;
     show("chat"); notice("");
     offerStart();
     loadFeed(true);
+    syncPush();
   }
   function takeStart() {
     // Strip the fragment before anything else; keep only a well-formed payload, in memory.
@@ -236,8 +242,178 @@
     const command = "/start " + pendingStart;
     pendingStart = ""; $("start-prompt").hidden = true;
     send({text: command}, command);
+    showOffer();
   });
-  $("start-dismiss").addEventListener("click", () => { pendingStart = ""; $("start-prompt").hidden = true; });
+  $("start-dismiss").addEventListener("click", () => { pendingStart = ""; $("start-prompt").hidden = true; showOffer(); });
+
+  // Installable app and notifications --------------------------------------------------------
+  const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  const appleMobile = /iPhone|iPad|iPod/.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  function snoozed(name) {
+    try { return Number(localStorage.getItem("skillcoach-offer-" + name)) > Date.now(); } catch { return false; }
+  }
+  function snooze(name, days) {
+    // Only when an offer may appear again; nothing private is stored.
+    try { localStorage.setItem("skillcoach-offer-" + name, String(Date.now() + days * 86400000)); } catch { /* private mode */ }
+  }
+  function keyBytes(text) {
+    const base = text.replace(/-/g, "+").replace(/_/g, "/");
+    return Uint8Array.from(atob(base + "=".repeat((4 - base.length % 4) % 4)), c => c.charCodeAt(0));
+  }
+  function sameKey(subscription) {
+    const key = subscription.options && subscription.options.applicationServerKey;
+    if (!key || !pushKey) return false;
+    const mine = new Uint8Array(key), expected = keyBytes(pushKey);
+    return mine.length === expected.length && mine.every((value, index) => value === expected[index]);
+  }
+  function subscriptionBody(subscription) {
+    const json = subscription.toJSON();
+    return {endpoint: json.endpoint, p256dh: json.keys && json.keys.p256dh, auth: json.keys && json.keys.auth};
+  }
+  const pushPossible = () => PUSH_READY && Boolean(worker && pushKey && csrf);
+  async function browserSubscription() {
+    try { return worker ? await worker.pushManager.getSubscription() : null; } catch { return null; }
+  }
+  async function dropSubscription(subscription) {
+    // True only when this browser's notifications are definitely off: the browser removed its
+    // subscription (the push service then refuses it) or the server confirmed it removed the binding.
+    const endpoint = subscription.endpoint;
+    let browserOff = false, serverOff = false;
+    try { browserOff = (await subscription.unsubscribe()) === true; } catch { browserOff = false; }
+    if (csrf) {
+      try { serverOff = (await call("/web/push/unsubscribe", {endpoint})).ok; } catch { serverOff = false; }
+    }
+    return browserOff || serverOff;
+  }
+  function renderPush() {
+    const button = $("notify");
+    button.hidden = !pushPossible() || $("logout").hidden;
+    button.setAttribute("aria-pressed", String(pushOn));
+    button.title = pushOn ? "Notifications are on for this device. Tap to turn them off."
+      : "Turn on notifications for this device";
+    button.disabled = pushBusy;
+    showOffer();
+  }
+  function showOffer() {
+    const card = $("offer");
+    let offer = "";
+    if (csrf && !$("chat").hidden && $("start-prompt").hidden) {
+      if (installPrompt && !standalone() && !snoozed("install")) offer = "install";
+      else if (appleMobile && !standalone() && !PUSH_READY && !snoozed("ios")) offer = "ios";
+      else if (pushPossible() && !pushOn && Notification.permission === "default" && !snoozed("push")) offer = "push";
+    }
+    card.dataset.offer = offer;
+    card.hidden = !offer;
+    if (!offer) return;
+    $("offer-text").textContent = {
+      install: "Install SkillCoach on this device to open it with one tap, like an app.",
+      ios: "On iPhone and iPad (iOS 16.4 or later), notifications work once SkillCoach is on your Home Screen: "
+        + "tap Share, then Add to Home Screen, and open it from there.",
+      push: "Get a notification on this device when your lesson or quiz is ready.",
+    }[offer];
+    $("offer-go").textContent = {install: "Install", ios: "Got it", push: "Turn on"}[offer];
+    $("offer-dismiss").hidden = offer === "ios";
+  }
+  async function syncPush() {
+    pushOn = false;
+    renderPush();
+    if (!pushPossible()) return;
+    const requestEpoch = epoch;
+    const subscription = await browserSubscription();
+    if (!subscription || requestEpoch !== epoch) return;
+    // Keep this browser's notifications only if they already belong to this account.
+    if (Notification.permission !== "granted" || !sameKey(subscription)) {
+      await dropSubscription(subscription);
+      return;
+    }
+    try {
+      const result = await call("/web/push/sync", subscriptionBody(subscription));
+      if (requestEpoch !== epoch) return;
+      if (result.ok && result.data.subscribed) pushOn = true;
+      else if (result.ok) await subscription.unsubscribe().catch(() => false);
+    } catch { /* Offline: checked again on the next visit. */ }
+    if (requestEpoch === epoch) renderPush();
+  }
+  async function turnOn() {
+    if (pushBusy || !pushPossible()) return;
+    pushBusy = true; renderPush();
+    const requestEpoch = epoch;
+    let fresh = null;
+    try {
+      const permission = Notification.permission === "default" ? await Notification.requestPermission() : Notification.permission;
+      if (requestEpoch !== epoch) return;
+      if (permission !== "granted") {
+        snooze("push", 30);
+        notice(permission === "denied" ? "Notifications are blocked for SkillCoach in this browser's site settings."
+          : "Notifications were not turned on.", permission === "denied");
+        return;
+      }
+      // Always a fresh subscription: one left in this browser could belong to another account.
+      const old = await browserSubscription();
+      if (old) await dropSubscription(old);
+      fresh = await worker.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: keyBytes(pushKey)});
+      if (requestEpoch !== epoch) { await fresh.unsubscribe().catch(() => false); return; }
+      const result = await call("/web/push/subscribe", subscriptionBody(fresh));
+      if (requestEpoch !== epoch) return;
+      if (!result.ok) {
+        await fresh.unsubscribe().catch(() => false);
+        if (result.status === 403) { sessionEnded(result.data.error); return; }
+        notice(result.data.error || "Notifications could not be turned on. Try again.", true);
+        return;
+      }
+      pushOn = true;
+      notice("Notifications are on for this device. Email reminders continue too.");
+    } catch {
+      if (fresh) await fresh.unsubscribe().catch(() => false);
+      if (requestEpoch === epoch) notice("This browser could not turn on notifications.", true);
+    } finally {
+      if (requestEpoch === epoch) { pushBusy = false; renderPush(); }
+    }
+  }
+  async function turnOff() {
+    if (pushBusy) return;
+    pushBusy = true; renderPush();
+    const requestEpoch = epoch;
+    try {
+      let subscription;
+      try { subscription = worker ? await worker.pushManager.getSubscription() : null; } catch { subscription = undefined; }
+      const off = subscription === null || (subscription !== undefined && await dropSubscription(subscription));
+      if (requestEpoch !== epoch) return;
+      if (off) {
+        pushOn = false;
+        notice("Notifications are off for this device. Email reminders continue.");
+      } else {
+        // Nothing confirmed it: say so, keep the bell on, and let the learner try again.
+        notice("Notifications could not be turned off. Check your connection, then tap the bell again.", true);
+      }
+    } finally {
+      if (requestEpoch === epoch) { pushBusy = false; renderPush(); }
+    }
+  }
+  $("notify").addEventListener("click", () => (pushOn ? turnOff() : turnOn()));
+  $("offer-go").addEventListener("click", async () => {
+    const offer = $("offer").dataset.offer;
+    if (offer === "install" && installPrompt) {
+      const prompt = installPrompt;
+      installPrompt = null;
+      snooze("install", 30);
+      try { await prompt.prompt(); } catch { /* The browser declined to show it. */ }
+      showOffer();
+    } else if (offer === "ios") {
+      snooze("ios", 90); showOffer();
+    } else if (offer === "push") {
+      turnOn();
+    }
+  });
+  $("offer-dismiss").addEventListener("click", () => { snooze($("offer").dataset.offer, 30); showOffer(); });
+  window.addEventListener("beforeinstallprompt", event => { event.preventDefault(); installPrompt = event; showOffer(); });
+  window.addEventListener("appinstalled", () => { installPrompt = null; showOffer(); });
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/web/sw.js", {scope: "/web"})
+      .then(registration => { worker = registration; if (csrf) syncPush(); else renderPush(); })
+      .catch(() => { /* Unavailable (web mode off or a browser policy): the page works without it. */ });
+  }
   function sessionEnded(message) {
     signInView(message || "Your session ended. Sign in again with your email.");
   }
@@ -563,6 +739,10 @@
 
   // Session ----------------------------------------------------------------------------------
   $("logout").addEventListener("click", async () => {
+    // Signing out ends this session on the server, which also removes its devices' bindings; the
+    // browser's own subscription is removed as well where possible, but sign-out never depends on it.
+    const subscription = await browserSubscription();
+    if (subscription) await dropSubscription(subscription);
     reset();
     pendingStart = "";
     try { await call("/web/logout", {}); }

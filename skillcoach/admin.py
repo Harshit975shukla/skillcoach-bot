@@ -457,8 +457,10 @@ def execute_action(runtime, session, body):
             result = {"state": "handled", "messages": response, "request_id": row["id"], **(extra or {})}
         elif row["action"] == "set_email":
             conn.execute("UPDATE learners SET email=%s WHERE id=%s", (args["email"] or None, member["id"]))
-            # A changed address must not keep an older browser signed in or a pending code valid.
+            # A changed address must not keep an older browser signed in, a pending code valid or
+            # a device receiving notifications.
             conn.execute("DELETE FROM web_sessions WHERE learner_id=%s", (member["id"],))
+            conn.execute("DELETE FROM web_push_subscriptions WHERE learner_id=%s", (member["id"],))
             conn.execute(
                 "UPDATE web_logins SET status='rejected' WHERE learner_id=%s AND status='pending'",
                 (member["id"],),

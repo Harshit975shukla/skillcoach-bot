@@ -17,3 +17,8 @@ package-lock.json
 *.mp4
 *.png
 *.jpg
+# The web app's icons are served from skillcoach/static.
+!skillcoach/static/icon-*.png
+!skillcoach/static/apple-touch-icon.png
+!skillcoach/static/badge-72.png
+tools

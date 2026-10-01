@@ -6,6 +6,34 @@ from functools import wraps
 from pathlib import Path
 
 TELEGRAM_SCRIPT = re.compile(r'[ \t]*<script src="https://telegram\.org/[^"]*"[^>]*></script>\r?\n?')
+# Install metadata for the web dashboard page; /app (the Telegram Mini App) is left unchanged.
+APP_HEAD = (
+    '  <link rel="manifest" href="/web/manifest.webmanifest">\n'
+    '  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">\n'
+    '  <meta name="theme-color" content="#f5f7fa" media="(prefers-color-scheme: light)">\n'
+    '  <meta name="theme-color" content="#17212b" media="(prefers-color-scheme: dark)">\n'
+)
+MANIFEST = {
+    "id": "/web",
+    "name": "SkillCoach",
+    "short_name": "SkillCoach",
+    "description": "Daily Cloud and DevOps lessons, quizzes and practice with your coach.",
+    "start_url": "/web",
+    "scope": "/web",
+    "display": "standalone",
+    "background_color": "#f5f7fa",
+    "theme_color": "#f5f7fa",
+    "icons": [
+        {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+        {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+        {
+            "src": "/static/icon-maskable-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable",
+        },
+    ],
+}
 
 
 def register_web(app, runtime_factory):
@@ -34,8 +62,15 @@ def register_web(app, runtime_factory):
         web_payload,
     )
     from skillcoach.web_join import JOIN_COOKIE, deliver_now, start_join, verify_join
+    from skillcoach.web_push import PushConflict
+    from skillcoach.web_push import subscribe as push_subscribe
+    from skillcoach.web_push import sync as push_sync
+    from skillcoach.web_push import unsubscribe as push_unsubscribe
 
     class Disabled(Exception):
+        pass
+
+    class PushOff(Exception):
         pass
 
     def endpoint(function):
@@ -45,6 +80,10 @@ def register_web(app, runtime_factory):
                 return function(*args, **kwargs)
             except Disabled:
                 return jsonify(error="The web app is not switched on.", enabled=False), 404
+            except PushOff:
+                return jsonify(error="Notifications are not switched on.", push=False), 404
+            except PushConflict as exc:
+                return jsonify(error=str(exc)), 409
             except WebCodeIncorrect as exc:
                 return jsonify(error=str(exc)), 400
             except WebLimited as exc:
@@ -63,6 +102,15 @@ def register_web(app, runtime_factory):
         if not runtime.config.web_mode:
             raise Disabled()
         return runtime
+
+    def push_on():
+        runtime = runtime_on()
+        if not runtime.config.push_enabled:
+            raise PushOff()
+        return runtime
+
+    def push_key(runtime):
+        return runtime.config.web_push_public_key if runtime.config.push_enabled else None
 
     def body_of(fields):
         body = request.get_json(silent=True)
@@ -93,7 +141,33 @@ def register_web(app, runtime_factory):
         )
         if "telegram.org" in page:
             raise ConfigurationError("The web dashboard page must not load Telegram's script.")
+        page = page.replace("</head>", APP_HEAD + "</head>", 1)
         return page, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+    @app.get("/web/manifest.webmanifest")
+    @endpoint
+    def web_manifest():
+        runtime_on()
+        response = jsonify(MANIFEST)
+        response.mimetype = "application/manifest+json"
+        return response
+
+    @app.get("/web/sw.js")
+    @endpoint
+    def web_service_worker():
+        """The service worker: an offline notice and notifications only. Served under /web with a
+        scope of /web, so it never controls /app, /admin or anything else on this origin."""
+        runtime_on()
+        response = app.send_static_file("web-sw.js")
+        response.headers["Content-Type"] = "text/javascript; charset=utf-8"
+        response.headers["Service-Worker-Allowed"] = "/web"
+        return response
+
+    @app.get("/web/offline")
+    @endpoint
+    def web_offline():
+        runtime_on()
+        return app.send_static_file("web-offline.html")
 
     @app.get("/web/session")
     @endpoint
@@ -105,6 +179,7 @@ def register_web(app, runtime_factory):
             csrf=csrf_token(runtime.config, token),
             name="You (owner)" if session["learner_id"] == "owner" else session["display_name"] or "Learner",
             expires_at=session["expires_at"].isoformat(),
+            push_key=push_key(runtime),
         )
 
     @app.post("/web/login/start")
@@ -132,6 +207,7 @@ def register_web(app, runtime_factory):
             csrf=csrf_token(runtime.config, token),
             name="You (owner)" if member["id"] == "owner" else member["display_name"] or "Learner",
             expires_at=expires.isoformat(),
+            push_key=push_key(runtime),
         )
         cookie(response, WEB_COOKIE, token, SESSION_SECONDS)
         forget(response, LOGIN_COOKIE)
@@ -171,6 +247,34 @@ def register_web(app, runtime_factory):
         response = jsonify(logged_out=True)
         forget(response, WEB_COOKIE)
         return response
+
+    # Notifications: the learner always comes from the signed-in session, never from the request.
+    @app.post("/web/push/subscribe")
+    @endpoint
+    def web_push_subscribe():
+        runtime = push_on()
+        session, token = authenticate(request, runtime, mutate=True)
+        body = body_of({"endpoint", "p256dh", "auth"})
+        with runtime.repo.session():
+            return jsonify(push_subscribe(runtime, session, token, body))
+
+    @app.post("/web/push/sync")
+    @endpoint
+    def web_push_sync():
+        runtime = push_on()
+        session, token = authenticate(request, runtime, mutate=True)
+        body = body_of({"endpoint", "p256dh", "auth"})
+        with runtime.repo.session():
+            return jsonify(push_sync(runtime, session, token, body))
+
+    @app.post("/web/push/unsubscribe")
+    @endpoint
+    def web_push_unsubscribe():
+        runtime = push_on()
+        session, _ = authenticate(request, runtime, mutate=True)
+        body = body_of({"endpoint"})
+        with runtime.repo.session():
+            return jsonify(push_unsubscribe(runtime, session, body))
 
     @app.post("/web/feed")
     @endpoint

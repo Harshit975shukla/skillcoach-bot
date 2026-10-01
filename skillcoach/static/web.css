@@ -87,6 +87,21 @@
 .start-actions { display: flex; gap: 8px; }
 .start-actions button { min-height: 40px; padding: 7px 14px; }
 
+/* Notifications toggle: an outlined bell when off, a filled accent bell when on. */
+.icon-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 44px; min-height: 44px; padding: 0;
+}
+.icon-button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.icon-button[aria-pressed="true"] path:first-child { fill: currentColor; }
+
+/* Offline notice (shown by the service worker). */
+.offline { max-width: 520px; padding: 20px 0 56px; }
+.button-link {
+  display: inline-flex; align-items: center; min-height: 44px; padding: 9px 18px;
+  border: 1px solid var(--line); border-radius: 8px; font-weight: 650; text-decoration: none;
+}
+
 /* Lesson reader */
 #reader { padding-bottom: 56px; }
 .reader-back { margin: 6px 0 22px; }
@@ -107,4 +122,9 @@
   .composer { margin: auto -18px 0; padding-left: 18px; padding-right: 18px; }
   .message { max-width: 100%; }
   #code { font-size: 1.35rem; }
+  /* Brand, bell, Dashboard and Sign out stay on one line on common phone widths. */
+  .header { gap: 8px 12px; }
+  .header-actions { gap: 4px; }
+  .header-actions .header-link { padding: 0 8px; }
+  .header-actions button:not(.icon-button) { padding: 9px 12px; }
 }

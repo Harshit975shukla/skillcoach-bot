@@ -66,10 +66,17 @@ class Config:
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password: str = ""
+    # Optional phone/desktop notifications for the web app: one VAPID key pair (base64url).
+    web_push_public_key: str = ""
+    web_push_private_key: str = ""
 
     @property
     def web_mode(self) -> bool:
         return self.delivery_channel == "web"
+
+    @property
+    def push_enabled(self) -> bool:
+        return self.web_mode and bool(self.web_push_public_key and self.web_push_private_key)
 
     @property
     def email_configured(self) -> bool:
@@ -208,6 +215,15 @@ def web_settings() -> dict:
         ]
         if missing:
             raise ConfigurationError("Web mode requires " + ", ".join(missing) + ".")
+    push_public = os.getenv("WEB_PUSH_PUBLIC_KEY", "").strip()
+    push_private = os.getenv("WEB_PUSH_PRIVATE_KEY", "").strip()
+    if push_public or push_private:
+        from skillcoach.web_push import check_keys
+
+        if not check_keys(push_public, push_private):
+            raise ConfigurationError(
+                "WEB_PUSH_PUBLIC_KEY and WEB_PUSH_PRIVATE_KEY must be one matching VAPID key pair."
+            )
     return {
         "delivery_channel": channel,
         "web_app_url": url,
@@ -217,4 +233,6 @@ def web_settings() -> dict:
         "smtp_port": int(port),
         "smtp_username": username,
         "smtp_password": password,
+        "web_push_public_key": push_public,
+        "web_push_private_key": push_private,
     }

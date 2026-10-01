@@ -6,3 +6,6 @@ pydantic==2.12.3
 tzdata==2025.2
 Pillow==11.3.0
 pypdf==6.19.0
+cryptography==50.0.2
+http-ece==1.2.1
+py-vapid==1.9.4

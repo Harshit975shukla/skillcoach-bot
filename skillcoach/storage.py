@@ -517,13 +517,15 @@ class Repository:
                 "OR (l.status<>'active' AND NOT o.access_notice))"
             )
             # A failed item blocks only its own ordered message group, not unrelated commands.
+            # Reminder rows (email, push) wait for the content before them but never block
+            # anything themselves, so a failing email cannot hold back its push or vice versa.
             row = conn.execute(
                 "SELECT o.* FROM outbox o JOIN learners l ON l.id=o.learner_id "
                 "WHERE o.status IN ('pending','failed') "
                 "AND o.available_at<=now() AND o.attempts < 5 "
                 "AND (%s OR o.body->>'kind' <> 'media') AND (o.body->>'recovery_notice'='true' OR NOT EXISTS "
                 "(SELECT 1 FROM outbox p WHERE p.job_id=o.job_id AND p.sequence<o.sequence "
-                "AND p.status IN ('pending','failed'))) "
+                "AND p.status IN ('pending','failed') AND coalesce(p.body->>'kind','') NOT IN ('email','push'))) "
                 "ORDER BY CASE WHEN o.body->>'kind'='media' THEN 1 ELSE 0 END, "
                 "l.last_delivery_at,o.sequence LIMIT 1",
                 (media,),
@@ -551,6 +553,31 @@ class Repository:
             self._fence(conn, "delivery", token)
             conn.execute(
                 "UPDATE outbox SET body=%s WHERE id=%s AND learner_id=%s", (Jsonb(body), key, self.learner_id)
+            )
+
+    def record_push_outcome(
+        self, key: str, token: str, binding: str, outcome: str, *, forget=False, sent=False
+    ):
+        """Durably record one device's result on a push row, with its binding change, under the
+        delivery lease. Recorded devices are never sent this notification again; the others stay
+        recoverable across turns and retries."""
+        with self.connection() as conn:
+            self._fence(conn, "delivery", token)
+            if forget:
+                conn.execute(
+                    "DELETE FROM web_push_subscriptions WHERE id=%s AND learner_id=%s",
+                    (binding, self.learner_id),
+                )
+            if sent:
+                conn.execute(
+                    "UPDATE web_push_subscriptions SET last_sent_at=now() WHERE id=%s AND learner_id=%s",
+                    (binding, self.learner_id),
+                )
+            conn.execute(
+                "UPDATE outbox SET body=body || jsonb_build_object('outcomes', "
+                "coalesce(body->'outcomes','{}'::jsonb) || jsonb_build_object(%s::text, %s::text)) "
+                "WHERE id=%s AND learner_id=%s AND status IN ('pending','failed')",
+                (binding, outcome, key, self.learner_id),
             )
 
     def delivery_result(self, key: str, token: str, status: str, code: str | None = None):
@@ -590,7 +617,9 @@ class Repository:
                 item = conn.execute(
                     "SELECT * FROM outbox WHERE id=%s AND learner_id=%s", (key, self.learner_id)
                 ).fetchone()
-                if not key.endswith(":delivery-error"):
+                # A failed push is reported to the owner like any delivery failure, but the learner's
+                # conversation gets no notice: there is nothing for them to retry.
+                if not key.endswith(":delivery-error") and item["body"].get("kind") != "push":
                     notice = {
                         "kind": "text",
                         "recovery_notice": True,

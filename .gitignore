@@ -18,6 +18,10 @@ node_modules/
 *.png
 *.jpg
 *.svg
+# The web app's icons are source assets, drawn by tools/app_icons.py.
+!skillcoach/static/icon-*.png
+!skillcoach/static/apple-touch-icon.png
+!skillcoach/static/badge-72.png
 legacy*.json
 private*.json
 .vercel/

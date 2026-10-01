@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex">
+  <title>Offline · SkillCoach</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <link rel="stylesheet" href="/static/web.css">
+</head>
+<body>
+  <!-- Shown by the service worker when a SkillCoach page cannot load. Generic on purpose: it never
+       holds anyone's messages, lessons or progress. -->
+  <main class="workspace web-workspace">
+    <header class="header"><span class="brand">SkillCoach</span></header>
+    <section class="offline" aria-labelledby="offline-title">
+      <h1 id="offline-title">You're offline</h1>
+      <p class="web-lead">SkillCoach needs a connection to show your lessons and messages. Nothing you have
+        done is lost.</p>
+      <div class="form-actions"><a class="button-link primary" href="/web">Try again</a></div>
+    </section>
+  </main>
+</body>
+</html>

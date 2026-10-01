@@ -6,6 +6,11 @@
   <meta name="color-scheme" content="light dark">
   <meta name="robots" content="noindex">
   <title>SkillCoach</title>
+  <link rel="manifest" href="/web/manifest.webmanifest">
+  <link rel="icon" href="/static/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <meta name="theme-color" content="#f5f7fa" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17212b" media="(prefers-color-scheme: dark)">
   <link rel="stylesheet" href="/static/dashboard.css">
   <link rel="stylesheet" href="/static/web.css">
   <script src="/static/lesson-content.js" defer></script>
@@ -25,6 +30,13 @@
     <header class="header">
       <a class="brand" href="/web">SkillCoach</a>
       <div class="header-actions">
+        <button id="notify" class="icon-button" type="button" hidden aria-pressed="false"
+                aria-label="Notifications on this device" title="Turn on notifications">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+            <path d="M12 3a6 6 0 0 0-6 6v3.4l-1.6 2.9A1.2 1.2 0 0 0 5.5 17h13a1.2 1.2 0 0 0 1.1-1.7L18 12.4V9a6 6 0 0 0-6-6Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+            <path d="M9.6 19a2.6 2.6 0 0 0 4.8 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+        </button>
         <a id="dashboard-link" class="header-link" href="/web/dashboard" hidden>Dashboard</a>
         <button id="logout" type="button" hidden>Sign out</button>
       </div>
@@ -101,6 +113,13 @@
       <ol id="feed" class="feed" role="log" aria-live="polite" aria-label="Messages"></ol>
       <p id="working" class="working" role="status" hidden>Your coach is working on it…</p>
       <form id="composer" class="composer">
+        <div id="offer" class="start-prompt" role="group" aria-labelledby="offer-text" hidden>
+          <p id="offer-text"></p>
+          <div class="start-actions">
+            <button id="offer-go" class="primary" type="button"></button>
+            <button id="offer-dismiss" type="button">Not now</button>
+          </div>
+        </div>
         <div id="start-prompt" class="start-prompt" role="group" aria-labelledby="start-text" hidden>
           <p id="start-text" role="status"></p>
           <div class="start-actions">

@@ -72,6 +72,8 @@ def _invalidate(conn, member_id):
         (member_id,),
     )
     conn.execute("UPDATE coach_state SET displayed_target=NULL WHERE learner_id=%s", (member_id,))
+    # Any change of access ends every device's notifications; they must be turned on again.
+    conn.execute("DELETE FROM web_push_subscriptions WHERE learner_id=%s", (member_id,))
 
 
 def _admin(conn, update_id, key, owner, command, argument, config, *, owner_output=None):

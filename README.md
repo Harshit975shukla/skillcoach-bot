@@ -797,6 +797,7 @@ See `.env.example`; environment variables are loaded at operation startup, not n
 | `SCHEDULER_REPO`, `SCHEDULER_GITHUB_TOKEN` | Vercel-only: this bot's `owner/repository` and a token allowed to dispatch its workflows (Actions: write). The token falls back to `GITHUB_TOKEN` |
 | `DELIVERY_CHANNEL` | `telegram` (default) or `web` for the web + email fallback below |
 | `WEB_APP_URL`, `OWNER_EMAIL`, `EMAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | Web + email settings, all required in web mode and ignored otherwise. In GitHub Actions, `OWNER_EMAIL`, `EMAIL_FROM`, `SMTP_USERNAME` and `SMTP_PASSWORD` are **secrets**, because this public repository's run logs show variable values |
+| `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY` | Optional notifications for the installable web app (web mode only): one VAPID key pair from `skillcoach.web_push.generate_keys()`. Both or neither; a mismatched pair stops the app with a configuration error. In GitHub Actions the private key is a **secret** and the public key a variable |
 
 At least one AI provider is needed for generated coaching. Model quotas/free tiers are not promised. GitHub `DASHBOARD_*` and model settings are repository variables; database/Telegram/AI/PAT values are secrets. No secrets are needed for offline tests.
 
@@ -843,6 +844,37 @@ only the transport changes:
   reminder with a short summary and a link back. Answers to a learner's own actions appear only on the
   page. Failed emails retry through the normal delivery queue and stale ones are suppressed the next
   day, like any scheduled message.
+- **Installable app:** `/web` can be installed like an app: a manifest (scope `/web`), app icons
+  (drawn by `tools/app_icons.py`) and a service worker at `/web/sw.js`. Where the browser offers it,
+  an **Install** card appears in the conversation. On iPhone and iPad the page explains Share, then
+  Add to Home Screen, because iOS offers notifications only to Home Screen apps (iOS 16.4 or later).
+  Installing and notifications depend on the browser and are not available everywhere. The service
+  worker caches only the public offline page, its two stylesheets and one icon. Pages, messages,
+  lessons, documents, API answers and videos always come from the network, so when offline the app
+  shows a generic offline page and never anyone's earlier messages.
+- **Notifications (optional):** with a VAPID key pair configured (`WEB_PUSH_PUBLIC_KEY`,
+  `WEB_PUSH_PRIVATE_KEY`), a learner can turn on phone or desktop notifications per device. The
+  permission prompt appears only after tapping **Turn on** or the bell. Every reminder that sends an
+  email also sends a push to that learner's devices, and email reminders continue as the backup.
+  - **What a notification shows:** only fixed text such as "Today's lesson is ready" (no topic,
+    name or score). Tapping it opens `/web`.
+  - **What it is tied to:** each device is bound to the learner, their access, their sign-in address
+    and the web session that turned it on. It delivers only while all four are current.
+  - **What turns it off:** signing out, removing access, or a changed address. An expired session
+    pauses it until the learner signs in again on that browser.
+  - **Shared browser:** the device is never handed to another account; the next account must turn
+    notifications on itself.
+  - **Delivery:** each reminder names its devices when queued, and each device is checked again right
+    before its send. The result for each device (accepted, gone, stale or a permanent error) is
+    recorded at once, so a retry or the next run continues only with devices that have no outcome yet.
+  - **Limits:** a push service accepting a message does not mean it was shown or seen, and a crash
+    between an answer and its record can repeat one device (at least once, never exactly once).
+    Failed pushes are reported to the owner like failed emails, add nothing to the learner's
+    conversation, and never hold back email or the inbox.
+  - **How it is built:** encryption is RFC 8291 (`http-ece`) and signing RFC 8292 VAPID (`py-vapid`).
+    The transport accepts only the browser push services (Google, Mozilla, Apple, Microsoft) over HTTPS
+    on port 443, follows no redirects and never reads response bodies. Push endpoints and keys are never
+    logged.
 - **Owner:** in web mode the admin PIN is emailed to `OWNER_EMAIL`, which is also the owner's own
   `/web` sign-in address. **Set web email** on an active learner's row (preview, then confirm) saves
   their sign-in address; changing or removing it ends their web sessions. Addresses are shown masked.
@@ -863,10 +895,11 @@ only the transport changes:
 Not included: public join requests without an invitation, and video.
 
 **Before deploying this code in either mode**, apply migrations `010_usage_counters.sql`,
-`011_web_email_channel.sql` and `012_web_joins.sql` (all additive). Migration 011 adds learner emails,
-sign-in codes, web sessions and the delivery order that every delivery now records, Telegram
-included; 012 adds unconfirmed web join requests, which web sign-in limits also count. This code
-must not run against an older schema.
+`011_web_email_channel.sql`, `012_web_joins.sql` and `013_web_push.sql` (all additive). Migration 011
+adds learner emails, sign-in codes, web sessions and the delivery order that every delivery now
+records, Telegram included; 012 adds unconfirmed web join requests, which web sign-in limits also
+count; 013 adds the notification devices that sign-out, revocation and address changes remove. This
+code must not run against an older schema.
 
 **Switching on** needs the settings above in Vercel and GitHub (Gmail works with an app password on
 port 587), a release of this code, then `python -m skillcoach.cli email-test` to confirm the owner

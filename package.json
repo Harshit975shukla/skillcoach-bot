@@ -8,7 +8,9 @@
     "test:admin": "node tests/admin-browser.mjs",
     "test:join": "node tests/join-browser.mjs",
     "test:web": "node tests/web-browser.mjs",
-    "test:webdash": "node tests/web-dashboard-browser.mjs"
+    "test:webdash": "node tests/web-dashboard-browser.mjs",
+    "test:sw": "node tests/web-sw.mjs",
+    "test:app": "node tests/web-app-browser.mjs"
   },
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "11.12.0",

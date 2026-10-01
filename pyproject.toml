@@ -12,6 +12,10 @@ dependencies = [
     "tzdata==2025.2",
     "Pillow==11.3.0",
     "pypdf==6.19.0",
+    # Web push: RFC 8291 message encryption (http-ece) and RFC 8292 VAPID signing (py-vapid).
+    "cryptography==50.0.2",
+    "http-ece==1.2.1",
+    "py-vapid==1.9.4",
 ]
 
 [project.optional-dependencies]

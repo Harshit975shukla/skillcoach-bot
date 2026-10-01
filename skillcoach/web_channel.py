@@ -22,6 +22,9 @@ log = logging.getLogger(__name__)
 WEB_COOKIE = "__Host-skillcoach-web"
 LOGIN_COOKIE = "__Host-skillcoach-web-login"
 SESSION_SECONDS = 14 * 24 * 3600
+# A device whose session expired can follow the learner's next sign-in on that browser for this
+# long (it never delivers in between); after that it must be turned on again.
+PUSH_RESUME_DAYS = 45
 CODE_SECONDS = 600
 CODE_ATTEMPTS = 5
 # Every sign-in request takes at least this long, covering a typical SMTP send.
@@ -250,6 +253,12 @@ def verify_login(runtime, verifier, code):
                 raise WebDenied("This account does not have coaching access.")
             conn.execute("UPDATE web_logins SET status='consumed' WHERE id=%s", (row["id"],))
             conn.execute("DELETE FROM web_sessions WHERE expires_at<%s", (now,))
+            # Devices whose session ended long ago can no longer be resumed by signing in again.
+            conn.execute(
+                "DELETE FROM web_push_subscriptions s WHERE s.created_at<%s AND NOT EXISTS "
+                "(SELECT 1 FROM web_sessions w WHERE w.token_hash=s.session_hash)",
+                (now - timedelta(days=PUSH_RESUME_DAYS),),
+            )
             token = secrets.token_urlsafe(32)
             expires = now + timedelta(seconds=SESSION_SECONDS)
             conn.execute(
@@ -307,6 +316,8 @@ def logout(runtime, token):
     if TOKEN.fullmatch(token or ""):
         with runtime.repo.connection() as conn:
             conn.execute("DELETE FROM web_sessions WHERE token_hash=%s", (digest(token),))
+            # Signing out stops this browser's notifications too.
+            conn.execute("DELETE FROM web_push_subscriptions WHERE session_hash=%s", (digest(token),))
 
 
 # Inbound ------------------------------------------------------------------------------------

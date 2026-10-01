@@ -66,8 +66,10 @@ class Runtime:
         clock=now_ist,
         labs=None,
         email=None,
+        push=None,
     ):
         from skillcoach.email_client import Email
+        from skillcoach.web_push import WebPush
 
         self.config = config
         self.repo = repository or Repository(config.database_url)
@@ -78,6 +80,7 @@ class Runtime:
         self.clock = clock
         self.labs = labs
         self.email = email or Email(config)
+        self.push = push or WebPush(config)
 
     @classmethod
     def from_env(cls, *, webhook=False):
@@ -112,10 +115,18 @@ class Runtime:
             if self.config.web_mode:
                 from skillcoach.web_channel import notification
 
-                # In web mode, scheduled and mentor messages also send one email reminder.
+                # In web mode, scheduled and mentor messages also send one email reminder, and a
+                # push notification to the devices where the learner turned notifications on.
                 note = notification(job, result[1], self.config)
                 if note:
-                    result = (result[0], [*result[1], note], *result[2:])
+                    extra = [note]
+                    if self.config.push_enabled:
+                        from skillcoach.web_push import reminder
+
+                        alert = reminder(job, note, scoped, self.config, self.clock())
+                        if alert:
+                            extra.append(alert)
+                    result = (result[0], [*result[1], *extra], *result[2:])
             scoped.finish(job["id"], token, revision, *result)
             return True
         except WorkDeferred:
@@ -205,6 +216,8 @@ class Runtime:
                 return True
             if body["kind"] == "email":
                 return self._deliver_email(scoped, item, body, token, budget)
+            if body["kind"] == "push":
+                return self._deliver_push(scoped, item, body, token, budget)
             if web and body["kind"] in ("text", "media"):
                 # The learner's private web inbox shows sent messages; nothing goes to Telegram.
                 try:
@@ -330,6 +343,35 @@ class Runtime:
             scoped.delivery_result(item["id"], token, "failed", exc.code)
             return True
         scoped.delivery_result(item["id"], token, "sent")
+        return True
+
+    def _deliver_push(self, scoped, item, body, token, budget) -> bool:
+        """One push row: each named device is checked again just before its send. Push never
+        blocks email or the inbox: notification rows are outside the ordered message groups, and a
+        row holds the delivery lease for at most web_push.ROW_SECONDS."""
+        from skillcoach import web_push
+
+        if not self.config.push_enabled or not body.get("targets"):
+            scoped.delivery_result(item["id"], token, "suppressed")
+            return True
+        try:
+            scoped.ensure_delivery_authorized(item["id"], token)
+            require_send_budget(budget)
+            status, code = web_push.deliver(self.push, scoped, self.config, item, token, budget, self.clock)
+        except DeliveryDeferred:
+            return False
+        except MembershipChanged:
+            scoped.delivery_result(item["id"], token, "suppressed")
+            return True
+        except ExternalError as exc:
+            if exc.code == "request_budget_exhausted":
+                return False
+            status, code = "failed", exc.code
+        if status == "deferred":
+            return False
+        if status == "failed":
+            log.warning("delivery_failed kind=push code=%s", code)
+        scoped.delivery_result(item["id"], token, status, code)
         return True
 
     def recover(self, *, limit=200, media=True, max_seconds=900):
