@@ -8,6 +8,20 @@
   let materials = null, courseLimit = 10, courseVersion = 0, learnerVersion = 0;
   let lessonNext = null, deliveryNext = null, historyBusy = false, lastCourseButton = null;
   let epoch = 0, actionVersion = 0, pendingLogin = null, loginPollBusy = false, signedOut = false;
+  // The server's PIN channel decides the sign-in wording; Telegram until /admin/login/options says email.
+  let pinChannel = "telegram";
+  const PIN_TEXT = {
+    telegram: {
+      sent: "PIN sent to your Telegram. Enter it below to sign in.",
+      required: "Owner sign-in is required. Send a PIN to your Telegram to continue.",
+      digits: "Enter exactly four digits from Telegram.",
+    },
+    email: {
+      sent: "PIN sent to your owner email. Enter it below to sign in.",
+      required: "Owner sign-in is required. Email yourself a PIN to continue.",
+      digits: "Enter exactly four digits from your SkillCoach email.",
+    },
+  };
   const controllers = new Set();
   class StaleRequest extends Error {}
   const node = (tag, value, cls) => {
@@ -481,7 +495,9 @@
         detail.append(node("summary", `${lab.title} · about ${lab.minutes} min`), node("p", lab.goal));
         for (const route of lab.routes) {
           detail.append(node("h3", route.label));
-          if (!route.steps.length) detail.append(node("p", "Learners practice through question-bound scenarios in Telegram."));
+          if (!route.steps.length) detail.append(node("p", overview && overview.web_mode
+            ? "Learners practice through question-bound scenarios in their web conversation."
+            : "Learners practice through question-bound scenarios in Telegram."));
           const steps = node("ol", undefined, "lab-steps");
           for (const step of route.steps) steps.append(node("li", step));
           detail.append(steps);
@@ -617,7 +633,9 @@
       field("Command argument (when required)", "argument", "textarea");
     }
     $("action-help").textContent = action === "owner_command"
-      ? "Commands run in your own chat. Submit answers, complete tasks and manage private setup documents in Telegram, not here."
+      ? (overview.web_mode
+        ? "Commands run in your own coaching conversation. Submit answers, complete tasks and manage private setup documents in the web app at /web, not here."
+        : "Commands run in your own chat. Submit answers, complete tasks and manage private setup documents in Telegram, not here.")
       : "The next step previews the exact recipient and effect. Nothing is executed yet.";
   }
   $("action-kind").addEventListener("change", fields);
@@ -701,7 +719,7 @@
     if (pin) $("login-expiry").textContent += ` ${data.attempts_remaining} attempts remaining. A new PIN can be sent after ${date(data.resend_at)} IST.`;
     $("login-challenge").hidden = false; $("start-login").hidden = true;
     $("resend-pin").disabled = !pin || Date.now() < new Date(data.resend_at).getTime();
-    message(pin ? "PIN sent to your Telegram. Enter it below to sign in."
+    message(pin ? PIN_TEXT[pinChannel].sent
       : "Approve this matching code in Telegram, then return here. Waiting for approval.");
   }
   async function resumeLogin() {
@@ -717,7 +735,7 @@
       if (error.status === 403) {
         const wasPending = Boolean(pendingLogin);
         clearPrivate();
-        message(wasPending ? error.message : "Owner sign-in is required. Send a PIN to your Telegram to continue.");
+        message(wasPending ? error.message : PIN_TEXT[pinChannel].required);
       } else {
         message(error.message, true);
         if (pendingLogin) pollLogin();
@@ -764,7 +782,7 @@
     event.preventDefault();
     if ($("verify-pin").disabled) return;
     const pin = $("login-pin").value;
-    if (!/^[0-9]{4}$/.test(pin)) { message("Enter exactly four digits from Telegram.", true); return; }
+    if (!/^[0-9]{4}$/.test(pin)) { message(PIN_TEXT[pinChannel].digits, true); return; }
     const requestEpoch = epoch;
     $("login-pin").value = ""; $("verify-pin").disabled = true;
     try {
@@ -822,6 +840,10 @@
     .then(response => response.ok ? response.json() : null)
     .then(options => {
       if (!options || options.pin_channel !== "email") return;
+      // A sign-in message shown before this answer arrived is reworded, keeping its error state.
+      const shown = Object.keys(PIN_TEXT.telegram).find(key => PIN_TEXT.telegram[key] === $("message").textContent);
+      pinChannel = "email";
+      if (shown) message(PIN_TEXT.email[shown], $("message").classList.contains("error"));
       $("start-login").textContent = "Email me a PIN";
       $("login-intro").textContent = "SkillCoach is running on the web. Receive a four-digit PIN at your owner email address and enter it here.";
       $("pin-heading").textContent = "Check your email";

@@ -507,6 +507,12 @@ try {
     await page.waitForFunction(() => !document.getElementById("pin-form").hidden);
     assert.equal(await page.$eval("#pin-heading", e => e.textContent), "Check your email");
     assert.match(await page.$eval("#pin-help", e => e.textContent), /SkillCoach email/);
+    assert.equal(await page.$eval("#message", e => e.textContent), "PIN sent to your owner email. Enter it below to sign in.");
+    await page.type("#login-pin", "12");
+    // Native validation normally stops a short PIN first; check the script's own fallback wording.
+    await page.$eval("#pin-form", form => form.dispatchEvent(new Event("submit", {cancelable: true})));
+    assert.equal(await page.$eval("#message", e => e.textContent), "Enter exactly four digits from your SkillCoach email.");
+    await page.$eval("#login-pin", e => { e.value = ""; });
     await page.type("#login-pin", "0042");
     await page.click("#verify-pin");
     await page.waitForFunction(() => !document.getElementById("console").hidden);
@@ -519,6 +525,8 @@ try {
     assert.equal(await page.$eval("#action-kind", e => e.value), "set_email");
     assert.equal(await page.$eval('[name="email"]', e => e.type), "email");
     assert.equal(await page.$eval("#action-target", e => e.value), "u_bbbbbbbbbbbb");
+    await page.select("#action-kind", "owner_command");
+    assert.match(await page.$eval("#action-help", e => e.textContent), /web app at \/web, not here/);
     await page.close();
     pinChannel = "telegram"; fixture.web_mode = false;
     delete fixture.learners[0].web_email; delete fixture.learners[2].web_email; delete fixture.actions.set_email;
