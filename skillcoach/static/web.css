@@ -77,6 +77,15 @@
 }
 .composer textarea::placeholder { color: var(--muted); opacity: 1; }
 .compose-row .primary { min-height: 48px; }
+/* A dashboard action waits above the composer for one tap; it is never sent by itself. */
+.start-prompt {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px;
+  margin-bottom: 12px; padding: 12px 14px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+}
+.start-prompt p { font-weight: 650; }
+.start-actions { display: flex; gap: 8px; }
+.start-actions button { min-height: 40px; padding: 7px 14px; }
 
 /* Lesson reader */
 #reader { padding-bottom: 56px; }

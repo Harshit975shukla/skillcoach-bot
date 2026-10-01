@@ -2,6 +2,18 @@
   "use strict";
   const $ = id => document.getElementById(id);
   const app = window.Telegram && window.Telegram.WebApp;
+  // Served at /web/dashboard in web + email mode, without Telegram's script: the page then uses the
+  // /web session (cookie and CSRF token) and actions open the web conversation instead of the bot.
+  const WEB = location.pathname === "/web/dashboard";
+  const WHERE = WEB ? "in your conversation" : "in Telegram";
+  const IN_BOT = WEB ? "in your conversation" : "in the bot";
+  const REOPEN = WEB ? "Open it again from SkillCoach on the web." : "Reopen /dashboard from the bot.";
+  if (WEB) {
+    $("notice").textContent = "Checking your sign-in…";
+    $("chat-link").hidden = false;
+    for (const element of document.querySelectorAll("[data-where]")) element.textContent = WHERE;
+  }
+  let webCsrf = "";
   let expiryTimer, warningTimer;
   let controller;
   let authenticated = false;
@@ -41,7 +53,7 @@
   function clearPrivate(message, error = false) {
     cancelPrivateWork();
     hideLesson();
-    documentCsrf = "";
+    documentCsrf = ""; webCsrf = "";
     resourceCatalog = []; resourceLimit = 6;
     courseModules = []; courseLimit = 10; lastLessonButton = null; mastery = null;
     $("roadmap").hidden = true; $("roadmap-open").hidden = true;
@@ -73,7 +85,13 @@
   function empty(id, message) { $(id).append(node("li", message, "empty")); }
   const QUIZ_START = /^(?:quiz_(?:[a-f0-9]{20}|\d{4}-\d{2}-\d{2})|review|resume|cert_[a-z-]{2,20}(?:_\d{1,2})?|capstone_[a-z0-9-]{2,30})$/;
   function telegramLink(botUrl, start, label) {
-    if (!botUrl || !/^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(botUrl) || !QUIZ_START.test(start || "")) return null;
+    if (!QUIZ_START.test(start || "")) return null;
+    if (WEB) {
+      const link = node("a", label.replace(/ in Telegram$/, " " + WHERE), "quiz-link");
+      link.href = "/web#start=" + start;
+      return link;
+    }
+    if (!botUrl || !/^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(botUrl)) return null;
     const link = node("a", label, "quiz-link");
     link.href = botUrl + "?start=" + start;
     link.rel = "noopener noreferrer";
@@ -182,7 +200,11 @@
       }
       item.append(detail);
       if (quiz.can_resume && /^(?:[a-f0-9]{20}|\d{4}-\d{2}-\d{2})$/.test(quiz.id)) {
-        if (botUrl && /^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(botUrl)) {
+        if (WEB) {
+          const link = node("a", `${quiz.answered ? "Resume" : "Start"} ${WHERE}`, "quiz-link");
+          link.href = "/web#start=quiz_" + quiz.id;
+          item.append(link);
+        } else if (botUrl && /^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(botUrl)) {
           const link = node("a", quiz.answered ? "Resume in Telegram" : "Start in Telegram", "quiz-link");
           link.href = botUrl + "?start=quiz_" + quiz.id;
           link.rel = "noopener noreferrer";
@@ -289,7 +311,7 @@
       $("portfolio-status").append(document.createTextNode("Public portfolio is on: "), link,
         document.createTextNode(". Turn it off any time with /portfolio off."));
     } else {
-      $("portfolio-status").textContent = "Public portfolio is off. Send /portfolio on in Telegram to share verified labs and capstones.";
+      $("portfolio-status").textContent = `Public portfolio is off. Send /portfolio on ${WHERE} to share verified labs and capstones.`;
     }
   }
   function renderRoadmap(view) {
@@ -333,7 +355,7 @@
     if (lesson.library) {
       const note = node("p", undefined, "guidance");
       note.append(document.createTextNode("Browse freely; this does not change your plan, tasks or lab progress. For tracked practice and a video, send "),
-                  node("code", lesson.learn_command), document.createTextNode(" in Telegram."));
+                  node("code", lesson.learn_command), document.createTextNode(` ${WHERE}.`));
       body.append(note);
     }
     if (!lesson.available) {
@@ -348,14 +370,14 @@
     if (lesson.exercises.length) {
       anchor("Exercises", "lesson-exercises");
       const element = lessonSection("Today's exercises", "lesson-exercises");
-      element.append(node("p", "Tracked in your practice list. Record each one in the bot with its command.", "section-description"));
+      element.append(node("p", `Tracked in your practice list. Record each one ${IN_BOT} with its command.`, "section-description"));
       const list = node("ol", undefined, "task-list");
       for (const exercise of lesson.exercises) list.append(renderExercise(exercise));
       element.append(list); body.append(element);
     }
     if (lesson.extension && lesson.extension.length) {
       const element = lessonSection(lesson.library ? "Practice on your own" : "Optional extension practice");
-      element.append(node("p", lesson.library ? "Untracked exercises. Use /learn in the bot to assign practice."
+      element.append(node("p", lesson.library ? `Untracked exercises. Use /learn ${IN_BOT} to assign practice.`
         : "Outside today's time target and not tracked.", "section-description"));
       for (const extra of lesson.extension) {
         element.append(node("h3", `${extra.title} · about ${extra.minutes} min`), prose(extra.blocks));
@@ -375,7 +397,7 @@
         for (const point of lesson.interview.points) list.append(renderBlocks(node("li"), point));
         details.append(list); element.append(details);
       }
-      element.append(node("p", "Answer out loud in about two minutes first. For a graded round, send /interview in the bot.", "section-description"));
+      element.append(node("p", `Answer out loud in about two minutes first. For a graded round, send /interview ${IN_BOT}.`, "section-description"));
       body.append(element);
     }
     const references = (lesson.references || []).filter(url => /^https:\/\/[A-Za-z0-9.-]+\//.test(url));
@@ -401,31 +423,40 @@
     }
     const ratings = {up: "Useful", down: "Not useful"};
     $("lesson-feedback").textContent = lesson.feedback in ratings
-      ? `You rated this lesson “${ratings[lesson.feedback]}”. You can change it with the buttons at the end of the lesson in Telegram.`
-      : "Rate this lesson with the buttons at the end of the lesson in Telegram. Only the button you pick is stored.";
+      ? `You rated this lesson “${ratings[lesson.feedback]}”. You can change it with the buttons at the end of the lesson ${WHERE}.`
+      : `Rate this lesson with the buttons at the end of the lesson ${WHERE}. Only the button you pick is stored.`;
     $("lesson-feedback").hidden = !lesson.available || lesson.library;
     $("lesson-status").hidden = true;
     $("lesson-page").hidden = false;
   }
+  // How private requests prove who is asking: Telegram launch data, or in web mode the /web session
+  // cookie plus its CSRF token. Never a learner ID.
+  function identity(body) {
+    if (WEB) {
+      return {credentials: "same-origin", body: JSON.stringify(body),
+              headers: {"Content-Type": "application/json", "X-CSRF-Token": webCsrf}};
+    }
+    return {credentials: "omit", body: JSON.stringify({init_data: app.initData, ...body}),
+            headers: {"Content-Type": "application/json"}};
+  }
   async function openLesson(id) {
     const isCourse = id.startsWith("course:"), topic = isCourse ? id.slice(7) : null;
-    if (!authenticated || !app || !app.initData || (isCourse ? !TOPIC.test(topic) : !LESSON.test(id))) return;
+    if (!authenticated || !(WEB ? webCsrf : app && app.initData) || (isCourse ? !TOPIC.test(topic) : !LESSON.test(id))) return;
     wantedLesson = id; shownLesson = null;
     if (lessonController) lessonController.abort();
     const token = lessonController = new AbortController(), requestEpoch = epoch;
     $("content").hidden = true; $("lesson-view").hidden = false;
     lessonStatus("Opening your lesson…");
-    if (app.BackButton) app.BackButton.show();
+    if (app && app.BackButton) app.BackButton.show();
     window.scrollTo(0, 0);
     try {
       const response = await fetch(isCourse ? "/app/course" : "/app/lesson", {
-        method: "POST", cache: "no-store", credentials: "omit", signal: token.signal,
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(isCourse ? {init_data: app.initData, topic} : {init_data: app.initData, lesson: id}),
+        method: "POST", cache: "no-store", signal: token.signal,
+        ...identity(isCourse ? {topic} : {lesson: id}),
       });
       const data = await response.json();
       if (requestEpoch !== epoch || token.signal.aborted) return;
-      if (response.status === 403) { clearPrivate(data.error || "Session expired. Reopen /dashboard from the bot.", true); return; }
+      if (response.status === 403) { clearPrivate(data.error || `Session expired. ${REOPEN}`, true); return; }
       shownLesson = id;
       if (!response.ok) { lessonStatus(data.error || "This lesson could not be opened.", true); return; }
       renderLesson(data.lesson);
@@ -447,7 +478,7 @@
     const details = node("details");
     details.append(node("summary", route.label));
     if (route.route === "scenario") {
-      details.append(node("p", "Runs inside the bot: four decisions with explanations. Pass with 3 of 4. Free, no cloud account.", "task-detail"));
+      details.append(node("p", `Runs ${WEB ? "in your conversation" : "inside the bot"}: four decisions with explanations. Pass with 3 of 4. Free, no cloud account.`, "task-detail"));
       const command = node("span", undefined, "task-command");
       command.append(node("code", `/lab ${lab.lab_id}`));
       details.append(command);
@@ -501,7 +532,7 @@
     $("resource-more").hidden = items.length <= resourceLimit;
     if (!items.length) empty("resource-list", resourceCatalog.length
       ? "No matching resources. Try a broader topic or change the filters."
-      : "The resource library is unavailable in this view. Tap Refresh or use /resources in the bot.");
+      : `The resource library is unavailable in this view. Tap Refresh or use /resources ${IN_BOT}.`);
   }
   function renderLabs(labs) {
     for (const id of ["lab-items", "lab-catalog"]) $(id).replaceChildren();
@@ -531,7 +562,7 @@
       item.append(node("p", lab.goal, "lab-reason"));
       if (lab.reason) item.append(node("p", "Last check: " + lab.reason, "lab-reason"));
       if (lab.status === "verified") {
-        if (lab.cleanup === "reminder") item.append(node("p", `Delete the AWS resources to avoid charges, then send /labcleanup ${lab.lab_id} <your verified link> in the bot.`, "lab-reason"));
+        if (lab.cleanup === "reminder") item.append(node("p", `Delete the AWS resources to avoid charges, then send /labcleanup ${lab.lab_id} <your verified link> ${IN_BOT}.`, "lab-reason"));
         if (lab.cleanup === "confirmed") item.append(node("p", "AWS cleanup confirmed.", "lab-reason"));
         $("lab-items").append(item);
         return;
@@ -570,7 +601,7 @@
       }
       $("lab-items").append(item);
     });
-    if (!labs.items.length) empty("lab-items", "No labs yet. Approved lessons add labs here; the bot also lists them with /labs.");
+    if (!labs.items.length) empty("lab-items", `No labs yet. Approved lessons add labs here; ${WEB ? "send /labs in your conversation to list them" : "the bot also lists them with /labs"}.`);
     const assigned = new Set(labs.items.map(lab => lab.lab_id));
     for (const lab of labs.catalog.filter(entry => !assigned.has(entry.lab_id))) {
       const item = node("li");
@@ -644,7 +675,10 @@
       ? `${proposed.approved ? "Approved" : "Awaiting your approval"} · version ${proposed.version} · ${proposed.minutes} minutes/session target`
       : `Setup: ${data.learning ? data.learning.stage : "existing learning"}`;
     $("plan-rationale").textContent = proposed ? proposed.rationale : "";
-    if (data.bot_url && /^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(data.bot_url)) {
+    if (WEB) {
+      $("plan-bot-link").href = "/web#start=" + (proposed ? "plan" : "onboard");
+      $("plan-bot-link").hidden = false;
+    } else if (data.bot_url && /^https:\/\/t\.me\/[A-Za-z0-9_]{5,32}$/.test(data.bot_url)) {
       $("plan-bot-link").href = data.bot_url + "?start=" + (proposed ? "plan" : "onboard");
       $("plan-bot-link").hidden = false;
     }
@@ -691,7 +725,7 @@
       item.append(node("p", interview.feedback, "interview-feedback"));
       $("interviews").append(item);
     }
-    if (!data.recent_interviews.length) empty("interviews", "No graded interviews yet. Try /interview in the bot.");
+    if (!data.recent_interviews.length) empty("interviews", `No graded interviews yet. Try /interview ${IN_BOT}.`);
     const awaiting = data.learning && data.learning.stage !== "legacy" && !data.learning.active_plan_id;
     $("preferences").textContent = `Scheduled coaching ${data.preferences.paused ? "paused" : awaiting ? "waiting for plan approval" : "active"} · Media: ${data.preferences.media} · Voice: ${data.preferences.voice ? "on" : "off"}`;
     $("updated").textContent = `Updated ${new Date(data.generated_at).toLocaleString()}`;
@@ -699,14 +733,15 @@
     $("content").hidden = Boolean(wantedLesson);
     authenticated = true;
     clearTimeout(expiryTimer); clearTimeout(warningTimer);
-    const remaining = data.auth_expires_at * 1000 - Date.now();
+    // A web session can last days; setTimeout fires at once beyond about 24.8 days, so clamp.
+    const remaining = Math.min(data.auth_expires_at * 1000 - Date.now(), 2 ** 31 - 1);
     warningTimer = setTimeout(() => {
       if (!authenticated) return;
-      $("notice").textContent = "This private view closes in about 2 minutes. Reopen /dashboard from the bot to keep going.";
+      $("notice").textContent = `This private view closes in about 2 minutes. ${REOPEN}`;
       $("notice").classList.remove("error");
       $("notice").hidden = false;
     }, Math.max(0, remaining - 120000));
-    expiryTimer = setTimeout(() => clearPrivate("For privacy, this view has closed. Reopen /dashboard from the bot."),
+    expiryTimer = setTimeout(() => clearPrivate(`For privacy, this view has closed. ${REOPEN}`),
                              Math.max(0, remaining));
     if (wantedLesson && shownLesson !== wantedLesson) openLesson(wantedLesson);
   }
@@ -727,7 +762,7 @@
   });
   async function refresh() {
     if (uploadBusy || labBusy) return;
-    if (!app || !app.initData) {
+    if (!WEB && (!app || !app.initData)) {
       clearPrivate("Open this private dashboard using /dashboard in the Telegram bot. A shared URL alone cannot grant access.");
       $("refresh").disabled = true;
       return;
@@ -738,15 +773,26 @@
     $("refresh").disabled = true;
     $("refresh").textContent = "Refreshing…";
     try {
+      if (WEB && !webCsrf) {
+        // The signed-in /web session supplies the CSRF token; its cookie never reaches script.
+        const session = await fetch("/web/session", {cache: "no-store", credentials: "same-origin", signal: activeController.signal});
+        const signedIn = await session.json();
+        if (requestEpoch !== epoch || activeController.signal.aborted) return;
+        if (!session.ok || typeof signedIn.csrf !== "string" || !/^[0-9a-f]{64}$/.test(signedIn.csrf)) {
+          clearPrivate(session.status === 403 ? "Sign in to SkillCoach on the web to see your private progress."
+            : signedIn.error || "Could not check your sign-in. Tap Refresh shortly.", session.status !== 403);
+          return;
+        }
+        webCsrf = signedIn.csrf;
+      }
       const response = await fetch("/app/data", {
-        method: "POST", cache: "no-store", credentials: "omit",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({init_data: app.initData}), signal: activeController.signal,
+        method: "POST", cache: "no-store", signal: activeController.signal, ...identity({}),
       });
       const data = await response.json();
       if (requestEpoch !== epoch || activeController.signal.aborted) return;
       if (!response.ok) {
-        clearPrivate(data.error || "Access could not be verified. Reopen the dashboard from Telegram.", true);
+        clearPrivate(data.error || (WEB ? "Could not verify your sign-in. Sign in again on the web."
+          : "Access could not be verified. Reopen the dashboard from Telegram."), true);
         return;
       }
       render(data);
@@ -765,14 +811,15 @@
     if (slot === "lab") labController = token;
     else if (slot === "exercise") exerciseController = token;
     else uploadController = token;
-    const options = {method: "POST", cache: "no-store", credentials: "omit", signal: token.signal,
-      headers: {"X-Telegram-Init-Data": app.initData, "X-CSRF-Token": documentCsrf}, body};
+    const options = {method: "POST", cache: "no-store", signal: token.signal, body,
+      ...(WEB ? {credentials: "same-origin", headers: {"X-CSRF-Token": documentCsrf}}
+        : {credentials: "omit", headers: {"X-Telegram-Init-Data": app.initData, "X-CSRF-Token": documentCsrf}})};
     if (json) { options.headers["Content-Type"] = "application/json"; options.body = JSON.stringify(body); }
     const response = await fetch(path, options);
     const data = await response.json();
     if (requestEpoch !== epoch || token.signal.aborted) return null;
     if (!response.ok) {
-      if (response.status === 403) clearPrivate("Session expired. Reopen /dashboard from the bot to continue.");
+      if (response.status === 403) clearPrivate(`Session expired. ${REOPEN}`);
       throw new Error(data.error || "Request failed. Retry the same request.");
     }
     return data;
@@ -797,8 +844,8 @@
       delete labRequests[assignmentId];
       submitted = true;
       $("lab-status").textContent = result.duplicate
-        ? "That check was already submitted. The bot sends its result in Telegram."
-        : "Check submitted. The bot sends the result in Telegram, and this page updates.";
+        ? `That check was already submitted. ${WEB ? "Your coach posts its result in your conversation." : "The bot sends its result in Telegram."}`
+        : `Check submitted. ${WEB ? "Your coach posts the result in your conversation" : "The bot sends the result in Telegram"}, and this page updates.`;
     } catch (error) {
       if (requestEpoch === epoch) $("lab-status").textContent = (error.message || "Connection interrupted.") + " Check link again retries the same request.";
     } finally {
@@ -856,7 +903,7 @@
       if (!result) return;
       invalidateUpload(); $("document-file").value = "";
       $("document-status").textContent = result.cancelled ? "Upload cancelled. Your previous document is unchanged."
-        : "Update queued safely. The bot will confirm when saved. Your learning history will not be reset.";
+        : `Update queued safely. ${WEB ? "Your coach confirms in your conversation" : "The bot will confirm"} when saved. Your learning history will not be reset.`;
     } catch (error) {
       if (requestEpoch === epoch) $("document-status").textContent = error.message || "Connection interrupted. Retry the same confirmation.";
     } finally {
@@ -883,7 +930,7 @@
   document.addEventListener("visibilitychange", () => {
     // Switching to the chat keeps what the learner is reading; only in-flight private work is cancelled.
     if (document.hidden) cancelPrivateWork();
-    else if (authenticated || app) refresh();
+    else if (authenticated || app || WEB) refresh();
   });
   setInterval(() => { if (!document.hidden && authenticated) refresh(); }, 60000);
   refresh();

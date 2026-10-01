@@ -40,6 +40,7 @@ jobs:
       - run: npm run test:admin
       - run: npm run test:join
       - run: npm run test:web
+      - run: npm run test:webdash
       - name: Render authored diagrams and check animated media locally
         run: |
           export PATH="$PWD/node_modules/.bin:$PATH"

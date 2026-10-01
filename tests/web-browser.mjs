@@ -146,6 +146,7 @@ try {
     await page.waitForFunction(() => !document.getElementById("signin").hidden);
     assert.equal(await page.$eval("#chat", e => e.hidden), true);
     assert.equal(await page.$eval("#logout", e => e.hidden), true);
+    assert.equal(await page.$eval("#dashboard-link", e => e.hidden), true);
     assert.equal(await page.$eval("#notice", e => e.hidden), true);
     if (shots) await page.screenshot({path: join(shots, `web-signin-${label}.png`)});
     // Email step: client-side validation, a rate-limit message, then the code step.
@@ -171,6 +172,9 @@ try {
     await page.waitForFunction(() => document.querySelectorAll("#feed .message").length === 2);
     assert.equal(await page.$eval("#signin", e => e.hidden), true);
     assert.equal(await page.$eval("#logout", e => e.hidden), false);
+    assert.equal(await page.$eval("#dashboard-link", e => e.hidden), false);
+    assert.equal(await page.$eval("#dashboard-link", e => e.getAttribute("href")), "/web/dashboard");
+    assert.equal(await page.$eval("#start-prompt", e => e.hidden), true);
     // Untrusted text stays text; only safe HTTPS links become links.
     assert.equal(await page.$$eval("#feed img, #feed script", e => e.length), 0);
     assert.equal(await page.evaluate(() => window.pwnedWeb), undefined);
@@ -246,6 +250,7 @@ try {
     assert.equal(state.authenticated, false);
     assert.equal(await page.$$eval("#feed > li", e => e.length), 0);
     assert.equal(await page.$eval("#notice", e => e.textContent), "Signed out.");
+    assert.equal(await page.$eval("#dashboard-link", e => e.hidden), true);
     await page.close();
     console.log(`Web ${label} sign-in, conversation, retry, lesson reader and sign-out checks passed.`);
   }
@@ -294,6 +299,69 @@ try {
     assert.equal(await joinPage.$eval("#join-submit", e => e.disabled), true);
     await joinPage.close();
     console.log(`Web ${label} join by invitation checks passed.`);
+  }
+  // A dashboard action arrives as #start=<payload>: it leaves the address at once and waits for one tap.
+  const signIn = async tab => {
+    await tab.$eval("#email", e => { e.value = ""; });
+    await tab.type("#email", "learner@example.test");
+    await tab.click("#email-submit");
+    await tab.waitForFunction(() => !document.getElementById("code-form").hidden);
+    await tab.type("#code", "123456");
+    await tab.click("#code-submit");
+    await tab.waitForFunction(() => !document.getElementById("chat").hidden);
+  };
+  for (const [label, width] of [["mobile", 390], ["desktop", 1100]]) {
+    resetState();
+    const tab = await browser.newPage();
+    tab.on("pageerror", error => { throw error; });
+    await tab.setViewport({width, height: 860, deviceScaleFactor: 1});
+    await tab.emulateMediaFeatures([{name: "prefers-reduced-motion", value: "reduce"}]);
+    await tab.setRequestInterception(true);
+    tab.on("request", request => request.url().startsWith(origin) ? request.continue() : request.abort());
+    await tab.goto(`${origin}/web#start=quiz_${LESSON_ID}`);
+    await tab.waitForFunction(() => !document.getElementById("signin").hidden);
+    assert.equal(await tab.evaluate(() => location.href), origin + "/web");
+    assert.equal(await tab.$eval("#start-prompt", e => e.hidden), true);
+    await signIn(tab);
+    await tab.waitForFunction(() => !document.getElementById("start-prompt").hidden);
+    assert.equal(await tab.$eval("#start-text", e => e.textContent), "Open the quiz you picked on your dashboard.");
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(state.sends.length, 0, "a dashboard action is never sent by itself");
+    assert.ok(await noOverflow(tab));
+    if (shots) await tab.screenshot({path: join(shots, `web-start-${label}.png`)});
+    await tab.click("#start-go");
+    await tab.waitForFunction(id => document.getElementById("feed").textContent.includes(`Reply to /start quiz_${id}`), {}, LESSON_ID);
+    assert.deepEqual(state.sends.map(({text}) => text), [`/start quiz_${LESSON_ID}`]);
+    assert.equal(await tab.$eval("#start-prompt", e => e.hidden), true);
+    // Already signed in: an action opened in this tab only changes the fragment. Not now discards it.
+    await tab.evaluate(() => { location.hash = "#start=plan"; });
+    await tab.waitForFunction(() => !document.getElementById("start-prompt").hidden);
+    assert.equal(await tab.evaluate(() => location.href), origin + "/web");
+    assert.equal(await tab.$eval("#start-text", e => e.textContent), "Review, change or approve your weekly plan.");
+    await tab.click("#start-dismiss");
+    assert.equal(await tab.$eval("#start-prompt", e => e.hidden), true);
+    assert.equal(state.sends.length, 1);
+    // Signing out forgets a waiting action.
+    await tab.evaluate(() => { location.hash = "#start=review"; });
+    await tab.waitForFunction(() => !document.getElementById("start-prompt").hidden);
+    await tab.click("#logout");
+    await tab.waitForFunction(() => !document.getElementById("signin").hidden);
+    await signIn(tab);
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(await tab.$eval("#start-prompt", e => e.hidden), true);
+    assert.equal(state.sends.length, 1);
+    await tab.close();
+    // A malformed action is removed from the address and ignored.
+    const damaged = await browser.newPage();
+    damaged.on("pageerror", error => { throw error; });
+    await damaged.goto(`${origin}/web#start=bad%20payload!`);
+    await damaged.waitForFunction(() => !document.getElementById("chat").hidden);
+    assert.equal(await damaged.evaluate(() => location.href), origin + "/web");
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(await damaged.$eval("#start-prompt", e => e.hidden), true);
+    await damaged.close();
+    assert.ok(state.urls.every(url => !url.includes("start=") && !url.includes("quiz_")), "actions never reach a URL");
+    console.log(`Web ${label} dashboard action hand-off checks passed.`);
   }
   console.log("Web app browser checks passed.");
 } finally {

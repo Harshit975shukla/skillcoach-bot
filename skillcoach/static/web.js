@@ -14,6 +14,9 @@
   // A web invitation token lives only in memory: it is read from the address fragment, which is
   // removed at once, and is sent only in the body of the join request.
   let invite = "", joinDetails = null, joinTimer = null;
+  // A dashboard action arrives as /web#start=<payload>. It is removed from the address at once and
+  // offered as one tap after sign-in; it is never sent by itself.
+  let pendingStart = "";
   const controllers = new Set();
 
   function notice(text, error = false) {
@@ -39,6 +42,7 @@
   function show(view) {
     for (const id of ["signin", "join", "chat", "reader"]) $(id).hidden = id !== view;
     $("logout").hidden = !["chat", "reader"].includes(view);
+    $("dashboard-link").hidden = $("logout").hidden;
   }
   function reset() {
     epoch += 1;
@@ -49,6 +53,7 @@
     $("feed").replaceChildren(); $("lesson-body").replaceChildren();
     $("lesson-title").textContent = ""; $("lesson-meta").textContent = "";
     $("message").value = ""; $("older").hidden = true; $("working").hidden = true;
+    $("start-prompt").hidden = true;
     updateControls();
   }
 
@@ -204,8 +209,35 @@
     reset();
     csrf = session.csrf;
     show("chat"); notice("");
+    offerStart();
     loadFeed(true);
   }
+  function takeStart() {
+    // Strip the fragment before anything else; keep only a well-formed payload, in memory.
+    const match = /^#start=([A-Za-z0-9_-]{1,64})$/.exec(location.hash);
+    history.replaceState(null, "", location.pathname);
+    if (match) pendingStart = match[1];
+  }
+  function offerStart() {
+    if (!pendingStart || !csrf) return;
+    const p = pendingStart;
+    $("start-text").textContent = p.startsWith("quiz_") ? "Open the quiz you picked on your dashboard."
+      : p === "review" ? "Start the review you picked on your dashboard."
+      : p === "resume" ? "Continue your assessment where you left off."
+      : p.startsWith("cert_") ? "Open the certification practice you picked."
+      : p.startsWith("capstone_") ? "Open the capstone you picked."
+      : p === "plan" ? "Review, change or approve your weekly plan."
+      : p === "onboard" ? "Start your guided setup."
+      : "Continue from your dashboard.";
+    $("start-prompt").hidden = false;
+  }
+  $("start-go").addEventListener("click", () => {
+    if (!pendingStart || sending || !csrf) return;
+    const command = "/start " + pendingStart;
+    pendingStart = ""; $("start-prompt").hidden = true;
+    send({text: command}, command);
+  });
+  $("start-dismiss").addEventListener("click", () => { pendingStart = ""; $("start-prompt").hidden = true; });
   function sessionEnded(message) {
     signInView(message || "Your session ended. Sign in again with your email.");
   }
@@ -532,6 +564,7 @@
   // Session ----------------------------------------------------------------------------------
   $("logout").addEventListener("click", async () => {
     reset();
+    pendingStart = "";
     try { await call("/web/logout", {}); }
     catch { /* The page is already cleared; an unreachable server keeps the cookie until it expires. */ }
     signInView("Signed out.");
@@ -551,6 +584,7 @@
       if (!match) $("join-submit").disabled = true;
       return;
     }
+    if (fragment.startsWith("#start=")) takeStart();
     try {
       const result = await call("/web/session", null, {method: "GET"});
       if (requestEpoch !== epoch) return;
@@ -562,7 +596,10 @@
       notice("SkillCoach could not be reached. Check your connection and reload.", true);
     }
   }
-  // An invitation opened in a tab that is already on this page only changes the fragment.
-  window.addEventListener("hashchange", () => { if (location.hash.startsWith("#invite=")) boot(); });
+  // An invitation or dashboard action opened in a tab already on this page only changes the fragment.
+  window.addEventListener("hashchange", () => {
+    if (location.hash.startsWith("#invite=")) boot();
+    else if (location.hash.startsWith("#start=")) { takeStart(); offerStart(); }
+  });
   boot();
 })();

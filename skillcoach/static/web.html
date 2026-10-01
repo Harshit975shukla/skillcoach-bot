@@ -24,7 +24,10 @@
   <main class="workspace web-workspace">
     <header class="header">
       <a class="brand" href="/web">SkillCoach</a>
-      <button id="logout" type="button" hidden>Sign out</button>
+      <div class="header-actions">
+        <a id="dashboard-link" class="header-link" href="/web/dashboard" hidden>Dashboard</a>
+        <button id="logout" type="button" hidden>Sign out</button>
+      </div>
     </header>
     <div id="notice" class="notice" role="status" aria-live="polite">Loading SkillCoach…</div>
 
@@ -98,6 +101,13 @@
       <ol id="feed" class="feed" role="log" aria-live="polite" aria-label="Messages"></ol>
       <p id="working" class="working" role="status" hidden>Your coach is working on it…</p>
       <form id="composer" class="composer">
+        <div id="start-prompt" class="start-prompt" role="group" aria-labelledby="start-text" hidden>
+          <p id="start-text" role="status"></p>
+          <div class="start-actions">
+            <button id="start-go" class="primary" type="button">Continue</button>
+            <button id="start-dismiss" type="button">Not now</button>
+          </div>
+        </div>
         <div class="quick" role="group" aria-label="Shortcuts">
           <button type="button" data-command="/today">Today</button>
           <button type="button" data-command="/quizzes">Quizzes</button>

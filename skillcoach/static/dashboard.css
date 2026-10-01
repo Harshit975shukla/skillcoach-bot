@@ -21,8 +21,14 @@ button:focus-visible, a:focus-visible, summary:focus-visible {
   outline: 3px solid var(--accent); outline-offset: 4px;
 }
 .workspace { max-width: 900px; margin: 0 auto; padding: 0 24px 40px; }
-.header { display: flex; justify-content: space-between; align-items: center; min-height: 84px; gap: 20px; }
+.header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; min-height: 84px; gap: 8px 20px; }
 .brand { font-size: 1.125rem; font-weight: 750; text-decoration: none; color: var(--ink); }
+.header-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.header-link {
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0 12px;
+  font-weight: 650; text-decoration: none; border-radius: 8px;
+}
+.header-link:hover { background: var(--soft); }
 button {
   min-height: 44px; padding: 9px 18px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--surface); color: var(--accent); font: inherit; font-weight: 650; cursor: pointer;

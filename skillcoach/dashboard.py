@@ -6,6 +6,7 @@ import json
 import math
 import re
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from urllib.parse import parse_qsl
 
 from skillcoach.clients import ExternalError
@@ -92,6 +93,57 @@ def authorize_learner(repo, actor: int, issued: int, auth_hash: str):
 
 
 def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narration_enabled=False, config=None):
+    _, state = authorize_learner(repo, actor, issued, auth_hash)
+    return progress_view(
+        state, now, issued + LEARNER_AUTH_AGE, narration_enabled=narration_enabled, config=config
+    )
+
+
+def web_identity(runtime, request):
+    """The learner signed in to /web, for the dashboard in web mode: the same cookie, CSRF token,
+    same-origin check, access generation and email binding as /web. A learner ID in a URL or body
+    is never accepted. Returns the learner, access generation, an identity hash bound to this browser
+    session (for document previews), the session expiry and the learner's state."""
+    from skillcoach.adoption import record_usage
+    from skillcoach.web_channel import WebDenied, authenticate, csrf_token, digest
+
+    if not runtime.config.web_mode:
+        raise DashboardDenied("Open this dashboard from the bot.")
+    try:
+        session, token = authenticate(request, runtime, mutate=True)
+    except WebDenied as exc:
+        raise DashboardDenied(str(exc)) from None
+    auth_hash = "web:" + digest(token)
+    now = runtime.clock()
+    with runtime.repo.connection() as conn:
+        row = conn.execute(
+            "SELECT l.id,l.status,l.generation,c.body FROM learners l JOIN coach_state c ON c.learner_id=l.id "
+            "WHERE l.id=%s FOR SHARE OF l",
+            (session["learner_id"],),
+        ).fetchone()
+        if not row or row["status"] != "active" or row["generation"] != session["access_generation"]:
+            raise DashboardDenied("Your session ended. Sign in again with your email.")
+        conn.execute("DELETE FROM dashboard_sessions WHERE expires_at<%s", (now,))
+        opened = conn.execute(
+            "INSERT INTO dashboard_sessions(auth_hash,learner_id,access_generation,expires_at) "
+            "VALUES (%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING auth_hash",
+            (auth_hash, row["id"], row["generation"], session["expires_at"]),
+        ).fetchone()
+        if opened:
+            # Counted once per web session, like once per Telegram launch.
+            record_usage(conn, row["id"], "dashboard_open", now)
+
+    return SimpleNamespace(
+        learner=row["id"],
+        generation=row["generation"],
+        auth_hash=auth_hash,
+        expires_at=int(session["expires_at"].timestamp()),
+        state=State.model_validate(row["body"]),
+        csrf=csrf_token(runtime.config, token),
+    )
+
+
+def progress_view(state, now, auth_expires_at: int, *, narration_enabled=False, config=None):
     from skillcoach.capstones import CAPSTONES
     from skillcoach.certifications import cert_view
     from skillcoach.course_library import index
@@ -103,7 +155,6 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
     from skillcoach.resources import library_view
     from skillcoach.timeutil import study_day
 
-    _, state = authorize_learner(repo, actor, issued, auth_hash)
     profile = state.profile
     today = now.astimezone(IST).date()
     plan = state.plans.get(monday(today).isoformat())
@@ -190,7 +241,7 @@ def learner_view(repo, actor: int, issued: int, now, auth_hash: str, *, narratio
             for i in recent[:5]
         ],
         "generated_at": now.isoformat(),
-        "auth_expires_at": issued + LEARNER_AUTH_AGE,
+        "auth_expires_at": auth_expires_at,
         "private": True,
         "documents": {
             "resume_saved": bool(profile and profile.resume_text),
@@ -236,13 +287,42 @@ def register_dashboard(app, runtime_factory):
     def dashboard_page():
         return app.send_static_file("dashboard.html")
 
+    def identify(runtime, body):
+        """(learner, state, expiry) from Telegram launch data in the body, or else, in web mode only,
+        from the signed-in /web session. Telegram mode keeps requiring launch data."""
+        if "init_data" in body:
+            actor, issued = verify_init_data(
+                body["init_data"],
+                runtime.config.telegram_token,
+                int(runtime.clock().timestamp()),
+                LEARNER_AUTH_AGE,
+            )
+            digest = hashlib.sha256(body["init_data"].encode()).hexdigest()
+            learner, state = authorize_learner(runtime.repo, actor, issued, digest)
+            return learner, state, issued + LEARNER_AUTH_AGE
+        who = web_identity(runtime, request)
+        return who.learner, who.state, who.expires_at
+
     @app.post("/app/data")
     def dashboard_data():
         try:
             runtime = runtime_factory()
             body = request.get_json(silent=True)
-            if request.args or not isinstance(body, dict) or set(body) != {"init_data"}:
+            if request.args or not isinstance(body, dict) or set(body) not in ({"init_data"}, set()):
                 raise DashboardDenied("Open this dashboard from the bot.")
+            if not body:
+                # Web mode: the learner signed in to /web; nothing in the request says who.
+                with runtime.repo.session():
+                    who = web_identity(runtime, request)
+                    data = progress_view(
+                        who.state,
+                        runtime.clock(),
+                        who.expires_at,
+                        narration_enabled=runtime.config.narration_enabled,
+                        config=runtime.config,
+                    )
+                data.update(bot_url=None, web=True, document_csrf=who.csrf)
+                return jsonify(data)
             actor, issued = verify_init_data(
                 body["init_data"],
                 runtime.config.telegram_token,
@@ -281,23 +361,18 @@ def register_dashboard(app, runtime_factory):
         try:
             runtime = runtime_factory()
             body = request.get_json(silent=True)
-            if request.args or not isinstance(body, dict) or set(body) != {"init_data", "topic"}:
+            if (
+                request.args
+                or not isinstance(body, dict)
+                or set(body) not in ({"init_data", "topic"}, {"topic"})
+            ):
                 raise DashboardDenied("Open this course from the bot.")
-            actor, issued = verify_init_data(
-                body["init_data"],
-                runtime.config.telegram_token,
-                int(runtime.clock().timestamp()),
-                LEARNER_AUTH_AGE,
-            )
-            digest = hashlib.sha256(body["init_data"].encode()).hexdigest()
             with runtime.repo.session():
-                learner, _ = authorize_learner(runtime.repo, actor, issued, digest)
+                learner, _, expires_at = identify(runtime, body)
                 if not isinstance(body["topic"], str) or body["topic"] not in TOPICS:
                     return jsonify(error="Choose a topic from the lesson library."), 404
                 count_open(runtime, learner, "course_page")
-            return jsonify(
-                lesson=page(body["topic"]), auth_expires_at=issued + LEARNER_AUTH_AGE, private=True
-            )
+            return jsonify(lesson=page(body["topic"]), auth_expires_at=expires_at, private=True)
         except DashboardDenied as exc:
             return jsonify(error=str(exc)), 403
         except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
@@ -310,24 +385,21 @@ def register_dashboard(app, runtime_factory):
         try:
             runtime = runtime_factory()
             body = request.get_json(silent=True)
-            if request.args or not isinstance(body, dict) or set(body) != {"init_data", "lesson"}:
+            if (
+                request.args
+                or not isinstance(body, dict)
+                or set(body) not in ({"init_data", "lesson"}, {"lesson"})
+            ):
                 raise DashboardDenied("Open this lesson from the bot.")
             if not isinstance(body["lesson"], str) or not LESSON_ID.fullmatch(body["lesson"]):
                 return jsonify(error="That lesson link is not valid."), 404
-            actor, issued = verify_init_data(
-                body["init_data"],
-                runtime.config.telegram_token,
-                int(runtime.clock().timestamp()),
-                LEARNER_AUTH_AGE,
-            )
-            digest = hashlib.sha256(body["init_data"].encode()).hexdigest()
             with runtime.repo.session():
-                learner, state = authorize_learner(runtime.repo, actor, issued, digest)
+                learner, state, expires_at = identify(runtime, body)
                 data = page(runtime.repo.for_learner(learner), state, body["lesson"], runtime.clock())
                 if data is None:
                     return jsonify(error="This lesson is not in your learning history."), 404
                 count_open(runtime, learner, "lesson_page")
-            return jsonify(lesson=data, auth_expires_at=issued + LEARNER_AUTH_AGE, private=True)
+            return jsonify(lesson=data, auth_expires_at=expires_at, private=True)
         except DashboardDenied as exc:
             return jsonify(error=str(exc)), 403
         except (ConfigurationError, ValidationError, ExternalError, *STORAGE_ERRORS):
@@ -336,10 +408,14 @@ def register_dashboard(app, runtime_factory):
     def document_identity(runtime):
         from skillcoach.admin_auth import same_origin
 
+        raw = request.headers.get("X-Telegram-Init-Data", "")
+        if not raw and runtime.config.web_mode:
+            # Web mode: the /web session, its CSRF token and same-origin check, bound to this browser.
+            who = web_identity(runtime, request)
+            return who.learner, who.generation, who.auth_hash
         same_origin(request)
         if request.args:
             raise DashboardDenied("Document requests cannot contain URL parameters.")
-        raw = request.headers.get("X-Telegram-Init-Data", "")
         actor, issued = verify_init_data(
             raw, runtime.config.telegram_token, int(runtime.clock().timestamp()), LEARNER_AUTH_AGE
         )
@@ -531,14 +607,13 @@ def register_dashboard(app, runtime_factory):
             response.headers["Pragma"] = "no-cache"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["X-Content-Type-Options"] = "nosniff"
-            # The web app is never framed; Telegram Mini App pages may be embedded by Telegram only.
-            ancestors = (
-                "'none'"
-                if request.path.startswith(("/web", "/static/web"))
-                else "https://web.telegram.org https://*.telegram.org"
-            )
+            # The web app is never framed and runs no third-party script; Telegram Mini App pages may
+            # be embedded by Telegram only and load Telegram's script.
+            web = request.path.startswith(("/web", "/static/web"))
+            ancestors = "'none'" if web else "https://web.telegram.org https://*.telegram.org"
+            scripts = "'self'" if web else "'self' https://telegram.org"
             response.headers["Content-Security-Policy"] = (
-                "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self'; "
+                f"default-src 'self'; script-src {scripts}; style-src 'self'; "
                 "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
                 "frame-ancestors " + ancestors
             )

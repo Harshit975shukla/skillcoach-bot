@@ -1,7 +1,11 @@
 """Browser routes for web + email mode. Every endpoint except the static page answers 404 unless
 DELIVERY_CHANNEL=web, so the Telegram deployment is unchanged by default."""
 
+import re
 from functools import wraps
+from pathlib import Path
+
+TELEGRAM_SCRIPT = re.compile(r'[ \t]*<script src="https://telegram\.org/[^"]*"[^>]*></script>\r?\n?')
 
 
 def register_web(app, runtime_factory):
@@ -77,6 +81,19 @@ def register_web(app, runtime_factory):
     @app.get("/web")
     def web_page():
         return app.send_static_file("web.html")
+
+    @app.get("/web/dashboard")
+    @endpoint
+    def web_dashboard():
+        """The private dashboard for web learners: the Mini App page without Telegram's script, so no
+        third-party code runs beside private progress. Its data still needs the /web session."""
+        runtime_on()
+        page = TELEGRAM_SCRIPT.sub(
+            "", (Path(app.static_folder) / "dashboard.html").read_text(encoding="utf-8")
+        )
+        if "telegram.org" in page:
+            raise ConfigurationError("The web dashboard page must not load Telegram's script.")
+        return page, 200, {"Content-Type": "text/html; charset=utf-8"}
 
     @app.get("/web/session")
     @endpoint

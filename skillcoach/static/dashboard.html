@@ -17,7 +17,10 @@
   <main class="workspace">
     <header class="header">
       <a class="brand" href="#today" aria-label="SkillCoach learning overview">SkillCoach</a>
-      <button type="button" id="refresh">Refresh</button>
+      <div class="header-actions">
+        <a id="chat-link" class="header-link" href="/web" hidden>Chat</a>
+        <button type="button" id="refresh">Refresh</button>
+      </div>
     </header>
     <div id="notice" class="notice" role="status" aria-live="polite">Verifying your Telegram access…</div>
     <div id="content" hidden>
@@ -46,7 +49,7 @@
           <ul id="today-status" class="today-status"></ul>
         </div>
         <div class="section-heading"><h2 id="tasks-heading">Your next practice</h2><span id="task-count"></span></div>
-        <p id="setup-note" class="guidance" hidden>Start with <code>/onboard</code> in the bot. Documents are optional.
+        <p id="setup-note" class="guidance" hidden>Start with <code>/onboard</code> <span data-where>in the bot</span>. Documents are optional.
           Answer five diagnostic questions, then review and approve your plan before Day 1.</p>
         <p class="section-description">Newest first. Tap Done when you finish an exercise, or Skip to keep it as optional
           practice. Exercises older than a week move to “Earlier practice”.</p>
@@ -60,7 +63,7 @@
       <section id="quizzes" aria-labelledby="quizzes-heading">
         <div class="section-heading"><h2 id="quizzes-heading">Your quizzes</h2><span id="quiz-count"></span></div>
         <p class="section-description">Missed daily quizzes stay open until Sunday, 11:59 PM IST of their lesson week.
-          Start or resume in Telegram, one quiz at a time. Your saved answers are kept and completed scores are not reset.
+          Start or resume <span data-where>in Telegram</span>, one quiz at a time. Your saved answers are kept and completed scores are not reset.
           The Saturday assessment is separate.</p>
         <ol id="quiz-list" class="lesson-index"></ol>
       </section>
@@ -98,13 +101,13 @@
         <div class="section-heading"><h2 id="labs-heading">Hands-on labs</h2><span id="lab-count"></span></div>
         <p id="lab-gate" class="guidance" hidden></p>
         <p class="section-description">Quizzes and your next week's plan never wait for labs: unfinished required labs
-          carry forward. Every lab has a free in-app scenario in the bot; code labs run free on GitHub, and your own AWS
+          carry forward. Every lab has a free in-app scenario <span data-where>in the bot</span>; code labs run free on GitHub, and your own AWS
           account is optional.</p>
         <p id="lab-status" role="status" aria-live="polite"></p>
         <ol id="lab-items" class="task-list lab-list"></ol>
         <h3>Capstone projects</h3>
         <p class="section-description">Bigger, portfolio-worthy builds. Verified from your public GitHub repository:
-          the project files, a token file and a passing CI run. Open one in Telegram for the brief and your token.</p>
+          the project files, a token file and a passing CI run. Open one <span data-where>in Telegram</span> for the brief and your token.</p>
         <ol id="capstone-list" class="lesson-index"></ol>
         <p id="portfolio-status" class="section-description"></p>
         <h3 id="lab-catalog-heading">More labs you can start</h3>
@@ -115,7 +118,7 @@
         <h2 id="cert-heading">Certification prep</h2>
         <p class="section-description">Aim for an AWS, Kubernetes, Terraform or Linux certification. Domains and weights
           follow the official exam guides; practice questions are original and exam-style. Choose or change your exam and
-          practise in Telegram.</p>
+          practise <span data-where>in Telegram</span>.</p>
         <div id="cert-selected" class="roadmap" hidden>
           <p id="cert-title"></p>
           <p id="cert-format" class="task-meta"></p>
@@ -160,7 +163,7 @@
         <p class="section-description">Personalized from your profile and learning evidence. Dates use Asia/Kolkata.</p>
         <p id="plan-status" class="guidance"></p>
         <p id="plan-rationale" class="section-description"></p>
-        <a id="plan-bot-link" hidden rel="noopener noreferrer">Review, change or approve in Telegram</a>
+        <a id="plan-bot-link" hidden rel="noopener noreferrer">Review, change or approve <span data-where>in Telegram</span></a>
         <ol id="plan-days" class="plan-list"></ol>
       </section>
       <section id="progress" aria-labelledby="progress-heading">

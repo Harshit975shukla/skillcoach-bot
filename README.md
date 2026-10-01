@@ -30,7 +30,8 @@ Once a bundled walkthrough is delivered, its bot-specific Telegram media ID is r
 with the same voice/mode settings. Sharing a public course asset does not mark it expert-reviewed;
 personalized AI media stays learner-scoped.
 Course content in this public repository is public; private progress, answers and documents never belong
-in course packages. Opening the dashboard still requires current approved Telegram access.
+in course packages. Opening the dashboard still requires current approved Telegram access (in web mode,
+a signed-in `/web` session instead).
 Authenticated readiness checks validate every bundled module and report the installed curriculum
 version/counts, so a partial course-data upload cannot pass the deployment readiness gate.
 
@@ -66,7 +67,8 @@ and job descriptions at least 50. Encrypted/scanned PDFs, images, DOCX and non-U
 PDFs are processed locally in a short-lived bounded process (8-second wall limit; Linux CPU/address-space
 limits), without external OCR or persisted original files. Parser failures do not replace saved documents.
 
-Dashboard uploads require fresh verified Telegram launch data/current membership, same-origin POST,
+Dashboard uploads require fresh verified Telegram launch data (in web mode, the signed-in `/web`
+session)/current membership, same-origin POST,
 CSRF, and a five-minute preview bound to the document/session/profile/access generation. Confirmation
 is transactional and idempotent. Replays cannot create another update; changes during parsing or before
 processing cannot overwrite a newer profile. Preview text is cleared after confirmation/cancellation
@@ -808,8 +810,12 @@ only the transport changes:
   six-digit code sent to it. Codes expire in 10 minutes, work once in the requesting browser, allow
   five attempts and are limited to one a minute, five an hour and ten a day per address. Every valid
   address gets the same answer, with the same limits, after at least four seconds, and only registered
-  learners get an email, so the form does not reveal who is registered. Past 60 sign-in emails an hour,
-  registered addresses get the same answer without an email until the hour frees up; a flood of more
+  learners get an email, so the form does not reveal who is registered. Code emails for sign-in and
+  for invitations share one cap of 60 an hour. The cap counts reserved attempts, not only delivered
+  emails: a send is reserved, under a lock, before the email goes out, so simultaneous requests cannot
+  exceed it, and a failed, uncertain or abandoned attempt keeps counting until it is an hour old.
+  Unregistered addresses never reserve a send. Past the cap, registered addresses get the same answer
+  without an email until the hour frees up; a flood of more
   than 500 unknown addresses in an hour pauses new sign-ins for everyone (signed-in browsers keep
   working), which bounds storage. A failed email invalidates that code. Only keyed hashes of codes and
   addresses are stored, and sign-in records are deleted after two days. Sessions last 14 days in a
@@ -823,6 +829,16 @@ only the transport changes:
   Telegram. Admin commands such as `/invite` are refused in the conversation; use the admin console.
 - **Lessons:** "Open lesson page" shows the full lesson, exercises and step-by-step walkthrough in the
   browser. Web mode never renders video, so scheduled workers skip installing the renderer.
+- **Dashboard:** **Dashboard** in the page header opens `/web/dashboard`, the same private dashboard as
+  the Telegram Mini App: Today, quizzes, lessons and the library, labs, certification, plan, progress
+  and documents. It is served without Telegram's script, and its content policy allows only
+  SkillCoach's own scripts. It uses the `/web` session itself: the cookie, the page's CSRF token and a
+  same-origin request. No learner is ever taken from a request body or address, and signing out,
+  expiry, revocation or a changed address closes it at the next request. Document previews are bound
+  to the browser session that made them. A launch counts once per web session in `usage_daily`.
+  Actions such as "Take the quiz" open the conversation with the action in the address fragment; the
+  page removes it from the address bar at once and offers it as one **Continue** tap. It is never sent
+  by itself, and signing out discards it. `/app` stays Telegram-only.
 - **Email:** each scheduled lesson, quiz, Saturday assessment, Sunday review and mentor note sends one
   reminder with a short summary and a link back. Answers to a learner's own actions appear only on the
   page. Failed emails retry through the normal delivery queue and stale ones are suppressed the next
@@ -844,8 +860,7 @@ only the transport changes:
   emailed once, and only while the verified address is still the learner's. Unconfirmed requests
   are deleted after two days, and the public `/join` request page is closed in web mode.
 
-Not included: public join requests without an invitation, the Telegram Mini App dashboard (use
-`/today`, `/progress` and `/quizzes` in the conversation), and video.
+Not included: public join requests without an invitation, and video.
 
 **Before deploying this code in either mode**, apply migrations `010_usage_counters.sql`,
 `011_web_email_channel.sql` and `012_web_joins.sql` (all additive). Migration 011 adds learner emails,
