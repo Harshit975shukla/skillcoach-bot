@@ -169,7 +169,9 @@ def test_invited_person_verifies_email_then_owner_approves_once(web):
     assert verify(web, code, browser).status_code == 403
     with web.bot.repo.connection() as conn:
         assert conn.execute("SELECT count(*) AS n FROM learners WHERE status='pending'").fetchone()["n"] == 1
-    # A pending learner cannot sign in: the usual answer, but no code is sent.
+    # A pending learner cannot sign in: the usual answer, but no code is sent. (Join and sign-in codes
+    # share the per-address limits, so this waits out the minute after the join code.)
+    later(web)
     sent = len(web.email.sent)
     assert post(web, "/web/login/start", {"email": address}, client=web.app.test_client()).status_code == 200
     assert len(web.email.sent) == sent
