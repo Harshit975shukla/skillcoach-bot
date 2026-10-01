@@ -30,9 +30,10 @@ const initialFeed = () => [
 let state;
 function resetState(overrides = {}) {
   state = {web: true, authenticated: false, feed: initialFeed(), sends: [], logins: [], lessonBodies: [],
-           failNextSend: false, nextId: 20, sessionChecks: 0, ...overrides};
+           failNextSend: false, nextId: 20, sessionChecks: 0, joins: [], urls: [], ...overrides};
 }
 resetState();
+const INVITE = "Abcdefghijklmnopqrstuvwxyz012345";
 const lessonFixture = {...library, library: false, title: "IAM policy evaluation", date: "2026-10-01",
   exercises: [{id: "task-1", title: "Trace an explicit deny", minutes: 10, status: "pending",
                blocks: [{type: "p", spans: [{t: "text", v: "Compare two policies."}]}]}]};
@@ -45,10 +46,25 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify(value));
   };
   const path = request.url.split("?")[0];
+  state.urls.push(request.url);
   if (path.startsWith("/web/")) {
     assert.equal(request.url.includes("?"), false, "no credentials or identity in URLs");
     if (!state.web) return json(404, {error: "The web app is not switched on.", enabled: false});
     const body = raw ? JSON.parse(raw) : {};
+    if (path === "/web/join/start") {
+      assert.equal(request.headers.origin, origin);
+      assert.deepEqual(Object.keys(body).sort(), ["email", "invite", "name"]);
+      assert.equal(body.invite, INVITE);
+      state.joins.push(body);
+      return json(200, {pending: true, expires_at: new Date(Date.now() + 600000).toISOString(),
+                        resend_at: new Date(Date.now() + 60000).toISOString()});
+    }
+    if (path === "/web/join/verify") {
+      assert.equal(request.headers.origin, origin);
+      assert.deepEqual(Object.keys(body), ["code"]);
+      if (body.code !== "654321") return json(400, {error: "Incorrect code. 4 attempts remaining."});
+      return json(200, {requested: true});
+    }
     if (path === "/web/session") {
       state.sessionChecks++;
       return state.authenticated ? json(200, {authenticated: true, csrf: CSRF, name: "Synthetic learner",
@@ -241,6 +257,44 @@ try {
   assert.equal(await page.$eval("#signin", e => e.hidden), true);
   assert.equal(await page.$eval("#chat", e => e.hidden), true);
   await page.close();
+  // Joining by invitation: the token leaves the address bar at once and travels only in a request body.
+  for (const [label, width] of [["mobile", 390], ["desktop", 1100]]) {
+    resetState();
+    const joinPage = await browser.newPage();
+    joinPage.on("pageerror", error => { throw error; });
+    await joinPage.setViewport({width, height: 860, deviceScaleFactor: 1});
+    await joinPage.setRequestInterception(true);
+    joinPage.on("request", request => request.url().startsWith(origin) ? request.continue() : request.abort());
+    await joinPage.goto(origin + "/web#invite=" + INVITE);
+    await joinPage.waitForFunction(() => !document.getElementById("join").hidden);
+    assert.equal(await joinPage.evaluate(() => location.href), origin + "/web");
+    assert.equal(state.sessionChecks, 0, "an invitation does not touch any existing session");
+    await joinPage.type("#join-name", "Synthetic Joiner");
+    await joinPage.type("#join-email", "joiner@example.test");
+    await joinPage.click("#join-submit");
+    await joinPage.waitForFunction(() => !document.getElementById("join-code-form").hidden);
+    assert.deepEqual(state.joins, [{invite: INVITE, name: "Synthetic Joiner", email: "joiner@example.test"}]);
+    assert.match(await joinPage.$eval("#join-code-sent", e => e.textContent), /joiner@example\.test/);
+    await joinPage.type("#join-code", "111111");
+    await joinPage.click("#join-code-submit");
+    await joinPage.waitForFunction(() => /4 attempts remaining/.test(document.getElementById("join-error").textContent));
+    await joinPage.type("#join-code", "654321");
+    await joinPage.click("#join-code-submit");
+    await joinPage.waitForFunction(() => !document.getElementById("join-done").hidden);
+    assert.match(await joinPage.$eval("#join-done-text", e => e.textContent), /joiner@example\.test/);
+    assert.equal(await noOverflow(joinPage), true);
+    if (shots) await joinPage.screenshot({path: join(shots, `web-join-${label}.png`), fullPage: true});
+    await joinPage.click("#join-signin");
+    await joinPage.waitForFunction(() => !document.getElementById("signin").hidden);
+    assert.equal(await joinPage.$eval("#email", e => e.value), "joiner@example.test");
+    assert.ok(state.urls.every(url => !url.includes(INVITE)), "the invitation token never appears in a request URL");
+    // A damaged link explains itself and cannot be submitted.
+    await joinPage.goto(origin + "/web#invite=short");
+    await joinPage.waitForFunction(() => /incomplete/.test(document.getElementById("join-error").textContent));
+    assert.equal(await joinPage.$eval("#join-submit", e => e.disabled), true);
+    await joinPage.close();
+    console.log(`Web ${label} join by invitation checks passed.`);
+  }
   console.log("Web app browser checks passed.");
 } finally {
   await browser.close();
