@@ -279,12 +279,13 @@ def test_dashboard_access_ends_with_logout_expiry_address_change_and_revocation(
     assert confirm(client, csrf, preview.json).status_code == 403
     after = web.learner.read()[1]
     assert after.labs == before.labs and after.tasks == before.tasks
-    assert after.profile.resume_text is None
+    assert after.profile == before.profile
     assert not web.bot.runtime.labs.calls
 
 
 @pytest.mark.postgres
 def test_document_preview_confirm_and_cancel_through_the_web_session_stay_private(web):
+    others = {"second": web.silent.read()[1].profile, "owner": web.bot.repo.read()[1].profile}
     client, csrf = browser(web, "learner@example.test")
     assert private(client, csrf).json["documents"]["can_update"] is True
     for headers in (
@@ -337,5 +338,4 @@ def test_document_preview_confirm_and_cancel_through_the_web_session_stay_privat
     assert all(row["auth_hash"].startswith("web:") and csrf not in row["auth_hash"] for row in rows.values())
     assert web.learner.read()[1].profile.resume_text == RESUME.strip()
     # Nobody else's documents change.
-    assert web.silent.read()[1].profile.resume_text is None
-    assert web.bot.repo.read()[1].profile.resume_text is None
+    assert {"second": web.silent.read()[1].profile, "owner": web.bot.repo.read()[1].profile} == others
