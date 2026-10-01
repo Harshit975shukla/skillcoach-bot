@@ -84,9 +84,12 @@ const adoptionFixture = {
   privacy: "Counts and dates only: no questions, answers, documents, typed text or message content.",
 };
 const session = () => ({authenticated: true, csrf: "synthetic-csrf", expires_at: new Date(Date.now() + 900000).toISOString()});
+const WEB_INVITE = "Zyxwvutsrqponmlkjihgfedcba987654";
+const requestUrls = [];
 const server = createServer(async (request, response) => {
   let raw = "";
   for await (const chunk of request) raw += chunk;
+  requestUrls.push(request.url);
   const body = raw ? JSON.parse(raw) : {};
   if (request.url === "/frame") {
     response.writeHead(200, {"Content-Type": "text/html"});
@@ -157,6 +160,11 @@ const server = createServer(async (request, response) => {
     if (request.url === "/admin/action/execute") {
       executions += 1;
       assert.deepEqual(body, {request_id: previewId, confirmation: "server-bound-token"});
+      if (fixture.web_mode) {
+        const link = "https://coach.example.test/web#invite=" + WEB_INVITE;
+        return output(200, {state: "handled", invite_url: link,
+          messages: ["Invitation i_cccccccccccc (one use, expires in 24 hours).\n" + link]});
+      }
       return output(200, {state: "handled", messages: [
         "Invitation created. https://t.me/SkillCoachTestBot?start=invite_" + "a".repeat(32)
       ]});
@@ -527,6 +535,16 @@ try {
     assert.equal(await page.$eval("#action-target", e => e.value), "u_bbbbbbbbbbbb");
     await page.select("#action-kind", "owner_command");
     assert.match(await page.$eval("#action-help", e => e.textContent), /web app at \/web, not here/);
+    // A web invitation fills the copy box from its own field; the token never appears in a request URL.
+    await page.select("#action-kind", "invite");
+    await page.type('[name="label"]', "Web invite");
+    await page.click("#preview-action");
+    await page.waitForFunction(() => !document.getElementById("action-preview").hidden);
+    await page.click("#confirm-checkbox");
+    await page.click("#execute-action");
+    await page.waitForFunction(() => !document.getElementById("invite-result").hidden);
+    assert.equal(await page.$eval("#invite-url", e => e.value), "https://coach.example.test/web#invite=" + WEB_INVITE);
+    assert.ok(requestUrls.every(url => !url.includes(WEB_INVITE)), "the invitation token is never in a request URL");
     await page.close();
     pinChannel = "telegram"; fixture.web_mode = false;
     delete fixture.learners[0].web_email; delete fixture.learners[2].web_email; delete fixture.actions.set_email;

@@ -531,16 +531,18 @@ def test_email_code_sign_in_is_private_rate_limited_and_single_use(web):
     )
 
 
-def add_logins(web, prefix, count, *, learner=None, notified=False):
+def add_logins(web, prefix, count, *, learner=None, notified=False, reserved=False):
+    """Earlier sign-in rows; `reserved` rows are sends decided under the lock (code_hash set)."""
     with web.bot.repo.connection() as conn:
         conn.execute(
-            "INSERT INTO web_logins(id,email_hash,learner_id,verifier_hash,notified,requested_at,expires_at) "
-            "SELECT %s::text||n, %s::text||n, %s, %s::text||n, %s, %s, %s FROM generate_series(1,%s) n",
+            "INSERT INTO web_logins(id,email_hash,learner_id,verifier_hash,code_hash,notified,requested_at,"
+            "expires_at) SELECT %s::text||n, %s::text||n, %s, %s::text||n, %s, %s, %s, %s FROM generate_series(1,%s) n",
             (
                 prefix,
                 prefix + "-address-",
                 learner,
                 prefix + "-verifier-",
+                "reserved" if reserved else None,
                 notified,
                 web.clock.now,
                 web.clock.now + timedelta(minutes=10),
@@ -572,7 +574,7 @@ def test_sign_in_limits_bound_floods_and_answer_every_address_the_same(web):
     # Past the hourly email limit, registered addresses get the usual answer but no email.
     web.email.fail = False
     web.clock.now += timedelta(seconds=61)
-    add_logins(web, "sent", MAX_SENDS_PER_HOUR, learner=web.silent.learner_id, notified=True)
+    add_logins(web, "sent", MAX_SENDS_PER_HOUR, learner=web.silent.learner_id, notified=True, reserved=True)
     capped = post(web, "/web/login/start", {"email": "owner@example.test"}, client=owner)
     assert capped.status_code == 200 and len(web.email.sent) == sent
     with web.bot.repo.connection() as conn:

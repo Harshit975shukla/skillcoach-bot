@@ -28,6 +28,16 @@ CODE_ATTEMPTS = 5
 START_FLOOR_SECONDS = 4.0
 MAX_SENDS_PER_HOUR = 60
 MAX_UNKNOWN_PER_HOUR = 500
+# Code emails from sign-in and from web invitations, as one list for the shared limits. A send is
+# reserved (code_hash set) in the same owner-locked transaction that decides it, before any SMTP
+# call, so concurrent requests cannot exceed the hourly cap. Failed or abandoned attempts keep their
+# reservation until it leaves the hour; unregistered sign-in addresses never reserve one.
+EMAIL_ATTEMPTS = (
+    "SELECT 'login' AS kind, NULL AS ref, email_hash, requested_at AS at, code_hash IS NOT NULL AS reserved, "
+    "learner_id IS NULL AS unknown FROM web_logins WHERE requested_at>%s UNION ALL "
+    "SELECT 'join', invite_id, email_hash, requested_at, code_hash IS NOT NULL, false FROM web_joins "
+    "WHERE requested_at>%s"
+)
 FEED_PAGE = 40
 TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
 REQUEST_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -141,12 +151,8 @@ def start_login(runtime, raw_email):
             "SELECT count(*) FILTER (WHERE email_hash=%s AND at>%s) AS hourly, "
             "count(*) FILTER (WHERE email_hash=%s) AS daily, "
             "max(at) FILTER (WHERE email_hash=%s) AS latest, "
-            "count(*) FILTER (WHERE at>%s AND notified) AS sent, "
-            "count(*) FILTER (WHERE at>%s AND kind='login' AND unknown) AS unknown FROM ("
-            # Join codes from web invitations share the same per-address and hourly email limits.
-            "SELECT 'login' AS kind, email_hash, requested_at AS at, notified, learner_id IS NULL AS unknown "
-            "FROM web_logins WHERE requested_at>%s UNION ALL "
-            "SELECT 'join', email_hash, requested_at, notified, false FROM web_joins WHERE requested_at>%s) r",
+            "count(*) FILTER (WHERE at>%s AND reserved) AS reserved, "
+            f"count(*) FILTER (WHERE at>%s AND kind='login' AND unknown) AS unknown FROM ({EMAIL_ATTEMPTS}) r",
             (
                 email_hash,
                 hour,
@@ -172,9 +178,9 @@ def start_login(runtime, raw_email):
             log.warning("web_sign_in_flood_limit_reached")
             raise WebLimited("Too many sign-in requests right now. Try again in a few minutes.")
         member = learner_for_email(conn, config, email)
-        # Only real sends count toward the overall email limit, so made-up addresses cannot use it
-        # up. Past it, registered addresses get the usual answer but no email until it frees up.
-        send = bool(member) and counts["sent"] < MAX_SENDS_PER_HOUR
+        # Only reserved sends count toward the overall email limit, so made-up addresses cannot use
+        # it up. Past it, registered addresses get the usual answer but no email until it frees up.
+        send = bool(member) and counts["reserved"] < MAX_SENDS_PER_HOUR
         if member and not send:
             log.warning("web_code_send_limit_reached")
         conn.execute(

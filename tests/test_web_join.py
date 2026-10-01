@@ -2,18 +2,29 @@
 
 import re
 import threading
+import time
 from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
+from conftest import FakeEmail
 from psycopg.types.json import Jsonb
 from test_admin import confirm as confirm_action
 from test_admin import preview as preview_action
-from test_web_channel import ORIGIN, build_web, post, sign_in, web_config
+from test_web_channel import ORIGIN, add_logins, build_web, post, sign_in, web_config
 
 from skillcoach import web_join
 from skillcoach.web import create_app
-from skillcoach.web_channel import WebCodeIncorrect, WebDenied, digest, keyed
+from skillcoach.web_channel import (
+    EMAIL_ATTEMPTS,
+    MAX_SENDS_PER_HOUR,
+    WebCodeIncorrect,
+    WebDenied,
+    WebLimited,
+    digest,
+    keyed,
+    start_login,
+)
 from skillcoach.web_join import JOIN_COOKIE, access_email, clean_name, start_join, verify_join
 
 
@@ -81,7 +92,10 @@ def invite(web, admin, label="Friend"):
     _, result = act(admin, "invite", "owner", {"label": label})
     text = "\n".join(result["messages"])
     assert "t.me" not in text and "confirm their email" in text
-    return re.search(r"https://coach\.example\.test/web#invite=([A-Za-z0-9_-]{32})", text).group(1)
+    token = re.search(r"https://coach\.example\.test/web#invite=([A-Za-z0-9_-]{32})", text).group(1)
+    # The admin console fills its copy box from this field, not by parsing the text.
+    assert result["invite_url"] == "https://coach.example.test/web#invite=" + token
+    return token
 
 
 def start(web, token, email, client, name="Asha Rao"):
@@ -329,3 +343,68 @@ def test_rejected_learner_rejoins_with_history_and_decisions_reach_only_the_veri
         web, "someone-else@example.test", "Your SkillCoach access request"
     )
     assert web_join.ACCESS_EMAILS["active"][0] == "Your SkillCoach access is approved"
+
+
+@pytest.mark.postgres
+def test_concurrent_codes_near_the_hourly_cap_never_overshoot_and_send_outside_locks(web):
+    gate, entered, guard = threading.Event(), [], threading.Lock()
+
+    class HeldEmail(FakeEmail):
+        def send(self, to, subject, text, budget):
+            with guard:
+                entered.append(to)
+            assert gate.wait(20), "a held send was never released"
+            super().send(to, subject, text, budget)
+
+    runtime = web.bot.runtime
+    runtime.email = HeldEmail()
+    # Earlier this hour, code emails were already reserved for other addresses: two sends remain.
+    add_logins(web, "busy", MAX_SENDS_PER_HOUR - 2, learner=web.silent.learner_id, reserved=True)
+    tokens = [str(index) * 32 for index in range(2)]
+    with web.bot.repo.connection() as conn:
+        for index, token in enumerate(tokens):
+            conn.execute(
+                "INSERT INTO invitations(id,token_hash,label,status,expires_at) VALUES (%s,%s,'','open',%s)",
+                (f"i_{index:012d}", digest(token), web.clock.now + timedelta(hours=1)),
+            )
+    calls = [
+        lambda: start_login(runtime, "owner@example.test"),
+        lambda: start_login(runtime, "learner@example.test"),
+        lambda: start_join(runtime, tokens[0], "Joiner One", "one@example.test"),
+        lambda: start_join(runtime, tokens[1], "Joiner Two", "two@example.test"),
+    ]
+    barrier, outcomes = threading.Barrier(len(calls)), []
+
+    def run(call):
+        barrier.wait()
+        try:
+            call()
+            outcomes.append("answered")
+        except WebLimited:
+            outcomes.append("limited")
+
+    threads = [threading.Thread(target=run, args=(call,)) for call in calls]
+    for thread in threads:
+        thread.start()
+    # Two sends start and are held open. The other two requests still finish meanwhile, which they
+    # could not do if any database lock were held during SMTP.
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and (len(entered) < 2 or sum(t.is_alive() for t in threads) > 2):
+        time.sleep(0.05)
+    time.sleep(0.3)
+    assert len(entered) == 2 and sum(t.is_alive() for t in threads) == 2
+    gate.set()
+    for thread in threads:
+        thread.join(20)
+    assert not any(t.is_alive() for t in threads) and len(outcomes) == 4
+    assert len(runtime.email.sent) == 2 and len(entered) == 2
+    hour = web.clock.now - timedelta(hours=1)
+    with web.bot.repo.connection() as conn:
+        reserved = conn.execute(
+            f"SELECT count(*) FILTER (WHERE reserved) AS n FROM ({EMAIL_ATTEMPTS}) r", (hour, hour)
+        ).fetchone()["n"]
+    assert reserved == MAX_SENDS_PER_HOUR
+    # Sign-in answers stay uniform; a join that found no capacity is told to wait and stores nothing.
+    with web.bot.repo.connection() as conn:
+        joins = conn.execute("SELECT count(*) AS n FROM web_joins").fetchone()["n"]
+    assert outcomes.count("limited") == 2 - joins

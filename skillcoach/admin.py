@@ -450,10 +450,11 @@ def execute_action(runtime, session, body):
         if row["action"] in ("invite", "revokeinvite", "approve", "reject", "revoke"):
             response = []
             argument = args.get("label", args.get("invite_id", member["id"]))
-            _admin(
+            extra = _admin(
                 conn, row["id"], key, owner, row["action"], argument, runtime.config, owner_output=response
             )
-            result = {"state": "handled", "messages": response, "request_id": row["id"]}
+            # A new invitation's link is returned as its own field for the copy box.
+            result = {"state": "handled", "messages": response, "request_id": row["id"], **(extra or {})}
         elif row["action"] == "set_email":
             conn.execute("UPDATE learners SET email=%s WHERE id=%s", (args["email"] or None, member["id"]))
             # A changed address must not keep an older browser signed in or a pending code valid.

@@ -23,6 +23,7 @@ from skillcoach.config import normalize_email
 from skillcoach.web_channel import (
     CODE_ATTEMPTS,
     CODE_SECONDS,
+    EMAIL_ATTEMPTS,
     MAX_SENDS_PER_HOUR,
     TOKEN,
     WebCodeIncorrect,
@@ -99,10 +100,7 @@ def start_join(runtime, raw_invite, raw_name, raw_email):
             "count(*) FILTER (WHERE email_hash=%s AND at>%s) AS hourly, "
             "count(*) FILTER (WHERE email_hash=%s) AS daily, "
             "max(at) FILTER (WHERE email_hash=%s) AS latest, "
-            "count(*) FILTER (WHERE at>%s AND notified) AS sent FROM ("
-            "SELECT 'join' AS kind, invite_id AS ref, email_hash, requested_at AS at, notified FROM web_joins "
-            "WHERE requested_at>%s UNION ALL "
-            "SELECT 'login', NULL, email_hash, requested_at, notified FROM web_logins WHERE requested_at>%s) r",
+            f"count(*) FILTER (WHERE at>%s AND reserved) AS reserved FROM ({EMAIL_ATTEMPTS}) r",
             (invite["id"], hour, invite["id"], email_hash, hour, email_hash, email_hash, hour, day, day),
         ).fetchone()
         if (usage["latest"] and usage["latest"] > now - timedelta(seconds=60)) or (
@@ -115,7 +113,7 @@ def start_join(runtime, raw_invite, raw_name, raw_email):
             "invite_hourly"
         ] >= 5:
             raise WebLimited("This invitation already asked for several codes. Wait a few minutes.")
-        if usage["sent"] >= MAX_SENDS_PER_HOUR:
+        if usage["reserved"] >= MAX_SENDS_PER_HOUR:
             raise WebLimited("Too many emails are being sent right now. Try again in a few minutes.")
         conn.execute(
             "UPDATE web_joins SET status='rejected' WHERE status='pending' AND (invite_id=%s OR email_hash=%s)",

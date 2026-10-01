@@ -684,9 +684,14 @@
       const result = await api("/admin/action/execute", {request_id: preview.request_id, confirmation: preview.confirmation});
       if (version !== actionVersion) throw new StaleRequest();
       $("result-messages").replaceChildren(...result.messages.map(value => node("p", value)));
-      const link = result.messages.join("\n").match(/https:\/\/t\.me\/[A-Za-z0-9_]+\?start=invite_[A-Za-z0-9_-]{32}/);
+      // Only the two exact invitation shapes fill the copy box: a Telegram start link or a web link
+      // whose one-use token sits in the fragment. Older results carried the Telegram link only in text.
+      const invitePattern = /^(https:\/\/t\.me\/[A-Za-z0-9_]+\?start=invite_[A-Za-z0-9_-]{32}|https:\/\/[A-Za-z0-9.-]+(:[0-9]{1,5})?\/web#invite=[A-Za-z0-9_-]{32})$/;
+      const legacy = result.messages.join("\n").match(/https:\/\/t\.me\/[A-Za-z0-9_]+\?start=invite_[A-Za-z0-9_-]{32}/);
+      const link = typeof result.invite_url === "string" && invitePattern.test(result.invite_url)
+        ? result.invite_url : legacy ? legacy[0] : "";
       $("invite-result").hidden = !link;
-      $("invite-url").value = link ? link[0] : "";
+      $("invite-url").value = link;
       $("action-result").hidden = false;
       invalidatePreview();
       message(result.state === "queued" ? "Queued. Delivery health shows when processing finishes." : "Request handled. Review the result below.");

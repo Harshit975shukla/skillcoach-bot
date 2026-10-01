@@ -131,18 +131,20 @@ def _admin(conn, update_id, key, owner, command, argument, config, *, owner_outp
         if config.web_mode:
             from skillcoach.web_join import invite_link
 
+            link = invite_link(config, token)
             reply(
-                f"Invitation {ident} (one use, expires in 24 hours).\n{invite_link(config, token)}\n\n"
+                f"Invitation {ident} (one use, expires in 24 hours).\n{link}\n\n"
                 "Share it privately with one person. They confirm their email address with a code, then you "
                 "approve or reject them here. Cancel an unused link with “Cancel unused invitation”."
             )
-            return
+            return {"invite_url": link}
+        link = f"https://t.me/{config.bot_username}?start=invite_{token}"
         reply(
-            f"Invitation {ident} (one use, expires in 24 hours).\n"
-            f"https://t.me/{config.bot_username}?start=invite_{token}\n\n"
+            f"Invitation {ident} (one use, expires in 24 hours).\n{link}\n\n"
             "Share privately with one person. Redeeming it only requests access; you must /approve them. "
             f"Cancel an unused link with /revokeinvite {ident}.",
         )
+        return {"invite_url": link}
     elif command == "invites":
         rows = conn.execute(
             "SELECT id,label,expires_at FROM invitations "
