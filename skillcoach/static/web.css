@@ -63,6 +63,18 @@
 .feed .empty { padding: 22px; background: var(--surface); border: 1px dashed var(--line); border-radius: 10px; }
 .working { color: var(--muted); font-size: .9rem; padding-bottom: 10px; }
 
+/* A lesson video or still inside its message: the frame sits flush in a wider bubble, letterboxed
+   in the renderer's own night blue so loading and narrow screens never flash a light gap. */
+.message.media { width: min(42rem, 100%); max-width: 100%; padding: 6px 6px 12px; }
+.lesson-media { margin: 0; }
+.lesson-media video, .lesson-media img {
+  display: block; width: 100%; height: auto; border-radius: 9px; background: #101b2a; object-fit: contain;
+}
+.lesson-media figcaption { padding: 12px 10px 0; white-space: pre-line; }
+.lesson-media .media-labels { margin-top: 6px; color: var(--muted); font-size: .84rem; white-space: normal; }
+.message.media time { padding: 0 10px; }
+.media-fallback { padding: 14px 10px 2px; color: var(--muted); }
+
 .composer {
   position: sticky; bottom: 0; z-index: 2; margin: auto -24px 0; padding: 12px 24px max(14px, env(safe-area-inset-bottom));
   background: var(--page); border-top: 1px solid var(--line); box-shadow: 0 -6px 16px -12px rgb(23 42 58 / .35);

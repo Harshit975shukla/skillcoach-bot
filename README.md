@@ -776,6 +776,16 @@ It locally renders all 30 authored diagrams and verifies actual MP4 duration, di
 
 On machines where repeated browser startups time out, `npm run test:render` renders and screenshot-verifies all 30 diagrams in one reused browser, with external HTTP requests blocked. Set `PUPPETEER_EXECUTABLE_PATH` to an already installed compatible local browser if no bundled Chromium is available. This supplements, not substitutes for, the actual MP4 encoding check.
 
+`npm run test:media` plays a real lesson video end to end. It needs ffmpeg and readable fonts plus
+`TEST_DATABASE_URL`, and skips without the database outside CI. `tests/web_media_server.py` renders
+the video with the real renderer, stores and delivers it through the real pipeline in a disposable
+schema, and serves the real web app on `127.0.0.1`. Chromium then checks:
+- playback, seeking and ranged requests;
+- Safari's two-byte probe and intact bytes;
+- private headers, sign-out and refusal to another learner.
+
+CI runs it after installing the renderer.
+
 The opt-in polling adapter is `python bot.py`. It shares authentication/storage/domain services, refuses to start if a webhook is registered, never removes/replaces a webhook, and never schedules duplicate reminders. Retired `reminder.py` prints a deprecation message and sends nothing. Old Render/Procfile deployment definitions were removed to avoid a second active worker architecture.
 
 ## Configuration
@@ -794,7 +804,7 @@ See `.env.example`; environment variables are loaded at operation startup, not n
 | `LABS_ENABLED`, `LABS_TEMPLATE_REPO` | Hands-on labs kill switch (default `true`) and the public `owner/repository` code-lab template |
 | `LABS_GITHUB_TOKEN` | Optional secret: a fine-grained token with no repository permissions, used only for rate limits; never `GH_PAT` |
 | `CRON_SECRET` | Vercel-only secret (at least 32 random characters) that Vercel sends as `Authorization: Bearer ...` to `/cron/*`; unset or short fails closed |
-| `SCHEDULER_REPO`, `SCHEDULER_GITHUB_TOKEN` | Vercel-only: this bot's `owner/repository` and a token allowed to dispatch its workflows (Actions: write). The token falls back to `GITHUB_TOKEN` |
+| `SCHEDULER_REPO`, `SCHEDULER_GITHUB_TOKEN` | Vercel-only: this bot's `owner/repository` and a token allowed to dispatch its workflows (Actions: write). The token falls back to `GITHUB_TOKEN`. In web mode the same settings start the bounded worker wake for requested lessons (see web mode) |
 | `DELIVERY_CHANNEL` | `telegram` (default) or `web` for the web + email fallback below |
 | `WEB_APP_URL`, `OWNER_EMAIL`, `EMAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | Web + email settings, all required in web mode and ignored otherwise. In GitHub Actions, `OWNER_EMAIL`, `EMAIL_FROM`, `SMTP_USERNAME` and `SMTP_PASSWORD` are **secrets**, because this public repository's run logs show variable values |
 | `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY` | Optional notifications for the installable web app (web mode only): one VAPID key pair from `skillcoach.web_push.generate_keys()`. Both or neither; a mismatched pair stops the app with a configuration error. In GitHub Actions the private key is a **secret** and the public key a variable |
@@ -829,7 +839,67 @@ only the transport changes:
   and a retry reuses its request ID so nothing is processed twice. Typed commands and answers work as in
   Telegram. Admin commands such as `/invite` are refused in the conversation; use the admin console.
 - **Lessons:** "Open lesson page" shows the full lesson, exercises and step-by-step walkthrough in the
-  browser. Web mode never renders video, so scheduled workers skip installing the renderer.
+  browser.
+- **Lesson videos:** each lesson's walkthrough videos play inside the conversation.
+  - **Made by:** a worker with the local renderer (the same storyboard renderer and FFmpeg as Telegram
+    mode; caption-only unless narration is enabled and the learner chose it). Vercel never renders.
+  - **Stored:** privately in PostgreSQL, in chunks of at most 512 KiB, with no public storage or
+    CDN. A video may be at most 3.5 MiB, so a whole video fits one response; a poster or still may be
+    at most 512 KiB.
+  - **Sent:** a video counts as delivered only once it is stored, verified (size, chunk count,
+    SHA-256) and referenced, in one transaction. That transaction re-checks the learner's access,
+    a pause, a passed scheduled day, a replaced plan or topic, and narration turned off while
+    rendering. A shared reviewed or library video is stored once and reused.
+  - **Order:** a lesson's later messages wait for its video, so the lesson keeps its order.
+    Scheduled lessons render in their own worker. For a lesson requested in the conversation, the
+    page shows "Preparing your lesson video…" (or that it is taking longer) and may wake a worker
+    (below).
+  - **Playback:** `/web/media/<id>` (GET and HEAD) uses the `/web` session (cookie, access
+    generation and sign-in address, re-checked on every request). It serves only media that the
+    signed-in learner's own sent message references; someone else's video and one that never existed
+    get the same 404. Responses are private (`no-store`, same-origin `Cross-Origin-Resource-Policy`)
+    and serve one byte range, with 206, 416 and HEAD. The service worker never caches them. The
+    player's "no download" setting is only a menu hint: anyone who can watch a video can save it,
+    and this is not DRM.
+  - **Bandwidth:** bytes returned (200 or 206; HEAD is free) are reserved before they are read: 64 MiB
+    per learner per IST day and 2 GiB a month for everyone. A response that may have reached the
+    browser is never refunded. Past a limit the answer is a private 429 and the page points to the
+    lesson page's walkthrough.
+  - **Storage limits:** stored media, posters and unfinished uploads together are capped at 120 MiB.
+    The cap is reserved under a lock before any chunk is written, so simultaneous uploads cannot
+    overshoot it, and it is the authoritative limit. As a second, physical guard, no new media is
+    stored once the database exceeds 350 MB (the free plan's limit is 500 MB). That size is measured
+    at most every five minutes per worker, so it is not an instant watermark; the cap bounds growth
+    in between.
+  - **Retention:** media nobody has been shown for 30 days are removed first, then (only when over the
+    cap) the least recently shown, never anything stored within the last day. PostgreSQL reuses
+    deleted space after autovacuum; the database files do not shrink. Abandoned uploads expire after
+    ten minutes; an active upload is never removed.
+  - **When a video is not made:** a lesson error, a video over the size limit or full storage sends
+    the message with "Video unavailable: …" and the reason, pointing to the lesson page's walkthrough.
+    It never promises an animation. Passing faults are retried up to five attempts (then the same
+    note) and count as current failures, never as Telegram history; the learner gets no `/retry`
+    instruction for them.
+  - **Earlier messages:** messages delivered before this feature keep their note. Nothing is rendered
+    again later, and old messages are not filled in.
+  - **Backups:** video bytes are derivatives of stored lesson data. They can be rendered again, are not
+    learner state, and are left out of release snapshots, so a restored backup does not bring them
+    back byte for byte. Their messages then say the video is no longer kept.
+- **Worker wake for requested lessons:** GitHub runs this repository's scheduled recovery far less
+  often than its five-minute schedule (hours apart in practice). So when a learner's page shows their
+  own lesson video waiting, or lesson preparation ("/learn …", a scheduled lesson or a plan lesson)
+  that only a worker will pick up, the page's feed request may ask GitHub to start
+  `recovery.yml` on `main`.
+  - **Who can trigger it:** only a signed-in, same-origin request with the page's CSRF token, and
+    only for that learner's own work in their current access.
+  - **What it starts:** the workflow, branch and inputs are fixed; nothing comes from the request.
+  - **How often:** at most once every four minutes and 48 times a day for everyone. Never while a
+    worker holds its lease.
+  - **Safety:** the claim is committed before the request and never undone, so simultaneous or
+    uncertain requests start at most one worker. A failure is logged and changes no delivery.
+  - **What never wakes a worker:** ordinary commands, answers, empty pages and reads.
+  - **How it is sent:** a 4-second request from the feed (no background thread) using the scheduler's
+    existing `SCHEDULER_REPO` and `SCHEDULER_GITHUB_TOKEN`.
 - **Dashboard:** **Dashboard** in the page header opens `/web/dashboard`, the same private dashboard as
   the Telegram Mini App: Today, quizzes, lessons and the library, labs, certification, plan, progress
   and documents. It is served without Telegram's script, and its content policy allows only
@@ -892,22 +962,23 @@ only the transport changes:
   emailed once, and only while the verified address is still the learner's. Unconfirmed requests
   are deleted after two days, and the public `/join` request page is closed in web mode.
 
-Not included: public join requests without an invitation, and video.
+Not included: public join requests without an invitation.
 
 **Before deploying this code in either mode**, apply migrations `010_usage_counters.sql`,
-`011_web_email_channel.sql`, `012_web_joins.sql` and `013_web_push.sql` (all additive). Migration 011
-adds learner emails, sign-in codes, web sessions and the delivery order that every delivery now
-records, Telegram included; 012 adds unconfirmed web join requests, which web sign-in limits also
-count; 013 adds the notification devices that sign-out, revocation and address changes remove. This
-code must not run against an older schema.
+`011_web_email_channel.sql`, `012_web_joins.sql`, `013_web_push.sql` and `014_web_media.sql` (all
+additive). Migration 011 adds learner emails, sign-in codes, web sessions and the delivery order that
+every delivery now records, Telegram included; 012 adds unconfirmed web join requests, which web
+sign-in limits also count; 013 adds the notification devices that sign-out, revocation and address
+changes remove; 014 adds private lesson video storage, its references, byte counters and the worker
+wake. This code must not run against an older schema.
 
 **Switching on** needs the settings above in Vercel and GitHub (Gmail works with an app password on
 port 587), a release of this code, then `python -m skillcoach.cli email-test` to confirm the owner
 receives mail. Messages and videos that had already failed on Telegram before the switch are kept as
 history: `/retry` and recovery never re-send them into the inbox, `/status` shows them as
 `failed_before_web`, and workers report them separately instead of failing. Any other failure (an
-email, a dashboard export, failed work or an unknown kind) still fails the run and is retried as
-usual. **Switching back** is `DELIVERY_CHANNEL=telegram` and a redeploy; web sessions simply
+email, a dashboard export, a current web video, failed work or an unknown kind) still fails the run
+and is retried as usual. **Switching back** is `DELIVERY_CHANNEL=telegram` and a redeploy; web sessions simply
 stop working and Telegram delivery resumes, with nothing replayed.
 
 ## Private import and privacy-safe dashboard

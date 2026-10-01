@@ -46,9 +46,17 @@ TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
 REQUEST_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 START_PAYLOAD = re.compile(r"[A-Za-z0-9_-]{1,64}")
 MEDIA_NOTE = (
-    "🎬 This lesson has an animated walkthrough. In the web app it is part of the lesson page: "
-    "use “Open lesson page” to read the full lesson and step through it."
+    "🎬 No video was made for this step in the web app. Use “Open lesson page” for the "
+    "step-by-step walkthrough."
 )
+MEDIA_UNAVAILABLE = {
+    "too_large": "🎬 Video unavailable: this step's video was too large to keep.",
+    "storage_full": "🎬 Video unavailable: video storage is full, so this step's video was not kept.",
+    "not_made": "🎬 Video unavailable: this step's video could not be made.",
+}
+MEDIA_EXPIRED = "🎬 This step's video is no longer kept."
+MEDIA_FALLBACK = " Use “Open lesson page” for the step-by-step walkthrough."
+MEDIA_PATH = re.compile(r"[0-9a-f]{32}")
 SUBJECTS = {
     "lesson": "Today's SkillCoach lesson is ready",
     "quiz": "Your SkillCoach quiz is ready",
@@ -447,6 +455,20 @@ def web_button(raw, config):
     return {"kind": "link", "text": text, "url": url}
 
 
+def media_item(media: dict) -> dict | None:
+    """The browser's view of stored media: same-origin paths and display facts only."""
+    kind = media.get("type")
+    if kind not in ("video", "image") or not MEDIA_PATH.fullmatch(str(media.get(kind, ""))):
+        return None
+    item = {"type": kind, "src": f"/web/media/{media[kind]}"}
+    if kind == "video" and MEDIA_PATH.fullmatch(str(media.get("poster", ""))):
+        item["poster"] = f"/web/media/{media['poster']}"
+    for key in ("width", "height", "duration"):
+        if isinstance(media.get(key), (int, float)) and not isinstance(media.get(key), bool):
+            item[key] = media[key]
+    return item
+
+
 def feed_item(row, config) -> dict:
     from skillcoach.formatting import md_blocks
 
@@ -456,6 +478,17 @@ def feed_item(row, config) -> dict:
         "at": row["delivered_at"].isoformat() if row["delivered_at"] else None,
     }
     if body.get("kind") == "media":
+        stored = body.get("web_media") or {}
+        if stored.get("status") == "ready":
+            media = media_item(stored) if row.get("media_kept") else None
+            if media:
+                labels = [str(label)[:160] for label in stored.get("labels") or []][:4]
+                return {**item, "kind": "media", "text": str(stored.get("text", "")), "labels": labels,
+                        "media": media, "buttons": []}
+            return {**item, "kind": "text", "text": MEDIA_EXPIRED + MEDIA_FALLBACK, "buttons": []}
+        if stored.get("status") == "unavailable":
+            text = MEDIA_UNAVAILABLE.get(stored.get("reason"), MEDIA_UNAVAILABLE["not_made"])
+            return {**item, "kind": "text", "text": text + MEDIA_FALLBACK, "buttons": []}
         return {**item, "kind": "text", "text": MEDIA_NOTE, "buttons": []}
     text = str(body.get("text", ""))
     item["kind"] = "text"
@@ -478,21 +511,29 @@ def feed(repo, session, config, *, after=None, before=None) -> dict:
     """The learner's delivered messages in delivery order, from the current access generation
     only. Cursors are delivery positions, so a message that is retried or recovered after newer
     ones still appears after the cursor the browser already has."""
+    from skillcoach.web_media import waiting
+
     params = [session["learner_id"], session["access_generation"]]
     where = (
         "learner_id=%s AND access_generation=%s AND status='sent' AND delivered_seq IS NOT NULL "
         "AND body->>'kind' IN ('text','media')"
     )
+    # Whether a delivered video or still is still stored (retention may have removed it).
+    columns = (
+        "delivered_seq,body,delivered_at,(body->>'kind'='media' AND EXISTS (SELECT 1 FROM web_media_refs r "
+        "JOIN web_media m ON m.id=r.media_id AND m.state='ready' WHERE r.outbox_id=o.id "
+        "AND r.role IN ('video','image'))) AS media_kept"
+    )
     with repo.connection(readonly=True) as conn:
         if after is not None:
             rows = conn.execute(
-                f"SELECT delivered_seq,body,delivered_at FROM outbox WHERE {where} AND delivered_seq>%s "
+                f"SELECT {columns} FROM outbox o WHERE {where} AND delivered_seq>%s "
                 "ORDER BY delivered_seq LIMIT %s",
                 (*params, after, FEED_PAGE),
             ).fetchall()
         else:
             rows = conn.execute(
-                f"SELECT delivered_seq,body,delivered_at FROM outbox WHERE {where} "
+                f"SELECT {columns} FROM outbox o WHERE {where} "
                 + ("AND delivered_seq<%s " if before is not None else "")
                 + "ORDER BY delivered_seq DESC LIMIT %s",
                 (*params, *([before] if before is not None else []), FEED_PAGE),
@@ -502,9 +543,11 @@ def feed(repo, session, config, *, after=None, before=None) -> dict:
             "AND status IN ('pending','running') AND available_at<=now()",
             params,
         ).fetchone()["n"]
+        preparing = waiting(conn, *params)
     return {
         "messages": [feed_item(row, config) for row in rows],
         "working": working > 0,
+        "preparing": preparing,
         "older": after is None and len(rows) == FEED_PAGE,
     }
 

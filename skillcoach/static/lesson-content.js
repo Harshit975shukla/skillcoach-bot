@@ -56,7 +56,7 @@
   }
   function walkthrough(story) {
     const element = lessonSection("Visual walkthrough", "lesson-walkthrough");
-    element.append(node("p", "A prewritten diagram and explanation, not a prerecorded video. Animated video is available through /learn in Telegram.",
+    element.append(node("p", "A prewritten diagram and explanation, not a prerecorded video. When a lesson video is made, it arrives with your lesson messages.",
                         "section-description"));
     const ns = "http://www.w3.org/2000/svg";
     const svgNode = (tag, attributes, text) => {

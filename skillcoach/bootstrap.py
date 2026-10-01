@@ -37,6 +37,11 @@ TABLES = (
     "web_sessions",
     "web_joins",
     "web_push_subscriptions",
+    "web_media",
+    "web_media_chunks",
+    "web_media_refs",
+    "web_media_usage",
+    "web_media_wake",
 )
 log = logging.getLogger(__name__)
 

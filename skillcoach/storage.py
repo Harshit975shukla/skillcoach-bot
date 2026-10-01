@@ -15,14 +15,27 @@ from psycopg.types.json import Jsonb
 
 from skillcoach.models import State
 
-# Web delivery shows messages and videos in the inbox and never fails them, so in web mode a failed
-# message or video can only be a Telegram delivery from before the switch. Those rows are kept as
-# history: never re-sent, and reported apart from current failures. Failed exports, emails and any
-# other kind stay current failures that are counted and retried.
+# Web delivery shows messages in the inbox and never fails them, so in web mode a failed message or
+# video is a Telegram delivery from before the switch, unless the web video pipeline recorded the
+# failure itself: it marks the row with WEB_FAILURE in the same transaction (web_media.py), so a
+# current render or storage failure stays a current failure. History is never re-sent and is reported
+# apart; failed exports, emails, current videos and any other kind are counted and retried. Reporting
+# and /retry use this one predicate.
+WEB_FAILURE = "web_failure"
 TELEGRAM_HISTORY_KINDS = ("text", "media")
-TELEGRAM_HISTORY = "coalesce(body->>'kind','') IN ({})".format(
-    ",".join(f"'{kind}'" for kind in TELEGRAM_HISTORY_KINDS)
+TELEGRAM_HISTORY = "(coalesce(body->>'kind','') IN ({}) AND NOT (body ? '{}'))".format(
+    ",".join(f"'{kind}'" for kind in TELEGRAM_HISTORY_KINDS), WEB_FAILURE
 )
+# Work that ends in a lesson with videos: what makes a worker install its renderers, and the only work
+# a web learner's page may wake a worker for (web_media.wake).
+LESSON_JOBS = (
+    "(left(j.payload->>'text', 7)='/learn ' OR j.payload->>'kind'='lesson' "
+    "OR (j.payload->>'type'='journey' AND j.payload->>'action'='lesson'))"
+)
+
+
+def is_telegram_history(body: dict) -> bool:
+    return body.get("kind") in TELEGRAM_HISTORY_KINDS and WEB_FAILURE not in body
 
 
 class LostLease(RuntimeError):
@@ -580,67 +593,71 @@ class Repository:
                 (binding, outcome, key, self.learner_id),
             )
 
-    def delivery_result(self, key: str, token: str, status: str, code: str | None = None):
+    def delivery_result(self, key: str, token: str, status: str, code: str | None = None, *, notice=True):
         with self.connection() as conn:
             self._fence(conn, "delivery", token)
-            # delivered_seq records delivery order (one delivery lease runs at a time, so it is
-            # monotonic); the web inbox pages by it so retried and recovered messages still appear.
-            updated = conn.execute(
-                "UPDATE outbox SET status=%s, error_code=%s, attempts=attempts+1, "
-                "available_at=now()+interval '5 minutes', "
-                "delivered_at=CASE WHEN %s='sent' THEN now() ELSE NULL END, "
-                "delivered_seq=CASE WHEN %s='sent' THEN nextval('outbox_delivery_order') ELSE delivered_seq END "
-                "WHERE id=%s AND learner_id=%s AND status IN ('pending','failed') RETURNING id",
-                (status, code, status, status, key, self.learner_id),
+            self._finish_delivery(conn, key, status, code, notice=notice)
+
+    def _finish_delivery(self, conn, key: str, status: str, code: str | None = None, *, notice=True):
+        """Record a delivery outcome inside the caller's fenced transaction."""
+        # delivered_seq records delivery order (one delivery lease runs at a time, so it is
+        # monotonic); the web inbox pages by it so retried and recovered messages still appear.
+        updated = conn.execute(
+            "UPDATE outbox SET status=%s, error_code=%s, attempts=attempts+1, "
+            "available_at=now()+interval '5 minutes', "
+            "delivered_at=CASE WHEN %s='sent' THEN now() ELSE NULL END, "
+            "delivered_seq=CASE WHEN %s='sent' THEN nextval('outbox_delivery_order') ELSE delivered_seq END "
+            "WHERE id=%s AND learner_id=%s AND status IN ('pending','failed') RETURNING id",
+            (status, code, status, status, key, self.learner_id),
+        ).fetchone()
+        if not updated:
+            return
+        if status == "sent":
+            conn.execute(
+                "UPDATE outbox SET status='suppressed' WHERE id=%s AND learner_id=%s "
+                "AND status IN ('pending','failed') AND body->>'recovery_notice'='true'",
+                (key + ":delivery-error", self.learner_id),
+            )
+            conn.execute(
+                "UPDATE coach_state SET displayed_target=(SELECT body->'target' FROM outbox WHERE id=%s) "
+                "WHERE learner_id=%s AND (SELECT body ? 'target' FROM outbox WHERE id=%s)",
+                (key, self.learner_id, key),
+            )
+            conn.execute(
+                "UPDATE coach_state SET body=jsonb_set(body, "
+                "ARRAY['lessons',(SELECT body->>'lesson_key' FROM outbox WHERE id=%s),'delivered_at'], "
+                "to_jsonb(now())), revision=revision+1 WHERE learner_id=%s "
+                "AND (SELECT body ? 'lesson_key' FROM outbox WHERE id=%s)",
+                (key, self.learner_id, key),
+            )
+        elif status == "failed" and notice:
+            item = conn.execute(
+                "SELECT * FROM outbox WHERE id=%s AND learner_id=%s", (key, self.learner_id)
             ).fetchone()
-            if not updated:
-                return
-            if status == "sent":
+            # A failed push is reported to the owner like any delivery failure, but the learner's
+            # conversation gets no notice: there is nothing for them to retry.
+            if not key.endswith(":delivery-error") and item["body"].get("kind") != "push":
+                notice_body = {
+                    "kind": "text",
+                    "recovery_notice": True,
+                    "text": "A delivery or dashboard publication failed and remains recoverable. "
+                    "Use /status and /retry after fixing the cause. "
+                    "A GitHub conflict requires reviewing the public file, then a new /publish.",
+                }
+                if item["body"].get("scheduled"):
+                    notice_body.update(scheduled=True, scheduled_date=item["body"].get("scheduled_date"))
                 conn.execute(
-                    "UPDATE outbox SET status='suppressed' WHERE id=%s AND learner_id=%s "
-                    "AND status IN ('pending','failed') AND body->>'recovery_notice'='true'",
-                    (key + ":delivery-error", self.learner_id),
+                    "INSERT INTO outbox(id,job_id,body,learner_id,access_generation,access_notice) "
+                    "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                    (
+                        key + ":delivery-error",
+                        item["job_id"],
+                        Jsonb(notice_body),
+                        self.learner_id,
+                        item["access_generation"],
+                        item["access_notice"],
+                    ),
                 )
-                conn.execute(
-                    "UPDATE coach_state SET displayed_target=(SELECT body->'target' FROM outbox WHERE id=%s) "
-                    "WHERE learner_id=%s AND (SELECT body ? 'target' FROM outbox WHERE id=%s)",
-                    (key, self.learner_id, key),
-                )
-                conn.execute(
-                    "UPDATE coach_state SET body=jsonb_set(body, "
-                    "ARRAY['lessons',(SELECT body->>'lesson_key' FROM outbox WHERE id=%s),'delivered_at'], "
-                    "to_jsonb(now())), revision=revision+1 WHERE learner_id=%s "
-                    "AND (SELECT body ? 'lesson_key' FROM outbox WHERE id=%s)",
-                    (key, self.learner_id, key),
-                )
-            elif status == "failed":
-                item = conn.execute(
-                    "SELECT * FROM outbox WHERE id=%s AND learner_id=%s", (key, self.learner_id)
-                ).fetchone()
-                # A failed push is reported to the owner like any delivery failure, but the learner's
-                # conversation gets no notice: there is nothing for them to retry.
-                if not key.endswith(":delivery-error") and item["body"].get("kind") != "push":
-                    notice = {
-                        "kind": "text",
-                        "recovery_notice": True,
-                        "text": "A delivery or dashboard publication failed and remains recoverable. "
-                        "Use /status and /retry after fixing the cause. "
-                        "A GitHub conflict requires reviewing the public file, then a new /publish.",
-                    }
-                    if item["body"].get("scheduled"):
-                        notice.update(scheduled=True, scheduled_date=item["body"].get("scheduled_date"))
-                    conn.execute(
-                        "INSERT INTO outbox(id,job_id,body,learner_id,access_generation,access_notice) "
-                        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                        (
-                            key + ":delivery-error",
-                            item["job_id"],
-                            Jsonb(notice),
-                            self.learner_id,
-                            item["access_generation"],
-                            item["access_notice"],
-                        ),
-                    )
 
     def slot_deliveries(self, key: str) -> list[dict]:
         """Per learner: when a scheduled slot's messages first/last reached Telegram and what is left."""
@@ -700,8 +717,8 @@ class Repository:
                 "SELECT 1 FROM jobs j JOIN learners l ON l.id=j.learner_id "
                 "WHERE j.status IN ('pending','failed','running') AND j.available_at<=now() "
                 "AND j.attempts<5 AND l.status='active' AND l.generation=j.access_generation AND "
-                "(j.payload->>'text' LIKE '/learn %' OR j.payload->>'kind'='lesson' OR "
-                "(j.payload->>'type'='journey' AND j.payload->>'action'='lesson'))) AS needed"
+                + LESSON_JOBS
+                + ") AS needed"
             ).fetchone()["needed"]
 
     def media_asset(self, key: str):

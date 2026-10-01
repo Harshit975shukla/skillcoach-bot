@@ -195,7 +195,7 @@ def test_web_mode_uses_the_inbox_and_sends_one_email_per_mentor_note(harness):
     assert all(row["status"] == "sent" for row in h.repo.outbox.values())
 
 
-def test_web_mode_never_renders_video_and_failed_email_is_recoverable(harness):
+def test_web_mode_leaves_videos_to_rendering_workers_and_failed_email_is_recoverable(harness):
     h = harness
     h.runtime.config = web_config(h.runtime.config)
     h.repo.outbox["lesson:0"] = {
@@ -204,8 +204,9 @@ def test_web_mode_never_renders_video_and_failed_email_is_recoverable(harness):
         "status": "pending",
         "body": {"kind": "media", "storyboard": {"title": "Not rendered"}, "mode": "video"},
     }
-    assert h.runtime.deliver_one(Budget(60), media=False)
-    assert h.repo.outbox["lesson:0"]["status"] == "sent" and not h.telegram.messages
+    # A request handler without the renderers never claims a video as sent; a worker renders it.
+    assert not h.runtime.deliver_one(Budget(60), media=False)
+    assert h.repo.outbox["lesson:0"]["status"] == "pending" and not h.telegram.messages
     h.email.fail = True
     h.repo.enqueue("admin:second", {"type": "encouragement", "message": "goal"})
     h.runtime.recover(media=False)
@@ -400,9 +401,25 @@ def test_browser_payloads_are_strict():
             web_payload(body)
 
 
-def test_cli_skips_video_tooling_and_tests_email_without_learners(harness, monkeypatch):
+def test_cli_checks_queued_media_in_web_mode_and_tests_email_without_learners(harness, monkeypatch):
+    import skillcoach.cli as cli
+
+    # Web mode renders lesson videos too, so workers install the renderers when media is queued.
     monkeypatch.setenv("DELIVERY_CHANNEL", "web")
-    assert main(["needs-media"]) == 3  # Returns before any database connection.
+    queued = {"media": True}
+
+    class Queue:
+        def __init__(self, url):
+            assert url == "postgresql://test-only"
+
+        def needs_media(self):
+            return queued["media"]
+
+    monkeypatch.setattr(cli, "Repository", Queue)
+    monkeypatch.setattr(cli, "database_url", lambda: "postgresql://test-only")
+    assert main(["needs-media"]) == 0
+    queued["media"] = False
+    assert main(["needs-media"]) == 3
     h = harness
     h.runtime.config = web_config(h.runtime.config)
     assert email_test(h.runtime) == {"sent": True, "to": "OWNER_EMAIL"}

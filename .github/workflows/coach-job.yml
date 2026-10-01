@@ -54,11 +54,9 @@ jobs:
           DATABASE_CA_CERT_FILE: ${{ vars.DATABASE_CA_CERT_FILE }}
           OPERATION: ${{ inputs.kind }}
           VERIFY_MEDIA: ${{ inputs.verify_media }}
-          DELIVERY_CHANNEL: ${{ vars.DELIVERY_CHANNEL || 'telegram' }}
+        # Lesson videos are rendered here in both delivery modes (web mode stores them privately).
         run: |
-          if [ "$DELIVERY_CHANNEL" = "web" ] && [ "$VERIFY_MEDIA" != "true" ]; then
-            echo "Web + email mode never renders video; skipping renderer installation."
-          elif [ "$VERIFY_MEDIA" = "true" ] || [ "$OPERATION" = "lesson" ] || python -m skillcoach.cli needs-media; then
+          if [ "$VERIFY_MEDIA" = "true" ] || [ "$OPERATION" = "lesson" ] || python -m skillcoach.cli needs-media; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
           else
             RESULT=$?

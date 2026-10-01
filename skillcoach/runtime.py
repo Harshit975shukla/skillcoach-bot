@@ -41,6 +41,25 @@ def _left(budget: Budget) -> float:
         return 0
 
 
+def stale_delivery(state, body: dict, today: str) -> bool:
+    """A queued message that no longer applies: its learning plan was replaced, its scheduled day
+    passed or coaching was paused, or its topic changed. Checked when delivery starts and again,
+    under locks, when a rendered video is published (web_media.attach)."""
+    if body.get("journey_plan_id"):
+        from skillcoach.journey import approved_plan
+
+        active = approved_plan(state)
+        if not active or active.id != body["journey_plan_id"]:
+            # A revised plan carries already prepared lessons forward; their outbox remains valid.
+            if not active or body.get("journey_lesson_key") not in {
+                a.lesson_key for a in active.sessions if a.lesson_key
+            }:
+                return True
+    if body.get("scheduled") and (state.paused or body.get("scheduled_date") != today):
+        return True
+    return bool(body.get("target") and body["target"] != state.target())
+
+
 class DeliveryDeferred(Exception):
     """Leave unsent work pending when the request lacks time for a safe network attempt."""
 
@@ -177,8 +196,8 @@ class Runtime:
         if not token:
             return False
         try:
-            # Web mode never renders video, so media placeholders are always ready.
-            item = self.repo.next_delivery(token, media=media or web)
+            # Media rows wait for a worker with the local renderers, in web mode as in Telegram mode.
+            item = self.repo.next_delivery(token, media=media)
             if item is None:
                 return False
             body = dict(item["body"])
@@ -190,35 +209,23 @@ class Runtime:
                 scoped.delivery_result(item["id"], token, "suppressed")
                 return True
             _, state = scoped.read()
-            if body.get("journey_plan_id"):
-                from skillcoach.journey import approved_plan
-
-                active = approved_plan(state)
-                if not active or active.id != body["journey_plan_id"]:
-                    # A revised plan carries already prepared lessons forward; their outbox remains valid.
-                    if not active or body.get("journey_lesson_key") not in {
-                        a.lesson_key for a in active.sessions if a.lesson_key
-                    }:
-                        scoped.delivery_result(item["id"], token, "suppressed")
-                        return True
+            if stale_delivery(state, body, self.clock().astimezone(IST).date().isoformat()):
+                scoped.delivery_result(item["id"], token, "suppressed")
+                return True
             if body["kind"] == "media" and "storyboard" in body:
                 body["voice"] = bool(
                     body.get("voice", False) and state.voice and self.config.narration_enabled
                 )
-            if (
-                body.get("scheduled")
-                and (
-                    state.paused
-                    or body.get("scheduled_date") != self.clock().astimezone(IST).date().isoformat()
-                )
-            ) or (body.get("target") and body["target"] != state.target()):
-                scoped.delivery_result(item["id"], token, "suppressed")
-                return True
             if body["kind"] == "email":
                 return self._deliver_email(scoped, item, body, token, budget)
             if body["kind"] == "push":
                 return self._deliver_push(scoped, item, body, token, budget)
-            if web and body["kind"] in ("text", "media"):
+            if web and body["kind"] == "media":
+                from skillcoach import web_media
+
+                # Rendered, stored privately and referenced before the message counts as sent.
+                return web_media.deliver(self, scoped, item, body, token, budget)
+            if web and body["kind"] == "text":
                 # The learner's private web inbox shows sent messages; nothing goes to Telegram.
                 try:
                     scoped.ensure_delivery_authorized(item["id"], token)

@@ -106,15 +106,39 @@ def animate(image: Path, folder: Path, caption: str) -> Path | None:
     return output
 
 
+def diagram_caption(body: dict, *, animated: bool) -> str:
+    caption = body["caption"]
+    if body["mode"] == "video" and not animated:
+        caption += "\nStatic fallback: video rendering unavailable."
+    return caption
+
+
+def storyboard_caption(body: dict, *, still=False) -> str:
+    """The caption with its honesty labels: who wrote the explanation and what the media is."""
+    caption = body["caption"][:500]
+    caption += (
+        "\nReviewed authored explanation."
+        if body.get("shared_reviewed")
+        else "\nPrewritten AI-assisted explanation; not independently expert-reviewed."
+        if body.get("shared_library")
+        else "\nAI-generated explanation; verify against the lesson references."
+    )
+    if still:
+        return caption + "\nStill storyboard image, not a video."
+    return caption + (
+        "\nSynthetic offline narration + captions."
+        if body.get("voice", False) and body["mode"] == "video"
+        else "\nCaptioned walkthrough."
+    )
+
+
 def deliver_media(telegram, body: dict, budget, *, before_send=None):
     with tempfile.TemporaryDirectory(prefix="skillcoach-") as tmp:
         folder = Path(tmp)
         image = render_png(body["code"], folder)
         video = animate(image, folder, body["caption"]) if body["mode"] == "video" else None
         path = video or image
-        caption = body["caption"]
-        if body["mode"] == "video" and not video:
-            caption += "\nStatic fallback: video rendering unavailable."
+        caption = diagram_caption(body, animated=video is not None)
         kind = "video" if video else "photo"
         if before_send is not None:
             before_send()
@@ -136,19 +160,7 @@ def deliver_storyboard(telegram, body, budget, *, before_send, cached=None):
     from skillcoach.storyboard import Storyboard
 
     story = Storyboard.model_validate(body["storyboard"])
-    caption = body["caption"][:500]
-    caption += (
-        "\nReviewed authored explanation."
-        if body.get("shared_reviewed")
-        else "\nPrewritten AI-assisted explanation; not independently expert-reviewed."
-        if body.get("shared_library")
-        else "\nAI-generated explanation; verify against the lesson references."
-    )
-    caption += (
-        "\nSynthetic offline narration + captions."
-        if body.get("voice", False) and body["mode"] == "video"
-        else "\nCaptioned walkthrough."
-    )
+    caption = storyboard_caption(body)
     if cached:
         before_send()
         kind = cached["kind"]

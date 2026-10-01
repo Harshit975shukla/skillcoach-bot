@@ -1,9 +1,12 @@
 """Browser routes for web + email mode. Every endpoint except the static page answers 404 unless
 DELIVERY_CHANNEL=web, so the Telegram deployment is unchanged by default."""
 
+import logging
 import re
 from functools import wraps
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 TELEGRAM_SCRIPT = re.compile(r'[ \t]*<script src="https://telegram\.org/[^"]*"[^>]*></script>\r?\n?')
 # Install metadata for the web dashboard page; /app (the Telegram Mini App) is left unchanged.
@@ -54,6 +57,7 @@ def register_web(app, runtime_factory):
         accept_web,
         authenticate,
         csrf_token,
+        digest,
         feed,
         logout,
         same_origin,
@@ -62,6 +66,8 @@ def register_web(app, runtime_factory):
         web_payload,
     )
     from skillcoach.web_join import JOIN_COOKIE, deliver_now, start_join, verify_join
+    from skillcoach.web_media import serve as serve_media
+    from skillcoach.web_media import wake as wake_worker
     from skillcoach.web_push import PushConflict
     from skillcoach.web_push import subscribe as push_subscribe
     from skillcoach.web_push import sync as push_sync
@@ -287,7 +293,39 @@ def register_web(app, runtime_factory):
             if value is not None and (type(value) is not int or value < 0):
                 raise WebDenied("Invalid message position.")
         with runtime.repo.session():
-            return jsonify(feed(runtime.repo, session, runtime.config, **cursors))
+            result = feed(runtime.repo, session, runtime.config, **cursors)
+            if result["preparing"] or result["working"]:
+                # Only this learner's own due work can ask for a worker (rate-limited, see web_media).
+                try:
+                    wake_worker(runtime, session)
+                except STORAGE_ERRORS:
+                    log.warning("media_wake_failed code=storage")
+        return jsonify(result)
+
+    @app.route("/web/media/<media_id>", methods=["GET", "HEAD"])
+    @endpoint
+    def web_media_file(media_id):
+        """A video or still from the signed-in learner's own delivered messages. Same-origin only:
+        the session cookie is SameSite=Strict and the response is CORP same-origin and never cached."""
+        runtime = runtime_on()
+        if request.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
+            raise WebDenied("Open SkillCoach to watch this video.")
+        session, token = authenticate(request, runtime)
+        with runtime.repo.session():
+            status, headers, data = serve_media(
+                runtime,
+                session,
+                digest(token),
+                media_id,
+                request.method,
+                request.headers.get("Range"),
+                request.headers.get("If-Range"),
+            )
+        response = app.response_class(data, status=status)
+        # Set after the body, so a HEAD response keeps the real length.
+        for name, value in headers.items():
+            response.headers[name] = value
+        return response
 
     @app.post("/web/send")
     @endpoint

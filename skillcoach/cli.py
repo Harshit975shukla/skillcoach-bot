@@ -256,9 +256,6 @@ def main(argv=None):
             print(json.dumps(Repository(database_url()).status(all_learners=True), indent=2))
             return 0
         if args.command == "needs-media":
-            # Web mode never renders video, so workers skip installing the browser and ffmpeg.
-            if os.getenv("DELIVERY_CHANNEL", "").strip().lower() == "web":
-                return 3
             return 0 if Repository(database_url()).needs_media() else 3
         runtime = Runtime.from_env()
         if args.command == "email-test":

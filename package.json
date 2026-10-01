@@ -10,7 +10,8 @@
     "test:web": "node tests/web-browser.mjs",
     "test:webdash": "node tests/web-dashboard-browser.mjs",
     "test:sw": "node tests/web-sw.mjs",
-    "test:app": "node tests/web-app-browser.mjs"
+    "test:app": "node tests/web-app-browser.mjs",
+    "test:media": "node tests/web-media-browser.mjs"
   },
   "devDependencies": {
     "@mermaid-js/mermaid-cli": "11.12.0",

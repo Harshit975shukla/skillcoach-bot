@@ -9,7 +9,7 @@
     return element;
   };
   const FAST_POLL = 3000, SLOW_POLL = 15000, FAST_WINDOW = 45000;
-  let csrf = "", lastId = null, firstId = null, epoch = 0, sending = false, working = false;
+  let csrf = "", lastId = null, firstId = null, epoch = 0, sending = false, working = false, preparing = null;
   let fastUntil = 0, pollTimer = null, resendTimer = null, pendingEmail = "", feedScroll = 0, loadingFeed = false;
   // A web invitation token lives only in memory: it is read from the address fragment, which is
   // removed at once, and is sent only in the body of the join request.
@@ -52,7 +52,7 @@
     for (const controller of controllers) controller.abort();
     controllers.clear();
     clearTimeout(pollTimer); clearInterval(resendTimer); clearInterval(joinTimer);
-    csrf = ""; lastId = null; firstId = null; sending = false; working = false; fastUntil = 0; loadingFeed = false;
+    csrf = ""; lastId = null; firstId = null; sending = false; working = false; preparing = null; fastUntil = 0; loadingFeed = false;
     $("feed").replaceChildren(); $("lesson-body").replaceChildren();
     $("lesson-title").textContent = ""; $("lesson-meta").textContent = "";
     $("message").value = ""; $("older").hidden = true; $("working").hidden = true;
@@ -463,10 +463,50 @@
     });
     return element;
   }
+  // Lesson videos and stills come only from this origin's private media route (see web_media.py).
+  const MEDIA_SRC = /^\/web\/media\/[0-9a-f]{32}$/;
+  const MEDIA_FALLBACK = "Use “Open lesson page” for the step-by-step walkthrough.";
+  function mediaFigure(message) {
+    const media = message.media || {};
+    if (!MEDIA_SRC.test(media.src || "") || !["video", "image"].includes(media.type)) return null;
+    const figure = node("figure", undefined, "lesson-media");
+    let element;
+    if (media.type === "video") {
+      element = document.createElement("video");
+      element.controls = true; element.preload = "metadata"; element.playsInline = true;
+      element.setAttribute("playsinline", "");
+      // A hint for the browser's menu only: anyone who can watch a video can also save it.
+      element.setAttribute("controlslist", "nodownload");
+      element.setAttribute("aria-label", "Lesson video");
+      if (MEDIA_SRC.test(media.poster || "")) element.poster = media.poster;
+    } else {
+      element = document.createElement("img");
+      element.alt = "Storyboard still for this step"; element.decoding = "async";
+    }
+    // The size attributes reserve the frame before anything loads.
+    element.width = Number(media.width) > 0 ? Number(media.width) : 1280;
+    element.height = Number(media.height) > 0 ? Number(media.height) : 720;
+    element.addEventListener("error", () => {
+      const what = media.type === "video" ? "This video" : "This image";
+      element.replaceWith(node("p", `${what} can’t be shown right now. ${MEDIA_FALLBACK}`, "media-fallback"));
+    }, {once: true});
+    element.src = media.src;
+    figure.append(element);
+    const caption = node("figcaption");
+    if (message.text) caption.append(linkified(message.text));
+    const labels = (Array.isArray(message.labels) ? message.labels : []).filter(label => typeof label === "string");
+    if (labels.length) caption.append(node("p", labels.join(" · "), "media-labels"));
+    if (caption.childNodes.length) figure.append(caption);
+    return figure;
+  }
   function renderMessage(message, arrived) {
     const item = node("li", undefined, "message" + (arrived ? " arrived" : ""));
     item.dataset.id = message.id;
-    if (message.blocks) item.append(prose(message.blocks));
+    if (message.kind === "media") {
+      const figure = mediaFigure(message);
+      if (figure) { item.classList.add("media"); item.append(figure); }
+      else item.append(node("p", `This video can’t be shown here. ${MEDIA_FALLBACK}`));
+    } else if (message.blocks) item.append(prose(message.blocks));
     else item.append(linkified(message.text || ""));
     for (const row of message.buttons || []) {
       const actions = node("div", undefined, "actions");
@@ -514,7 +554,13 @@
       }
       if (initial) { $("older").hidden = !result.data.older; showEmpty(); }
       working = Boolean(result.data.working);
-      $("working").hidden = !working;
+      preparing = ["queued", "delayed"].includes(result.data.preparing) ? result.data.preparing : null;
+      const status = preparing === "delayed"
+        ? "Your lesson video is taking longer than usual. The rest of this lesson follows it; “Open lesson page” has the full lesson meanwhile."
+        : preparing ? "Preparing your lesson video… The rest of this lesson follows it."
+        : working ? "Your coach is working on it…" : "";
+      $("working").textContent = status;
+      $("working").hidden = !status;
       if (stay) toBottom();
     } catch (error) {
       if (requestEpoch === epoch && error.name !== "AbortError") notice("You are offline or SkillCoach is unreachable. Retrying shortly.", true);
@@ -525,7 +571,8 @@
   function schedulePoll() {
     clearTimeout(pollTimer);
     if (!csrf) return;
-    const fast = working || Date.now() < fastUntil;
+    // A video being prepared is checked often for its first minutes, then at the slow pace.
+    const fast = working || preparing === "queued" || Date.now() < fastUntil;
     pollTimer = setTimeout(() => { if (!document.hidden && !$("chat").hidden) loadFeed(); else schedulePoll(); },
                            fast ? FAST_POLL : SLOW_POLL);
   }
