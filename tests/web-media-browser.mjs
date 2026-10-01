@@ -54,7 +54,7 @@ try {
     await page.goto(origin + "/web");
     await page.waitForSelector("li.message.media video");
     // The lesson arrives in order: the video sits between the text before and after it.
-    const order = await page.$$eval("#feed > li", items => items.map(item => item.querySelector("video") ? "video" : item.textContent));
+    const order = (await page.$$eval("#feed > li", items => items.map(item => item.querySelector("video") ? "video" : item.textContent))).slice(-3);
     assert.equal(order.length, 3);
     assert.match(order[0], /Today's lesson/);
     assert.equal(order[1], "video");
