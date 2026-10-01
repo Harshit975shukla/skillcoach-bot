@@ -122,9 +122,10 @@
   .composer { margin: auto -18px 0; padding-left: 18px; padding-right: 18px; }
   .message { max-width: 100%; }
   #code { font-size: 1.35rem; }
-  /* Brand, bell, Dashboard and Sign out stay on one line on common phone widths. */
-  .header { gap: 8px 12px; }
-  .header-actions { gap: 4px; }
-  .header-actions .header-link { padding: 0 8px; }
-  .header-actions button:not(.icon-button) { padding: 9px 12px; }
+  /* Brand, bell, Dashboard and Sign out share one line on common phone widths; with wider fonts
+     or larger text the actions take their own right-aligned row instead of overflowing. */
+  .header { gap: 6px 10px; }
+  .header-actions { flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+  .header-actions .header-link { padding: 0 8px; font-size: .9375rem; }
+  .header-actions button:not(.icon-button) { padding: 9px 11px; font-size: .9375rem; }
 }

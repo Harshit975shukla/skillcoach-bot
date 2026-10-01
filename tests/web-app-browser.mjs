@@ -146,6 +146,45 @@ async function open(config, {userAgent, noPush = false} = {}) {
 const pressed = page => page.$eval("#notify", e => e.getAttribute("aria-pressed"));
 const noticeText = page => page.$eval("#notice", e => e.textContent);
 
+// Brand, bell, Dashboard and Sign out stay inside the screen, never overlap and keep 44px targets.
+// They share the brand's line whenever their natural widths fit; otherwise the actions sit on a
+// right-aligned row below the brand. Returns whether everything fitted on one line.
+async function checkHeader(page, label) {
+  const layout = await page.evaluate(() => {
+    const box = element => element.getBoundingClientRect().toJSON();
+    const header = document.querySelector(".header");
+    const brand = document.querySelector(".brand");
+    const actions = document.querySelector(".header-actions");
+    const items = [...actions.children].filter(element => !element.hidden);
+    const widths = items.map(element => box(element).width).reduce((sum, width) => sum + width, 0);
+    const need = box(brand).width + parseFloat(getComputedStyle(header).columnGap) + widths
+      + parseFloat(getComputedStyle(actions).columnGap) * (items.length - 1);
+    return {
+      width: innerWidth, scroll: document.scrollingElement.scrollWidth, fits: need <= box(header).width,
+      header: box(header), brand: box(brand), items: items.map(element => ({id: element.id, ...box(element)})),
+    };
+  });
+  assert.ok(layout.scroll <= layout.width, `${label}: no sideways scrolling`);
+  assert.deepEqual(layout.items.map(item => item.id), ["notify", "dashboard-link", "logout"], label);
+  const middle = item => (item.top + item.bottom) / 2;
+  layout.items.forEach((item, index) => {
+    assert.ok(item.left >= 0 && item.right <= layout.width, `${label}: ${item.id} inside the screen`);
+    assert.ok(item.height >= 44 && item.width >= 44, `${label}: ${item.id} keeps a 44px target`);
+    for (const other of layout.items.slice(index + 1)) {
+      const apart = item.right <= other.left || other.right <= item.left
+        || item.bottom <= other.top || other.bottom <= item.top;
+      assert.ok(apart, `${label}: ${item.id} and ${other.id} do not overlap`);
+    }
+    if (layout.fits) assert.ok(Math.abs(middle(item) - middle(layout.brand)) < 2, `${label}: ${item.id} beside the brand`);
+    else assert.ok(item.top >= layout.brand.bottom, `${label}: ${item.id} below the brand`);
+  });
+  if (!layout.fits) {
+    const last = layout.items[layout.items.length - 1];
+    assert.ok(Math.abs(last.right - layout.header.right) < 1, `${label}: actions aligned right`);
+  }
+  return layout.fits;
+}
+
 try {
   // 1. The real service worker caches only the public offline shell, and offline shows a generic,
   //    styled page: never the previous conversation.
@@ -208,12 +247,17 @@ try {
     assert.equal(await page.evaluate(() => window.__push.requests), 0, "no permission prompt on load");
     assert.match(await page.$eval("#offer-text", e => e.textContent), /notification on this device/);
     assert.equal(await pressed(page), "false");
-    // Brand, bell, Dashboard and Sign out fit on one line on a common phone width.
-    assert.ok(await page.evaluate(() => {
-      const top = document.querySelector(".brand").getBoundingClientRect().top;
-      return [...document.querySelectorAll(".header-actions > :not([hidden])")]
-        .every(element => Math.abs(element.getBoundingClientRect().top - top) < 30);
-    }), "header on one line");
+    // The header never overflows at phone widths, whatever the platform fonts; larger text makes
+    // the actions take their own row (forced here so every platform checks that fallback).
+    for (const width of [390, 360, 320]) {
+      await page.setViewport({width, height: 860, deviceScaleFactor: 1});
+      await checkHeader(page, width);
+    }
+    await page.setViewport({width: 390, height: 860, deviceScaleFactor: 1});
+    await page.evaluate(() => { document.documentElement.style.fontSize = "135%"; });
+    assert.equal(await checkHeader(page, "larger text"), false, "larger text wraps the actions");
+    if (shots) await page.screenshot({path: join(shots, "web-header-larger-text-mobile.png"), clip: {x: 0, y: 0, width: 390, height: 260}});
+    await page.evaluate(() => { document.documentElement.style.fontSize = ""; });
     if (shots) await page.screenshot({path: join(shots, "web-push-offer-mobile.png")});
     await page.click("#offer-go");
     await page.waitForFunction(() => document.getElementById("notify").getAttribute("aria-pressed") === "true");
