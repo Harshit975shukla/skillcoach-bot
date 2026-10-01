@@ -760,7 +760,8 @@ def test_browser_conversation_runs_the_same_coach_through_the_inbox(web):
     sign_in(web, "learner@example.test")
     telegram_before = len(web.bot.runtime.telegram.chat_messages.get(101, []))
     first = post(web, "/web/feed")
-    assert first.status_code == 200 and set(first.json) == {"messages", "working", "older"}
+    assert first.status_code == 200 and set(first.json) == {"messages", "working", "preparing", "older"}
+    assert first.json["preparing"] is None  # no lesson video is waiting
     last = first.json["messages"][-1]["id"] if first.json["messages"] else 0
     request_id = str(uuid4())
     accepted = post(web, "/web/send", {"request_id": request_id, "text": "/help"})
