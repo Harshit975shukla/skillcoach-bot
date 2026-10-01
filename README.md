@@ -841,7 +841,10 @@ not run against an older schema.
 
 **Switching on** needs the settings above in Vercel and GitHub (Gmail works with an app password on
 port 587), a release of this code, then `python -m skillcoach.cli email-test` to confirm the owner
-receives mail. **Switching back** is `DELIVERY_CHANNEL=telegram` and a redeploy; web sessions simply
+receives mail. Messages that had already failed on Telegram before the switch are kept as history:
+`/retry` and recovery never re-send them into the inbox, `/status` shows them as `failed_before_web`,
+and workers report them separately instead of failing. Failed emails and work still fail the run and
+can be retried. **Switching back** is `DELIVERY_CHANNEL=telegram` and a redeploy; web sessions simply
 stop working and Telegram delivery resumes, with nothing replayed.
 
 ## Private import and privacy-safe dashboard

@@ -227,9 +227,12 @@ class MemoryRepository:
             self.outbox.setdefault(ident, {"id": ident, "job_id": job, "body": body, "status": "pending"})
         if isinstance(control, dict):
             self.enqueue(job + ":next", control)
-        elif control == "retry":
-            for row in [*self.jobs.values(), *self.outbox.values()]:
+        elif control in ("retry", "retry-web"):
+            for row in self.jobs.values():
                 if row["status"] == "failed":
+                    row["status"] = "pending"
+            for row in self.outbox.values():
+                if row["status"] == "failed" and (control == "retry" or row["body"].get("kind") == "email"):
                     row["status"] = "pending"
         elif control == "pause":
             for row in self.outbox.values():
@@ -332,6 +335,15 @@ class MemoryRepository:
 
     def status(self, *, all_learners=False):
         return {"jobs": [], "outbox": []}
+
+    def failure_counts(self, *, web_mode, all_learners=False):
+        failed = [row for row in self.outbox.values() if row["status"] == "failed"]
+        history = [row for row in failed if web_mode and row["body"].get("kind") != "email"]
+        return {
+            "jobs": sum(job["status"] == "failed" for job in self.jobs.values()),
+            "deliveries": len(failed) - len(history),
+            "telegram_history": len(history),
+        }
 
     def slot_deliveries(self, key):
         rows = [row for row in self.outbox.values() if row["job_id"] == key]

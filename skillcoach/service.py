@@ -1516,8 +1516,18 @@ class Service:
                 "Current flow and failed operations cancelled. Validated profile and completed history kept."
             )
         elif cmd == "retry":
-            self.control = "retry"
-            self.say("Failed operations and deliveries queued for retry; saved grades are not recomputed.")
+            if self.config.web_mode:
+                self.control = "retry-web"
+                self.say(
+                    "Failed operations and emails queued for retry; saved grades are not recomputed. "
+                    "Messages that could not reach Telegram before the switch to the web app are kept as "
+                    "history and are not re-sent."
+                )
+            else:
+                self.control = "retry"
+                self.say(
+                    "Failed operations and deliveries queued for retry; saved grades are not recomputed."
+                )
         elif cmd in ("pause", "unpause"):
             was_paused = self.state.paused
             self.state.paused = cmd == "pause"
@@ -1726,7 +1736,11 @@ class Service:
                     "for your own progress. Guest data is never sent to the public dashboard."
                 )
         elif cmd == "status":
-            self.say(json.dumps(self.repo.status(), indent=2))
+            counts = self.repo.status()
+            if self.config.web_mode:
+                # Telegram deliveries that failed before the switch are history, not current failures.
+                counts["failed_before_web"] = self.repo.failure_counts(web_mode=True)["telegram_history"]
+            self.say(json.dumps(counts, indent=2))
 
     def complete_task(self, arg: str):
         parts = arg.split()

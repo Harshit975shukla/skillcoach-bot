@@ -403,16 +403,20 @@ class Repository:
                         "ON CONFLICT DO NOTHING",
                         (job + ":next", Jsonb(control), self.learner_id, authorized["access_generation"]),
                     )
-            elif control == "retry":
+            elif control in ("retry", "retry-web"):
                 conn.execute(
                     "UPDATE jobs SET status='pending', attempts=0, available_at=now() "
                     "WHERE status='failed' AND learner_id=%s AND access_generation=%s",
                     (self.learner_id, authorized["access_generation"]),
                 )
+                # Web delivery never fails a message, so in web mode a failed message or video is a
+                # Telegram delivery from before the switch: it stays as history and is never re-sent
+                # into the inbox. Failed emails are retried.
                 conn.execute(
                     "UPDATE outbox SET status='pending', attempts=0, available_at=now() "
-                    "WHERE status='failed' AND learner_id=%s AND access_generation=%s",
-                    (self.learner_id, authorized["access_generation"]),
+                    "WHERE status='failed' AND learner_id=%s AND access_generation=%s "
+                    "AND (%s OR body->>'kind'='email')",
+                    (self.learner_id, authorized["access_generation"], control == "retry"),
                 )
             elif control == "cancel":
                 conn.execute(
@@ -628,6 +632,26 @@ class Repository:
                 ]
                 for table in ("jobs", "outbox")
             }
+
+    def failure_counts(self, *, web_mode: bool, all_learners=False) -> dict:
+        """Failed work that needs attention. In web mode a failed message or video can only be a
+        Telegram delivery from before the switch, so it is counted separately as history."""
+        scope = (all_learners and self.is_owner, self.learner_id)
+        with self.connection() as conn:
+            jobs = conn.execute(
+                "SELECT count(*) AS n FROM jobs WHERE status='failed' AND (%s OR learner_id=%s)", scope
+            ).fetchone()["n"]
+            outbox = conn.execute(
+                "SELECT count(*) FILTER (WHERE NOT %s OR coalesce(body->>'kind','')='email') AS deliveries, "
+                "count(*) FILTER (WHERE %s AND coalesce(body->>'kind','')<>'email') AS telegram_history "
+                "FROM outbox WHERE status='failed' AND (%s OR learner_id=%s)",
+                (web_mode, web_mode, *scope),
+            ).fetchone()
+        return {
+            "jobs": jobs,
+            "deliveries": outbox["deliveries"],
+            "telegram_history": outbox["telegram_history"],
+        }
 
     def needs_media(self) -> bool:
         with self.connection() as conn:

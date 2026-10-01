@@ -215,6 +215,49 @@ def test_web_mode_never_renders_video_and_failed_email_is_recoverable(harness):
     assert notice["status"] == "sent"  # The learner sees the recoverable failure in the inbox.
 
 
+def telegram_era_failure(h, key="alert:late:quiz:2026-09-30:0"):
+    h.repo.outbox[key] = {
+        "id": key,
+        "job_id": key.rsplit(":", 1)[0],
+        "status": "failed",
+        "body": {"kind": "text", "text": "Delivery delay"},
+    }
+
+
+def test_web_mode_keeps_telegram_era_failures_as_history_and_still_reports_real_ones(
+    harness, monkeypatch, capsys
+):
+    h = harness
+    monkeypatch.setattr("skillcoach.cli.Runtime.from_env", lambda: h.runtime)
+    h.runtime.config = web_config(h.runtime.config)
+    telegram_era_failure(h)
+    assert main(["recover", "--no-media"]) == 0
+    printed = capsys.readouterr()
+    assert '"telegram_history": 1' in printed.out and "kept as history" in printed.err
+    assert "Recoverable failures remain" not in printed.err
+    # /retry retries failed emails and work, but never re-sends a stale Telegram-era message.
+    h.repo.outbox["note:email"] = {
+        "id": "note:email",
+        "job_id": "note",
+        "status": "failed",
+        "body": {"kind": "email", "subject": "A note", "text": "Hi"},
+    }
+    assert main(["recover", "--no-media"]) == 1
+    assert "Recoverable failures remain" in capsys.readouterr().err
+    h.repo.enqueue("telegram:retry", {"type": "telegram", "text": "/retry"})
+    h.runtime.recover(media=False)
+    assert h.repo.outbox["alert:late:quiz:2026-09-30:0"]["status"] == "failed"
+    assert h.repo.outbox["note:email"]["status"] == "sent" and h.email.sent[-1]["subject"] == "A note"
+    assert "kept as history" in h.repo.outbox["telegram:retry:0"]["body"]["text"]
+    assert main(["recover", "--no-media"]) == 0
+    # Telegram mode is unchanged: every failed delivery counts and /retry resends it.
+    h.runtime.config = replace(h.runtime.config, delivery_channel="telegram")
+    assert main(["recover", "--no-media"]) == 1
+    h.repo.enqueue("telegram:retry-2", {"type": "telegram", "text": "/retry"})
+    h.runtime.recover(media=False)
+    assert h.repo.outbox["alert:late:quiz:2026-09-30:0"]["status"] == "sent"
+
+
 def test_email_rows_without_an_address_are_suppressed_and_telegram_mode_is_unchanged(harness):
     h = harness
     h.repo.outbox["note:0"] = {
@@ -568,6 +611,70 @@ def test_inbox_follows_delivery_order_when_an_old_message_is_sent_again(web):
     assert resent["status"] == "sent" and resent["delivered_seq"] > cursor
     assert [message["id"] for message in later] == [resent["delivered_seq"]]
     assert post(web, "/web/feed").json["messages"][-1]["id"] == resent["delivered_seq"]
+
+
+@pytest.mark.postgres
+def test_telegram_era_failures_stay_history_while_web_failures_are_retried(web):
+    sign_in(web, "owner@example.test")
+    alert, note = "alert:late:quiz:2026-09-30", "admin:note:mail"
+    with web.bot.repo.connection() as conn:
+        generation = conn.execute("SELECT generation FROM learners WHERE id='owner'").fetchone()["generation"]
+        for job in (alert, note):
+            conn.execute(
+                "INSERT INTO jobs(id,payload,status,learner_id,access_generation) VALUES (%s,%s,'done','owner',%s)",
+                (job, Jsonb({"type": "notice", "text": "x"}), generation),
+            )
+        for key, job, body, code in (
+            (alert + ":0", alert, {"kind": "text", "text": "Delivery delay"}, "http_401"),
+            (
+                alert + ":0:delivery-error",
+                alert,
+                {"kind": "text", "text": "Could not deliver", "recovery_notice": True},
+                "http_401",
+            ),
+            (note + ":1", note, {"kind": "email", "subject": "A note", "text": "Hi"}, "email_failed"),
+        ):
+            conn.execute(
+                "INSERT INTO outbox(id,job_id,body,status,attempts,error_code,learner_id,access_generation) "
+                "VALUES (%s,%s,%s,'failed',5,%s,'owner',%s)",
+                (key, job, Jsonb(body), code, generation),
+            )
+    repo = web.bot.runtime.repo
+    assert repo.failure_counts(web_mode=True, all_learners=True) == {
+        "jobs": 0,
+        "deliveries": 1,
+        "telegram_history": 2,
+    }
+    assert repo.failure_counts(web_mode=False, all_learners=True)["deliveries"] == 3
+    assert send(web, text="/retry").json["status"] == "queued"
+    web.bot.runtime.recover(media=False)
+    with web.bot.repo.connection() as conn:
+        rows = {
+            row["id"]: row
+            for row in conn.execute(
+                "SELECT id,status,attempts,error_code,delivered_seq FROM outbox WHERE job_id IN (%s,%s)",
+                (alert, note),
+            )
+        }
+    # History is preserved exactly and never reaches the inbox; the failed email was retried.
+    for key in (alert + ":0", alert + ":0:delivery-error"):
+        row = rows[key]
+        assert (row["status"], row["attempts"], row["error_code"], row["delivered_seq"]) == (
+            "failed",
+            5,
+            "http_401",
+            None,
+        )
+    assert rows[note + ":1"]["status"] == "sent" and web.email.sent[-1]["subject"] == "A note"
+    texts = "\n".join(message.get("text", "") for message in post(web, "/web/feed").json["messages"])
+    assert "Delivery delay" not in texts and "Could not deliver" not in texts and "kept as history" in texts
+    assert repo.failure_counts(web_mode=True, all_learners=True) == {
+        "jobs": 0,
+        "deliveries": 0,
+        "telegram_history": 2,
+    }
+    assert send(web, text="/status").json["status"] == "queued"
+    assert '"failed_before_web": 2' in post(web, "/web/feed").json["messages"][-1]["text"]
 
 
 @pytest.mark.postgres

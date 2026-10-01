@@ -291,8 +291,15 @@ def main(argv=None):
                 intended = now_ist().date()
             schedule(runtime, args.kind, intended, media=not args.no_media)
         counts = runtime.repo.status(all_learners=True)
-        print(json.dumps(counts))
-        if any(row["status"] == "failed" and row["count"] for rows in counts.values() for row in rows):
+        failures = runtime.repo.failure_counts(web_mode=runtime.config.web_mode, all_learners=True)
+        print(json.dumps({**counts, "failures": failures}))
+        if failures["telegram_history"]:
+            print(
+                f"{failures['telegram_history']} Telegram deliveries that failed before the switch to web mode "
+                "are kept as history; web mode never re-sends them.",
+                file=sys.stderr,
+            )
+        if failures["jobs"] or failures["deliveries"]:
             print(
                 "Recoverable failures remain. Inspect private queue error codes; use /retry after fixing configuration.",
                 file=sys.stderr,
