@@ -15,7 +15,7 @@ from skillcoach.clients import ExternalError
 from skillcoach.config import Config
 from skillcoach.models import State
 from skillcoach.runtime import Runtime
-from skillcoach.storage import Repository
+from skillcoach.storage import TELEGRAM_HISTORY_KINDS, Repository
 from skillcoach.timeutil import IST
 
 
@@ -232,7 +232,8 @@ class MemoryRepository:
                 if row["status"] == "failed":
                     row["status"] = "pending"
             for row in self.outbox.values():
-                if row["status"] == "failed" and (control == "retry" or row["body"].get("kind") == "email"):
+                history = control == "retry-web" and row["body"].get("kind") in TELEGRAM_HISTORY_KINDS
+                if row["status"] == "failed" and not history:
                     row["status"] = "pending"
         elif control == "pause":
             for row in self.outbox.values():
@@ -338,7 +339,7 @@ class MemoryRepository:
 
     def failure_counts(self, *, web_mode, all_learners=False):
         failed = [row for row in self.outbox.values() if row["status"] == "failed"]
-        history = [row for row in failed if web_mode and row["body"].get("kind") != "email"]
+        history = [row for row in failed if web_mode and row["body"].get("kind") in TELEGRAM_HISTORY_KINDS]
         return {
             "jobs": sum(job["status"] == "failed" for job in self.jobs.values()),
             "deliveries": len(failed) - len(history),

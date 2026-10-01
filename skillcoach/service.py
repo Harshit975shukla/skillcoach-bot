@@ -1519,7 +1519,7 @@ class Service:
             if self.config.web_mode:
                 self.control = "retry-web"
                 self.say(
-                    "Failed operations and emails queued for retry; saved grades are not recomputed. "
+                    "Failed operations and deliveries queued for retry; saved grades are not recomputed. "
                     "Messages that could not reach Telegram before the switch to the web app are kept as "
                     "history and are not re-sent."
                 )
