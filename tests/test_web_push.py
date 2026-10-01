@@ -625,7 +625,9 @@ def test_registration_rechecks_the_exact_session_inside_its_transaction(web):
         web_push.subscribe(runtime, authenticated, token, device())
     web.clock.now -= timedelta(days=15)
     # Sign-out racing a subscription: whichever commits first, no binding of that session survives.
-    for _ in range(4):
+    # (Twenty minutes apart: sign-in codes are limited to five an hour per address.)
+    for _ in range(2):
+        web.clock.now += timedelta(minutes=20)
         racer, _ = browser(web, "learner@example.test")
         token = session_of(racer)
         gate = threading.Barrier(2)
@@ -705,30 +707,29 @@ def test_each_device_is_delivered_once_across_failures_retries_and_turns(web, mo
     assert [endpoint for _, endpoint, _ in web.push.attempts].count(phone["endpoint"]) == 1
     assert [endpoint for _, endpoint, _ in web.push.attempts].count(desk["endpoint"]) == 2
     # Out of time after the first device: the row stays pending without spending an attempt, and the
-    # next turn continues with the remaining device only.
+    # next turn continues with the remaining device only. (The newest device, desk, goes first.)
     web.push.attempts.clear()
-    web.push.answers[desk["endpoint"]] = [ExternalError("request_budget_exhausted"), "accepted"]
+    web.push.answers[phone["endpoint"]] = [ExternalError("request_budget_exhausted"), "accepted"]
     remind(web, web.learner, deliver=False)
-    web.bot.runtime.deliver_one(Budget(60))  # the email
-    assert web.bot.runtime.deliver_one(Budget(60)) is False
+    deliver(web)  # the note and its email are delivered; the push row stops after one device
     row = push_rows(web)[-1]
-    assert row["status"] == "pending" and row["attempts"] == 0 and len(row["body"]["outcomes"]) == 1
+    assert row["status"] == "pending" and row["attempts"] == 0
+    assert row["body"]["outcomes"] == {ids[desk["endpoint"]]: "accepted"}
+    assert [endpoint for _, endpoint, _ in web.push.attempts] == [desk["endpoint"]]
     deliver(web)
     assert push_rows(web)[-1]["status"] == "sent"
-    assert sorted(endpoint for _, endpoint, _ in web.push.attempts) == sorted(
-        [phone["endpoint"], desk["endpoint"]]
-    )
+    assert [endpoint for _, endpoint, _ in web.push.attempts] == [desk["endpoint"], phone["endpoint"]]
     # The real time window: a slow first device leaves the second for the next turn.
     web.push.attempts.clear()
     web.push.answers.clear()
     monkeypatch.setattr(web_push, "ROW_SECONDS", 1.6)
     monkeypatch.setattr(web_push, "CONNECT_SECONDS", 0.3)
     monkeypatch.setattr(web_push, "READ_SECONDS", 0.4)
-    web.push.before = lambda target: time.sleep(1.0) if len(web.push.attempts) == 0 else None
+    web.push.before = lambda target: time.sleep(1.3) if len(web.push.attempts) == 0 else None
     remind(web, web.learner, deliver=False)
-    web.bot.runtime.deliver_one(Budget(60))  # the email
-    assert web.bot.runtime.deliver_one(Budget(60)) is False
+    deliver(web)
     assert len(web.push.attempts) == 1 and push_rows(web)[-1]["status"] == "pending"
+    assert push_rows(web)[-1]["attempts"] == 0
     web.push.before = None
     deliver(web)
     assert len(web.push.attempts) == 2 and push_rows(web)[-1]["status"] == "sent"
