@@ -99,6 +99,11 @@ def learner_by_email(web, email):
         return conn.execute("SELECT * FROM learners WHERE email=%s", (email,)).fetchone()
 
 
+def invitation(web, token):
+    with web.bot.repo.connection() as conn:
+        return conn.execute("SELECT * FROM invitations WHERE token_hash=%s", (digest(token),)).fetchone()
+
+
 def later(web, seconds=61):
     web.clock.now += timedelta(seconds=seconds)
 
@@ -120,9 +125,9 @@ def test_invited_person_verifies_email_then_owner_approves_once(web):
         assert (
             conn.execute("SELECT count(*) AS n FROM learners WHERE email=%s", (address,)).fetchone()["n"] == 0
         )
-        assert conn.execute("SELECT status FROM invitations").fetchone()["status"] == "open"
         row = conn.execute("SELECT * FROM web_joins").fetchone()
         assert code not in (row["code_hash"], row["verifier_hash"]) and row["status"] == "pending"
+    assert invitation(web, token)["status"] == "open"
     wrong = "000000" if code != "000000" else "111111"
     failed = verify(web, wrong, browser)
     assert failed.status_code == 400 and "4 attempts remaining" in failed.json["error"]
@@ -140,9 +145,8 @@ def test_invited_person_verifies_email_then_owner_approves_once(web):
     member = learner_by_email(web, address)
     assert member["status"] == "pending" and member["telegram_id"] is None
     assert member["display_name"] == "Asha Rao"
-    with web.bot.repo.connection() as conn:
-        claimed = conn.execute("SELECT status, claimed_by FROM invitations").fetchone()
-        assert (claimed["status"], claimed["claimed_by"]) == ("claimed", member["id"])
+    claimed = invitation(web, token)
+    assert (claimed["status"], claimed["claimed_by"]) == ("claimed", member["id"])
     owner_mail = mail(web, "owner@example.test", "New SkillCoach access request")
     assert len(owner_mail) == 1 and "a•••@example.test" in owner_mail[0]["text"]
     assert address not in owner_mail[0]["text"] and member["id"] in owner_mail[0]["text"]
@@ -187,7 +191,7 @@ def test_join_refuses_existing_access_owner_address_revoked_and_expired_links(we
         assert (
             conn.execute("SELECT * FROM learners WHERE id=%s", (web.learner.learner_id,)).fetchone() == before
         )
-        assert conn.execute("SELECT status FROM invitations").fetchone()["status"] == "open"
+    assert invitation(web, token)["status"] == "open"
     later(web)
     assert start(web, token, "owner@example.test", browser).status_code == 200
     refused = verify(web, code_for(web, "owner@example.test"), browser)
@@ -195,9 +199,7 @@ def test_join_refuses_existing_access_owner_address_revoked_and_expired_links(we
     # Revoking the invitation while its code is in flight stops the join.
     later(web)
     assert start(web, token, "late@example.test", browser).status_code == 200
-    with web.bot.repo.connection() as conn:
-        invite_id = conn.execute("SELECT id FROM invitations").fetchone()["id"]
-    act(admin, "revokeinvite", "owner", {"invite_id": invite_id})
+    act(admin, "revokeinvite", "owner", {"invite_id": invitation(web, token)["id"]})
     refused = verify(web, code_for(web, "late@example.test"), browser)
     assert refused.status_code == 403 and "not valid" in refused.json["error"]
     assert start(web, token, "late@example.test", web.app.test_client()).status_code == 403

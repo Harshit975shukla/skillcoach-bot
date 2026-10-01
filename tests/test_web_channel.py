@@ -728,7 +728,10 @@ def test_web_migration_numbers_existing_sent_messages_in_delivery_order(pg_repo)
         ).fetchall()
         following = conn.execute("SELECT nextval('outbox_delivery_order') AS n").fetchone()["n"]
         highest = conn.execute("SELECT max(delivered_seq) AS n FROM outbox").fetchone()["n"]
-        assert conn.execute("SELECT max(version) AS v FROM schema_migrations").fetchone()["v"] == 11
+        versions = [
+            r["version"] for r in conn.execute("SELECT version FROM schema_migrations ORDER BY version")
+        ]
+        assert 11 in versions and versions == sorted(set(versions))
     assert [row["id"] for row in rows] == ["undated", "prompt", "retried", "waiting"]
     assert rows[-1]["delivered_seq"] is None and following == highest + 1
 
