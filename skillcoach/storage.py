@@ -530,15 +530,19 @@ class Repository:
                 "OR (l.status<>'active' AND NOT o.access_notice))"
             )
             # A failed item blocks only its own ordered message group, not unrelated commands.
-            # Reminder rows (email, push) wait for the content before them but never block
-            # anything themselves, so a failing email cannot hold back its push or vice versa.
+            # Reminder rows (email, push) and Telegram copies wait for the content before them but
+            # never block anything themselves, so a failing email cannot hold back its push or vice
+            # versa. Telegram copies of one job also go out in order among themselves.
             row = conn.execute(
                 "SELECT o.* FROM outbox o JOIN learners l ON l.id=o.learner_id "
                 "WHERE o.status IN ('pending','failed') "
                 "AND o.available_at<=now() AND o.attempts < 5 "
                 "AND (%s OR o.body->>'kind' <> 'media') AND (o.body->>'recovery_notice'='true' OR NOT EXISTS "
                 "(SELECT 1 FROM outbox p WHERE p.job_id=o.job_id AND p.sequence<o.sequence "
-                "AND p.status IN ('pending','failed') AND coalesce(p.body->>'kind','') NOT IN ('email','push'))) "
+                "AND p.status IN ('pending','failed') AND coalesce(p.body->>'kind','') NOT IN ('email','push','telegram')"
+                ")) AND (o.body->>'kind' IS DISTINCT FROM 'telegram' OR NOT EXISTS "
+                "(SELECT 1 FROM outbox t WHERE t.job_id=o.job_id AND t.sequence<o.sequence "
+                "AND t.status IN ('pending','failed') AND t.attempts<5 AND t.body->>'kind'='telegram')) "
                 "ORDER BY CASE WHEN o.body->>'kind'='media' THEN 1 ELSE 0 END, "
                 "l.last_delivery_at,o.sequence LIMIT 1",
                 (media,),
@@ -568,6 +572,26 @@ class Repository:
                 "UPDATE outbox SET body=%s WHERE id=%s AND learner_id=%s", (Jsonb(body), key, self.learner_id)
             )
 
+    def postpone(self, key: str, token: str, seconds: int):
+        """Look at an open item again later, without spending an attempt."""
+        with self.connection() as conn:
+            self._fence(conn, "delivery", token)
+            conn.execute(
+                "UPDATE outbox SET available_at=now()+make_interval(secs => %s) WHERE id=%s AND learner_id=%s "
+                "AND status IN ('pending','failed')",
+                (seconds, key, self.learner_id),
+            )
+
+    def deliver_to_inbox(self, key: str, token: str, config):
+        """Web delivery of a text message: it joins the inbox and, in both mode, the same transaction
+        may add its Telegram copy (telegram_copies.create_copy)."""
+        from skillcoach.telegram_copies import create_copy
+
+        with self.connection() as conn:
+            self._fence(conn, "delivery", token)
+            if self._finish_delivery(conn, key, "sent"):
+                create_copy(conn, config, self.learner_id, key)
+
     def record_push_outcome(
         self, key: str, token: str, binding: str, outcome: str, *, forget=False, sent=False
     ):
@@ -593,25 +617,31 @@ class Repository:
                 (binding, outcome, key, self.learner_id),
             )
 
-    def delivery_result(self, key: str, token: str, status: str, code: str | None = None, *, notice=True):
+    def delivery_result(
+        self, key: str, token: str, status: str, code: str | None = None, *, notice=True, final=False
+    ):
         with self.connection() as conn:
             self._fence(conn, "delivery", token)
-            self._finish_delivery(conn, key, status, code, notice=notice)
+            self._finish_delivery(conn, key, status, code, notice=notice, final=final)
 
-    def _finish_delivery(self, conn, key: str, status: str, code: str | None = None, *, notice=True):
-        """Record a delivery outcome inside the caller's fenced transaction."""
+    def _finish_delivery(
+        self, conn, key: str, status: str, code: str | None = None, *, notice=True, final=False
+    ) -> bool:
+        """Record a delivery outcome inside the caller's fenced transaction. A final failure is not
+        retried automatically. Returns whether the row was still open (pending or failed)."""
         # delivered_seq records delivery order (one delivery lease runs at a time, so it is
         # monotonic); the web inbox pages by it so retried and recovered messages still appear.
         updated = conn.execute(
-            "UPDATE outbox SET status=%s, error_code=%s, attempts=attempts+1, "
+            "UPDATE outbox SET status=%s, error_code=%s, "
+            "attempts=CASE WHEN %s THEN greatest(attempts+1, 5) ELSE attempts+1 END, "
             "available_at=now()+interval '5 minutes', "
             "delivered_at=CASE WHEN %s='sent' THEN now() ELSE NULL END, "
             "delivered_seq=CASE WHEN %s='sent' THEN nextval('outbox_delivery_order') ELSE delivered_seq END "
             "WHERE id=%s AND learner_id=%s AND status IN ('pending','failed') RETURNING id",
-            (status, code, status, status, key, self.learner_id),
+            (status, code, final, status, status, key, self.learner_id),
         ).fetchone()
         if not updated:
-            return
+            return False
         if status == "sent":
             conn.execute(
                 "UPDATE outbox SET status='suppressed' WHERE id=%s AND learner_id=%s "
@@ -634,9 +664,9 @@ class Repository:
             item = conn.execute(
                 "SELECT * FROM outbox WHERE id=%s AND learner_id=%s", (key, self.learner_id)
             ).fetchone()
-            # A failed push is reported to the owner like any delivery failure, but the learner's
-            # conversation gets no notice: there is nothing for them to retry.
-            if not key.endswith(":delivery-error") and item["body"].get("kind") != "push":
+            # A failed push or Telegram copy is reported to the owner like any delivery failure, but
+            # the learner's conversation gets no notice: the message itself is already in the inbox.
+            if not key.endswith(":delivery-error") and item["body"].get("kind") not in ("push", "telegram"):
                 notice_body = {
                     "kind": "text",
                     "recovery_notice": True,
@@ -658,6 +688,7 @@ class Repository:
                         item["access_notice"],
                     ),
                 )
+        return True
 
     def slot_deliveries(self, key: str) -> list[dict]:
         """Per learner: when a scheduled slot's messages first/last reached Telegram and what is left."""

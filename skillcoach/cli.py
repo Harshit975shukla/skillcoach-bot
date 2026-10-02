@@ -162,8 +162,11 @@ def polling(runtime: Runtime):
             if status == "action":
                 runtime.repo.accept_update(update["update_id"], data, runtime.config)
                 if data.get("callback_id"):
+                    from skillcoach.telegram_copies import may_acknowledge
+
                     try:
-                        runtime.telegram.acknowledge(data["callback_id"], Budget())
+                        if may_acknowledge(runtime.repo, runtime.config, data["actor_id"]):
+                            runtime.telegram.acknowledge(data["callback_id"], Budget())
                     except ExternalError:
                         logging.warning("poll_callback_ack_failed")
             # Acknowledge only after durable insertion; dedup handles restart replay.
@@ -187,6 +190,12 @@ def main(argv=None):
     announce = sub.add_parser("announce-ready", help="Send one idempotent owner help message for a release")
     announce.add_argument("--release", required=True)
     sub.add_parser("needs-media", help="Exit 0 for queued media/lesson work, 3 if absent")
+    sub.add_parser("telegram-status", help="Show Telegram copy health (both mode); states and counts only")
+    restore = sub.add_parser(
+        "telegram-restore",
+        help="After the owner has messaged the bot, let copies to the owner confirm a bot-wide pause is over",
+    )
+    restore.add_argument("--confirm", action="store_true")
     sub.add_parser("email-test", help="Send one test email to OWNER_EMAIL to check SMTP settings")
     sub.add_parser("poll", help="Explicit local polling adapter; refuses an active webhook")
     sub.add_parser("configure-telegram", help="Set the bot command menu and dashboard menu button")
@@ -257,6 +266,22 @@ def main(argv=None):
             return 0
         if args.command == "needs-media":
             return 0 if Repository(database_url()).needs_media() else 3
+        if args.command in ("telegram-status", "telegram-restore"):
+            from skillcoach import telegram_copies
+            from skillcoach.config import Config
+
+            config = Config.from_env()
+            repository = Repository(database_url())
+            if args.command == "telegram-status":
+                print(json.dumps(telegram_copies.status(repository, config), indent=2))
+                return 0
+            if not args.confirm:
+                raise ValueError(
+                    "Restoration resumes Telegram copies to the owner first; rerun with --confirm."
+                )
+            result = telegram_copies.restore(repository, config)
+            print(json.dumps(result))
+            return 0 if result["restored"] else 4
         runtime = Runtime.from_env()
         if args.command == "email-test":
             print(json.dumps(email_test(runtime)))

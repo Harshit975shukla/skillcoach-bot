@@ -42,6 +42,8 @@ TABLES = (
     "web_media_refs",
     "web_media_usage",
     "web_media_wake",
+    "telegram_starts",
+    "telegram_pauses",
 )
 log = logging.getLogger(__name__)
 

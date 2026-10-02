@@ -805,7 +805,8 @@ See `.env.example`; environment variables are loaded at operation startup, not n
 | `LABS_GITHUB_TOKEN` | Optional secret: a fine-grained token with no repository permissions, used only for rate limits; never `GH_PAT` |
 | `CRON_SECRET` | Vercel-only secret (at least 32 random characters) that Vercel sends as `Authorization: Bearer ...` to `/cron/*`; unset or short fails closed |
 | `SCHEDULER_REPO`, `SCHEDULER_GITHUB_TOKEN` | Vercel-only: this bot's `owner/repository` and a token allowed to dispatch its workflows (Actions: write). The token falls back to `GITHUB_TOKEN`. In web mode the same settings start the bounded worker wake for requested lessons (see web mode) |
-| `DELIVERY_CHANNEL` | `telegram` (default) or `web` for the web + email fallback below |
+| `DELIVERY_CHANNEL` | `telegram` (default), `web` for the web + email fallback below, or `both` for web mode plus Telegram copies (see "Telegram copies in both mode"; not activated) |
+| `TELEGRAM_LEGACY_BOT_ID` | Both mode only: the public numeric ID of the bot whose Telegram updates are already recorded (the digits before `:` in its token); the configured bot's own ID if it is the same bot with a new token |
 | `WEB_APP_URL`, `OWNER_EMAIL`, `EMAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | Web + email settings, all required in web mode and ignored otherwise. In GitHub Actions, `OWNER_EMAIL`, `EMAIL_FROM`, `SMTP_USERNAME` and `SMTP_PASSWORD` are **secrets**, because this public repository's run logs show variable values |
 | `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY` | Optional notifications for the installable web app (web mode only): one VAPID key pair from `skillcoach.web_push.generate_keys()`. Both or neither; a mismatched pair stops the app with a configuration error. In GitHub Actions the private key is a **secret** and the public key a variable |
 
@@ -964,13 +965,15 @@ only the transport changes:
 
 Not included: public join requests without an invitation.
 
-**Before deploying this code in either mode**, apply migrations `010_usage_counters.sql`,
-`011_web_email_channel.sql`, `012_web_joins.sql`, `013_web_push.sql` and `014_web_media.sql` (all
-additive). Migration 011 adds learner emails, sign-in codes, web sessions and the delivery order that
+**Before deploying this code in any mode**, apply migrations `010_usage_counters.sql`,
+`011_web_email_channel.sql`, `012_web_joins.sql`, `013_web_push.sql`, `014_web_media.sql` and
+`015_telegram_copies.sql` (all additive). Migration 011 adds learner emails, sign-in codes, web sessions and the delivery order that
 every delivery now records, Telegram included; 012 adds unconfirmed web join requests, which web
 sign-in limits also count; 013 adds the notification devices that sign-out, revocation and address
 changes remove; 014 adds private lesson video storage, its references, byte counters and the worker
-wake. This code must not run against an older schema.
+wake; 015 records which bot each Telegram update came through (existing receipts keep bot ID 0, the
+recorded bot) and adds the per-bot start, pause and Telegram-prompt records of both mode. Every
+Telegram update now writes them, so this code must not run against an older schema.
 
 **Switching on** needs the settings above in Vercel and GitHub (Gmail works with an app password on
 port 587), a release of this code, then `python -m skillcoach.cli email-test` to confirm the owner
@@ -980,6 +983,75 @@ history: `/retry` and recovery never re-send them into the inbox, `/status` show
 email, a dashboard export, a current web video, failed work or an unknown kind) still fails the run
 and is retried as usual. **Switching back** is `DELIVERY_CHANNEL=telegram` and a redeploy; web sessions simply
 stop working and Telegram delivery resumes, with nothing replayed.
+
+## Telegram copies in both mode (built, not activated)
+
+**Status:** built and tested, but switched off. Using a replacement bot is on hold until Telegram
+answers about the frozen original bot. No new bot, token, webhook or production migration 015 exists
+for it yet, and enabling it is a separate, gated release.
+
+`DELIVERY_CHANNEL=both` is web mode plus copies in Telegram through the bot of
+`TELEGRAM_BOT_TOKEN`. Everything in web mode still applies (sign-in, inbox, videos, email, push), and
+the web inbox stays the complete record: every message reaches it first, exactly as in web mode.
+
+- **Who gets copies:** only people who have sent the configured bot a message. A start is recorded per
+  bot, so messaging one bot never authorizes copies from another. Everyone else keeps the web inbox and
+  email reminders.
+- **What is copied:** scheduled lessons, quizzes, reviews, mentor notes and the answers to a learner's
+  own Telegram messages. Answers to their web messages stay on the web. Copies go out in order within
+  their lesson or reply, and never hold back the inbox, email or push.
+- **Checked right before every send:**
+  - the learner's access and start;
+  - the bot's and the person's health;
+  - whether the message still applies (the current question, plan, pause and scheduled day);
+  - the current narration choice.
+
+  Nothing is locked while sending. Finishing a copy takes the learner, coaching-state and message
+  locks in the same order as `/retry` and `/cancel`: a concurrent `/retry` waits, and a `/cancel` that
+  withdrew the copy stands.
+- **Questions:** answer buttons stay bound to their question. A reply typed in Telegram answers the
+  last question this same bot showed, tracked separately from the web page's question. A copy of a
+  question already answered elsewhere is skipped, not shown with old buttons.
+- **Videos:** a stored lesson video or still is uploaded from private storage. Telegram's file ID is
+  cached per bot. A video that is no longer kept, was not made, or has narration that is now turned off
+  becomes an honest text note pointing to the lesson page.
+- **Email reminders:** the reminder for a lesson, quiz, review or note waits for that event's copies,
+  at most 30 minutes after its last message reached the inbox. It is dropped only when every message
+  of the event that reached the inbox was also accepted by Telegram (or skipped because the learner had
+  already moved on). One accepted introduction is not delivery of the whole lesson. Telegram accepting
+  a message does not mean it was read.
+- **Health:**
+  - Telegram rejecting the token (401) or reporting the bot as frozen pauses all copies. The owner gets
+    one inbox notice, email reminders go out instead, and skipped copies are never re-sent.
+  - A person who blocked the bot, never started it, deleted their account, or is an unknown chat or
+    invalid peer (or any other refusal, 403) is paused alone, until they message the bot again.
+  - Other errors are retried for passing faults (up to five attempts) or end that one copy.
+  - While all copies are paused, button taps are still processed, but Telegram is not contacted to
+    acknowledge them.
+  - `/status` shows each learner only their own Telegram line.
+- **Restoring after a pause of all copies:**
+  1. The owner sends the bot a message.
+  2. An operator runs `python -m skillcoach.cli telegram-restore --confirm`. It is refused (exit code 4)
+     unless the owner's message came after the pause began.
+  3. Copies then go only to the owner, until Telegram accepts one; then everyone's resume.
+
+  `python -m skillcoach.cli telegram-status` shows states and counts only, never IDs or text.
+- **Bot identity:** Telegram update IDs, starts, file IDs and prompts are kept per bot.
+  - `TELEGRAM_LEGACY_BOT_ID` names the bot whose updates are already recorded. If the configured bot is
+    that same bot (a regenerated token), its records still deduplicate.
+  - A copy made for one bot is never sent through another, and an answer to a request made through
+    another bot stays on the web.
+  - Both mode refuses to start with a token whose bot ID cannot be read, or without
+    `TELEGRAM_LEGACY_BOT_ID`.
+- **Enabling it later (only after the hold is lifted):**
+  1. Apply migration 015 with the release gate.
+  2. Set `DELIVERY_CHANNEL=both`, the token and `TELEGRAM_LEGACY_BOT_ID` in Vercel and GitHub, and
+     register the webhook with `TELEGRAM_WEBHOOK_SECRET`.
+  3. Release.
+  4. Each person sends the bot a message.
+
+  **Switching back** is `DELIVERY_CHANNEL=web`: queued copies are then suppressed and nothing is
+  replayed.
 
 ## Private import and privacy-safe dashboard
 

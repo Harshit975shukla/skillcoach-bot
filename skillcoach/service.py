@@ -1740,7 +1740,10 @@ class Service:
             if self.config.web_mode:
                 # Telegram deliveries that failed before the switch are history, not current failures.
                 counts["failed_before_web"] = self.repo.failure_counts(web_mode=True)["telegram_history"]
-            self.say(json.dumps(counts, indent=2))
+            from skillcoach.telegram_copies import learner_view
+
+            telegram = learner_view(self.repo, self.config, self.repo.learner_id)
+            self.say(json.dumps(counts, indent=2) + (f"\n{telegram}" if telegram else ""))
 
     def complete_task(self, arg: str):
         parts = arg.split()

@@ -135,9 +135,12 @@ class Runtime:
                 from skillcoach.web_channel import notification
 
                 # In web mode, scheduled and mentor messages also send one email reminder, and a
-                # push notification to the devices where the learner turned notifications on.
+                # push notification to the devices where the learner turned notifications on. In both
+                # mode the email waits for the Telegram outcome (telegram_copies.email_decision).
                 note = notification(job, result[1], self.config)
                 if note:
+                    if self.config.telegram_copies:
+                        note["hold_for_telegram"] = True
                     extra = [note]
                     if self.config.push_enabled:
                         from skillcoach.web_push import reminder
@@ -170,7 +173,9 @@ class Runtime:
             self.repo.release("domain", token)
 
     def followup_proposal(self, update_id: int, budget: Budget):
-        self.followup(f"telegram:{update_id}", budget)
+        from skillcoach.access import telegram_key
+
+        self.followup(telegram_key(self.config, update_id), budget)
 
     def followup(self, key: str, budget: Budget):
         """Prepare a queued plan proposal that belongs to this interaction, if time allows."""
@@ -220,19 +225,27 @@ class Runtime:
                 return self._deliver_email(scoped, item, body, token, budget)
             if body["kind"] == "push":
                 return self._deliver_push(scoped, item, body, token, budget)
+            if body["kind"] == "telegram":
+                from skillcoach import telegram_copies
+
+                if not self.config.telegram_copies:
+                    scoped.delivery_result(item["id"], token, "suppressed", "copies_off")
+                    return True
+                return telegram_copies.deliver(self, scoped, item, body, token, budget)
             if web and body["kind"] == "media":
                 from skillcoach import web_media
 
                 # Rendered, stored privately and referenced before the message counts as sent.
                 return web_media.deliver(self, scoped, item, body, token, budget)
             if web and body["kind"] == "text":
-                # The learner's private web inbox shows sent messages; nothing goes to Telegram.
+                # The learner's private web inbox shows sent messages; in both mode, the same
+                # transaction may add a Telegram copy (telegram_copies.create_copy).
                 try:
                     scoped.ensure_delivery_authorized(item["id"], token)
                 except MembershipChanged:
                     scoped.delivery_result(item["id"], token, "suppressed")
                     return True
-                scoped.delivery_result(item["id"], token, "sent")
+                scoped.deliver_to_inbox(item["id"], token, self.config)
                 return True
             telegram = self.telegram if scoped.is_owner else self.telegram.for_chat(scoped.recipient())
             # One sound per lesson, quiz or reply: follow-up parts and quiet-hour messages arrive silently.
@@ -280,6 +293,9 @@ class Runtime:
                             shared_library=body.get("shared_library", False),
                         )
                         key += ":" + body["mode"]
+                        if self.config.telegram_namespace:
+                            # Telegram file IDs belong to the bot that uploaded them.
+                            key += f":b{self.config.telegram_namespace}"
                         cached = scoped.media_asset(key)
                         try:
                             artifact = deliver_storyboard(
@@ -329,6 +345,17 @@ class Runtime:
         if not address or not self.email.configured:
             scoped.delivery_result(item["id"], token, "suppressed")
             return True
+        if body.get("hold_for_telegram") and self.config.telegram_copies:
+            from skillcoach.telegram_copies import POSTPONE_SECONDS, email_decision
+
+            # Both mode: the reminder goes out only if Telegram did not accept a copy of this job.
+            decision = email_decision(scoped, item, self.clock())
+            if decision == "suppress":
+                scoped.delivery_result(item["id"], token, "suppressed", "telegram_delivered")
+                return True
+            if decision == "wait":
+                scoped.postpone(item["id"], token, POSTPONE_SECONDS)
+                return True
         if body.get("to_hash"):
             from skillcoach.web_channel import keyed
 

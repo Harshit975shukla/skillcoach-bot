@@ -23,6 +23,12 @@ ADMIN_COMMANDS = {
 INVITE_TOKEN = re.compile(r"invite_([A-Za-z0-9_-]{32})\Z")
 
 
+def telegram_key(config, update_id: int) -> str:
+    """Job key of a Telegram update, in the configured bot's receipt namespace (see migration 015)."""
+    namespace = config.telegram_namespace
+    return f"telegram:{update_id}" if namespace == 0 else f"telegram:{namespace}:{update_id}"
+
+
 def _job(conn, key, member, payload, *, done=False):
     conn.execute(
         "INSERT INTO jobs(id,payload,learner_id,access_generation,status) VALUES (%s,%s,%s,%s,%s)",
@@ -49,7 +55,7 @@ def _notice(conn, key, member, text, *, suffix="reply", buttons=None):
         )
 
 
-def _audit(conn, update_id, action, subject):
+def _audit(conn, update_id, action, subject, *, bot=0):
     if isinstance(update_id, str):
         conn.execute(
             "INSERT INTO admin_audit(request_id,action,subject_id) VALUES (%s,%s,%s)",
@@ -57,8 +63,8 @@ def _audit(conn, update_id, action, subject):
         )
         return
     conn.execute(
-        "INSERT INTO access_audit(update_id,action,subject_id) VALUES (%s,%s,%s)",
-        (update_id, action, subject),
+        "INSERT INTO access_audit(bot_id,update_id,action,subject_id) VALUES (%s,%s,%s,%s)",
+        (bot, update_id, action, subject),
     )
 
 
@@ -129,7 +135,7 @@ def _admin(conn, update_id, key, owner, command, argument, config, *, owner_outp
             "VALUES (%s,%s,%s,'open',now()+interval '24 hours')",
             (ident, digest, argument[:100]),
         )
-        _audit(conn, update_id, "invite", ident)
+        _audit(conn, update_id, "invite", ident, bot=config.telegram_namespace)
         if config.web_mode:
             from skillcoach.web_join import invite_link
 
@@ -164,7 +170,7 @@ def _admin(conn, update_id, key, owner, command, argument, config, *, owner_outp
             (argument,),
         ).fetchone()
         if row:
-            _audit(conn, update_id, "revoke_invite", argument)
+            _audit(conn, update_id, "revoke_invite", argument, bot=config.telegram_namespace)
         reply("Unused invitation cancelled." if row else "No matching open invitation.")
     elif command in ("members", "requests"):
         rows = conn.execute(
@@ -204,7 +210,7 @@ def _admin(conn, update_id, key, owner, command, argument, config, *, owner_outp
             "UPDATE learners SET status=%s,generation=generation+1,updated_at=now() WHERE id=%s RETURNING *",
             (status, member["id"]),
         ).fetchone()
-        _audit(conn, update_id, command, member["id"])
+        _audit(conn, update_id, command, member["id"], bot=config.telegram_namespace)
         reply(
             f"{member['id']}: access {status}. "
             "Only access status was changed; their private history is preserved.",
@@ -274,7 +280,10 @@ def _request(conn, update_id, key, actor, display_name, owner, member, config):
     if pending >= 100 or recent >= 30:
         return "pending_capacity_reached"
     member = _pending_member(conn, actor, display_name, guided=True)
-    conn.execute("UPDATE telegram_receipts SET learner_id=%s WHERE update_id=%s", (member["id"], update_id))
+    conn.execute(
+        "UPDATE telegram_receipts SET learner_id=%s WHERE update_id=%s AND bot_id=%s",
+        (member["id"], update_id, config.telegram_namespace),
+    )
     _job(conn, key, member, {"type": "access_request"}, done=True)
     _notice(
         conn,
@@ -285,11 +294,11 @@ def _request(conn, update_id, key, actor, display_name, owner, member, config):
         "Send /request to check your access status; repeated requests do not notify the owner again.",
     )
     # The admin dashboard shows pending requests. No automatic owner message for each public request.
-    _audit(conn, update_id, "request_access", member["id"])
+    _audit(conn, update_id, "request_access", member["id"], bot=config.telegram_namespace)
     return "pending"
 
 
-def _claim(conn, update_id, key, actor, display_name, owner, token, current, *, guided=False):
+def _claim(conn, update_id, key, actor, display_name, owner, token, current, *, guided=False, bot=0):
     digest = hashlib.sha256(token.encode()).hexdigest()
     invite = conn.execute(
         "SELECT * FROM invitations WHERE token_hash=%s AND status='open' AND expires_at>now() FOR UPDATE",
@@ -314,7 +323,9 @@ def _claim(conn, update_id, key, actor, display_name, owner, token, current, *, 
     member = _pending_member(conn, actor, display_name, current, guided=guided)
     ident = member["id"]
     conn.execute("UPDATE invitations SET status='claimed',claimed_by=%s WHERE id=%s", (ident, invite["id"]))
-    conn.execute("UPDATE telegram_receipts SET learner_id=%s WHERE update_id=%s", (ident, update_id))
+    conn.execute(
+        "UPDATE telegram_receipts SET learner_id=%s WHERE update_id=%s AND bot_id=%s", (ident, update_id, bot)
+    )
     _job(conn, key, member, {"type": "access_claim", "invite_id": invite["id"]}, done=True)
     _notice(
         conn,
@@ -332,7 +343,7 @@ def _claim(conn, update_id, key, actor, display_name, owner, token, current, *, 
         f"/approve {ident}\n/reject {ident}",
         suffix="owner-request",
     )
-    _audit(conn, update_id, "claim_invite", ident)
+    _audit(conn, update_id, "claim_invite", ident, bot=bot)
     return "pending"
 
 
@@ -340,7 +351,8 @@ def accept_update(repo, update_id: int, payload: dict, config) -> str:
     actor = payload["actor_id"]
     if type(actor) is not int or actor <= 0 or config.owner_id <= 0:
         return "denied"
-    key = f"telegram:{update_id}"
+    bot = config.telegram_namespace
+    key = telegram_key(config, update_id)
     text = payload.get("text", "").strip()
     parts = text.split(None, 1)
     command = parts[0].split("@")[0].lstrip("/").lower() if parts and text.startswith("/") else ""
@@ -357,12 +369,26 @@ def accept_update(repo, update_id: int, payload: dict, config) -> str:
             ).fetchone()
         )
         receipt = conn.execute(
-            "INSERT INTO telegram_receipts(update_id,learner_id,disposition) VALUES (%s,%s,'received') "
-            "ON CONFLICT DO NOTHING RETURNING update_id",
-            (update_id, member["id"] if member else None),
+            "INSERT INTO telegram_receipts(bot_id,update_id,learner_id,disposition) "
+            "VALUES (%s,%s,%s,'received') ON CONFLICT DO NOTHING RETURNING update_id",
+            (bot, update_id, member["id"] if member else None),
         ).fetchone()
         if not receipt or conn.execute("SELECT 1 FROM jobs WHERE id=%s", (key,)).fetchone():
             return "duplicate"
+        if member:
+            # This person has messaged the configured bot, so it may write to them. Their own
+            # recipient-level pause ends; a bot-wide pause never ends because of one person's message.
+            conn.execute(
+                "INSERT INTO telegram_starts(bot_id,telegram_id,learner_id) VALUES (%s,%s,%s) "
+                "ON CONFLICT (bot_id,telegram_id) DO UPDATE SET last_inbound_at=now(), "
+                "learner_id=EXCLUDED.learner_id",
+                (bot, actor, member["id"]),
+            )
+            conn.execute(
+                "UPDATE telegram_pauses SET state='cleared', cleared_at=now(), cleared_by='inbound' "
+                "WHERE bot_id=%s AND learner_id=%s AND state='paused'",
+                (bot, member["id"]),
+            )
         outcome = "invite_required"
         if (command == "start" and argument.startswith("admin_login_")) or payload.get(
             "callback", ""
@@ -418,6 +444,7 @@ def accept_update(repo, update_id: int, payload: dict, config) -> str:
                     INVITE_TOKEN.fullmatch(argument).group(1),
                     member,
                     guided=config.access_requests_enabled,
+                    bot=bot,
                 )
         elif member and member["status"] == "active":
             recent = conn.execute(
@@ -444,9 +471,19 @@ def accept_update(repo, update_id: int, payload: dict, config) -> str:
                     )
                 outcome = "rate_limited"
             else:
-                target = conn.execute(
-                    "SELECT displayed_target FROM coach_state WHERE learner_id=%s", (member["id"],)
-                ).fetchone()["displayed_target"]
+                # A typed answer binds to the last question shown in the channel it was typed in
+                # (in both mode, only a question that this same bot showed).
+                if config.telegram_copies:
+                    from skillcoach.telegram_copies import telegram_prompt
+
+                    shown = conn.execute(
+                        "SELECT telegram_target FROM coach_state WHERE learner_id=%s", (member["id"],)
+                    ).fetchone()["telegram_target"]
+                    target = telegram_prompt(shown, config)
+                else:
+                    target = conn.execute(
+                        "SELECT displayed_target FROM coach_state WHERE learner_id=%s", (member["id"],)
+                    ).fetchone()["displayed_target"]
                 data = {k: v for k, v in payload.items() if k not in ("actor_id", "display_name")}
                 data["target"] = target
                 _job(conn, key, member, data)
@@ -467,5 +504,8 @@ def accept_update(repo, update_id: int, payload: dict, config) -> str:
                     else "You do not have coaching access. A new invitation and approval are required.",
                 )
             outcome = member["status"]
-        conn.execute("UPDATE telegram_receipts SET disposition=%s WHERE update_id=%s", (outcome, update_id))
+        conn.execute(
+            "UPDATE telegram_receipts SET disposition=%s WHERE update_id=%s AND bot_id=%s",
+            (outcome, update_id, bot),
+        )
         return outcome

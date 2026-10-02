@@ -136,9 +136,11 @@ jobs:
           DASHBOARD_REPO: ${{ vars.DASHBOARD_REPO }}
           DASHBOARD_PATH: ${{ vars.DASHBOARD_PATH || 'docs/data.json' }}
           DASHBOARD_URL: ${{ vars.DASHBOARD_URL }}
-          # Web + email fallback (off unless DELIVERY_CHANNEL=web). Addresses are secrets because
+          # Web + email fallback (off unless DELIVERY_CHANNEL=web or both). Addresses are secrets because
           # this public repository's run logs show variable values.
           DELIVERY_CHANNEL: ${{ vars.DELIVERY_CHANNEL || 'telegram' }}
+          # Both mode only: the public numeric ID of the bot whose updates are already recorded.
+          TELEGRAM_LEGACY_BOT_ID: ${{ vars.TELEGRAM_LEGACY_BOT_ID }}
           WEB_APP_URL: ${{ vars.WEB_APP_URL }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}

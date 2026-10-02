@@ -13,7 +13,9 @@ DEFAULT_GEMINI_MODELS = "gemini-3.8-flash,gemini-3.5-flash,gemini-2.5-flash"
 
 
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+")
-DELIVERY_CHANNELS = ("telegram", "web")
+# telegram: the bot only. web: the web app and email only (while Telegram is unavailable). both: the
+# web app stays the complete record and Telegram gets a copy of coaching messages, with email as backup.
+DELIVERY_CHANNELS = ("telegram", "web", "both")
 
 
 def normalize_email(value) -> str | None:
@@ -32,6 +34,15 @@ def model_chain(value: str) -> list[str]:
         if item and item not in models:
             models.append(item)
     return models
+
+
+BOT_TOKEN = re.compile(r"([1-9]\d{4,15}):[A-Za-z0-9_-]{30,64}")
+
+
+def bot_id_of(token: str) -> int:
+    """A bot token's numeric bot ID (its prefix), or 0 for anything that is not a bot token."""
+    match = BOT_TOKEN.fullmatch(token or "")
+    return int(match.group(1)) if match else 0
 
 
 @dataclass(frozen=True)
@@ -69,10 +80,32 @@ class Config:
     # Optional phone/desktop notifications for the web app: one VAPID key pair (base64url).
     web_push_public_key: str = ""
     web_push_private_key: str = ""
+    # The bot whose Telegram update IDs were recorded before receipts carried a bot ID (migration 015).
+    # Unset: this deployment has only ever used the configured bot.
+    telegram_legacy_bot_id: int = 0
+
+    @property
+    def telegram_bot_id(self) -> int:
+        """The configured bot's numeric ID, read from its token (no network call); 0 if unreadable."""
+        return bot_id_of(self.telegram_token)
+
+    @property
+    def telegram_namespace(self) -> int:
+        """Receipt and file-cache namespace of the configured bot: 0 for the bot whose records predate
+        bot IDs (so a regenerated token for it keeps deduplicating), its own ID for any other bot."""
+        if not self.telegram_legacy_bot_id or self.telegram_legacy_bot_id == self.telegram_bot_id:
+            return 0
+        return self.telegram_bot_id
 
     @property
     def web_mode(self) -> bool:
-        return self.delivery_channel == "web"
+        """The web app, email sign-in and email reminders are on (web or both)."""
+        return self.delivery_channel in ("web", "both")
+
+    @property
+    def telegram_copies(self) -> bool:
+        """Both mode: coaching messages are also copied to Telegram while it accepts them."""
+        return self.delivery_channel == "both"
 
     @property
     def push_enabled(self) -> bool:
@@ -142,7 +175,22 @@ class Config:
             raise ConfigurationError("DAILY_AI_OPERATIONS must be between 1 and 200 per learner.")
         if username and not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
             raise ConfigurationError("TELEGRAM_BOT_USERNAME must be the bot username, without @.")
+        legacy_bot = os.getenv("TELEGRAM_LEGACY_BOT_ID", "").strip()
+        if legacy_bot and not re.fullmatch(r"[1-9]\d{4,15}", legacy_bot):
+            raise ConfigurationError("TELEGRAM_LEGACY_BOT_ID must be the numeric ID of a bot.")
         web = web_settings()
+        if web["delivery_channel"] == "both":
+            # Copies, receipts and prompts are tied to the bot's identity: never guess it.
+            if not bot_id_of(token):
+                raise ConfigurationError(
+                    "DELIVERY_CHANNEL=both needs a well-formed TELEGRAM_BOT_TOKEN (its numeric bot ID "
+                    "identifies the bot)."
+                )
+            if not legacy_bot:
+                raise ConfigurationError(
+                    "DELIVERY_CHANNEL=both needs TELEGRAM_LEGACY_BOT_ID: the numeric ID of the bot whose "
+                    "updates are already recorded (the configured bot's own ID if it is the same bot)."
+                )
         return cls(
             database,
             token,
@@ -166,6 +214,7 @@ class Config:
             labs_repo,
             os.getenv("LABS_GITHUB_TOKEN", ""),
             **web,
+            telegram_legacy_bot_id=int(legacy_bot) if legacy_bot else 0,
         )
 
 
@@ -175,7 +224,7 @@ def web_settings() -> dict:
 
     channel = os.getenv("DELIVERY_CHANNEL", "").strip().lower() or "telegram"
     if channel not in DELIVERY_CHANNELS:
-        raise ConfigurationError("DELIVERY_CHANNEL must be telegram or web.")
+        raise ConfigurationError("DELIVERY_CHANNEL must be telegram, web or both.")
     url = os.getenv("WEB_APP_URL", "").strip().rstrip("/")
     owner_raw = os.getenv("OWNER_EMAIL", "").strip()
     sender = os.getenv("EMAIL_FROM", "").strip()
@@ -200,7 +249,7 @@ def web_settings() -> dict:
         raise ConfigurationError("SMTP_HOST must be a host name.")
     if not port.isdecimal() or int(port) not in (465, 587, 2525):
         raise ConfigurationError("SMTP_PORT must be 587 (STARTTLS), 465 (TLS) or 2525.")
-    if channel == "web":
+    if channel in ("web", "both"):
         missing = [
             name
             for name, value in (

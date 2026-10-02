@@ -83,7 +83,7 @@ def test_web_mode_is_off_by_default_and_needs_complete_email_settings(monkeypatc
     assert config.web_mode and config.email_configured and config.smtp_port == 587
     assert config.owner_email == "owner@example.test" and config.web_app_url == "https://coach.example.test"
     for name, value, message in (
-        ("DELIVERY_CHANNEL", "sms", "telegram or web"),
+        ("DELIVERY_CHANNEL", "sms", "telegram, web or both"),
         ("WEB_APP_URL", "http://coach.example.test", "HTTPS origin"),
         ("WEB_APP_URL", "https://coach.example.test/web", "HTTPS origin"),
         ("OWNER_EMAIL", "owner@example", "one email"),

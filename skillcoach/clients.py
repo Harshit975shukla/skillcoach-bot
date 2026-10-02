@@ -26,6 +26,34 @@ class ExternalError(RuntimeError):
         # Only fixed-vocabulary provider categories and integers; never bodies, prompts or keys.
         self.detail = detail
 
+    @property
+    def telegram(self) -> str:
+        """The fixed Telegram failure category in `detail`, or ""."""
+        match = re.search(r"(?:^| )telegram=([a-z_]+)", self.detail or "")
+        return match.group(1) if match else ""
+
+
+# Telegram's error descriptions mapped to a fixed vocabulary; the text itself is never kept.
+# Credential-wide: rejected token (401) and an explicit frozen-bot error. Everything else here is about
+# one recipient; PEER_ID_INVALID in particular is a recipient/request failure, not a bot-wide one.
+TELEGRAM_CATEGORIES = (
+    (re.compile(r"FROZEN_METHOD_INVALID|bot.{0,40}frozen", re.I), "bot_frozen"),
+    (re.compile(r"\bUnauthorized\b", re.I), "credentials_rejected"),
+    (re.compile(r"bot was blocked by the user", re.I), "blocked"),
+    (re.compile(r"user is deactivated", re.I), "deactivated"),
+    (re.compile(r"bot can't initiate conversation", re.I), "not_started"),
+    (re.compile(r"chat not found", re.I), "chat_not_found"),
+    (re.compile(r"PEER_ID_INVALID", re.I), "peer_invalid"),
+    (re.compile(r"\bForbidden\b", re.I), "forbidden"),
+)
+
+
+def telegram_category(description: str) -> str:
+    for pattern, category in TELEGRAM_CATEGORIES:
+        if pattern.search(description[:500]):
+            return category
+    return ""
+
 
 def _failure_details(response, budget=None) -> dict:
     headers = getattr(response, "headers", None) or {}
@@ -49,9 +77,15 @@ def _failure_details(response, budget=None) -> dict:
             raw += chunk
             if len(raw) >= 16384:
                 break
-        error = json.loads(raw[:16384]).get("error", {})
+        data = json.loads(raw[:16384])
+        error = data.get("error", {}) if isinstance(data, dict) else {}
+        description = data.get("description") if isinstance(data, dict) else None
     except Exception:
-        error = {}
+        error, description = {}, None
+    if isinstance(description, str):
+        category = telegram_category(description)
+        if category:
+            parts.append(f"telegram={category}")
     if isinstance(error, dict):
         status = error.get("status")
         if isinstance(status, str) and re.fullmatch(r"[A-Z_]{1,40}", status):

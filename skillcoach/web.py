@@ -175,9 +175,13 @@ def create_app(runtime=None):
             with current.repo.session():
                 admission = current.repo.accept_update(update["update_id"], payload, current.config)
                 if payload.get("callback_id"):
+                    from skillcoach.telegram_copies import may_acknowledge
+
                     try:
-                        # Keep the optional callback toast from consuming the answer-processing budget.
-                        current.telegram.acknowledge(payload["callback_id"], Budget(3))
+                        # Keep the optional callback toast from consuming the answer-processing budget,
+                        # and never contact Telegram for it while the bot's copies are paused.
+                        if may_acknowledge(current.repo, current.config, payload["actor_id"]):
+                            current.telegram.acknowledge(payload["callback_id"], Budget(3))
                     except ExternalError as exc:
                         log.warning("callback_ack_failed code=%s", exc.code)
                 current.process_one(budget)

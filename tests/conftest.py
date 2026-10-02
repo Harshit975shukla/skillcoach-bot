@@ -309,7 +309,11 @@ class MemoryRepository:
 
             raise MembershipChanged("Delivery was suppressed")
 
-    def delivery_result(self, key, token, status, code=None):
+    def deliver_to_inbox(self, key, token, config):
+        # No Telegram copies here: both mode is covered on a real database.
+        self.delivery_result(key, token, "sent")
+
+    def delivery_result(self, key, token, status, code=None, **_):
         item = self.outbox[key]
         item["status"] = status
         if status == "sent" and item["body"].get("target"):

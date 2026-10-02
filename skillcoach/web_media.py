@@ -464,6 +464,10 @@ def attach(runtime, scoped, outbox_id: str, token: str, found: dict, note: dict,
             (Jsonb({"web_media": note}), outbox_id, scoped.learner_id),
         )
         scoped._finish_delivery(conn, outbox_id, "sent")
+        # Both mode: the message (or its honest note) may also go to Telegram.
+        from skillcoach.telegram_copies import create_copy
+
+        create_copy(conn, runtime.config, scoped.learner_id, outbox_id)
     return "sent"
 
 
@@ -574,6 +578,20 @@ def _spend(conn, learner_id: str, day, amount: int) -> bool:
         (learner_id, day, amount),
     )
     return True
+
+
+def read_all(repo, media_id: str):
+    """(mime, bytes) of a stored media file, or None once it is no longer kept. The caller has already
+    checked that it belongs to the learner's own sent message."""
+    if not MEDIA_ID.fullmatch(media_id or ""):
+        return None
+    with repo.connection(readonly=True) as conn:
+        row = conn.execute(
+            "SELECT mime, bytes FROM web_media WHERE id=%s AND state='ready'", (media_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return row["mime"], _read(conn, media_id, 0, row["bytes"] - 1)
 
 
 def _read(conn, media_id: str, start: int, end: int) -> bytes:
