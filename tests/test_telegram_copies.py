@@ -21,6 +21,7 @@ from skillcoach import telegram_copies, web_media
 from skillcoach.clients import Budget, ExternalError, telegram_category
 from skillcoach.config import Config, ConfigurationError
 from skillcoach.storyboard import reviewed_architecture
+from skillcoach.timeutil import IST
 
 NEW_BOT = 7000000001
 NEW_TOKEN = f"{NEW_BOT}:" + "A" * 35
@@ -180,6 +181,18 @@ def event_email(web, job):
     return rows(web, "SELECT status, error_code FROM outbox WHERE job_id=%s AND body->>'kind'='email'", job)[0]
 
 
+def todays_quiz(web):
+    """The learner (Telegram 101) gets today's lesson and starts its five-question quiz through Telegram.
+    Today, not a fixed date: the web harness runs on the real clock and a day's quiz closes after its week."""
+    day = web.clock.now.astimezone(IST).date().isoformat()
+    web.bot.save(web.learner, lambda state: delivered(state, day=day))
+    web.bot.runtime.ai.responses.append(question_set(5))
+    message(web, 101, f"/quiz {day}")
+    state = web.learner.read()[1]
+    assert state.active_assessment, "today's quiz did not start"
+    return state, state.assessments[state.active_assessment]
+
+
 # Without a database -------------------------------------------------------------------------------
 
 
@@ -290,7 +303,7 @@ def test_the_learners_own_web_requests_are_answered_on_the_web_only(both):
     web.tg.sent.clear()
     client, csrf = browser(web, "owner@example.test")
     response = private(client, csrf, "/web/send", {"request_id": "0b0e3a2c-9f2e-4f43-8c55-2c4b1c3f9a10", "text": "/help"})
-    assert response.status_code == 200
+    assert response.status_code == 202
     drain(web)
     assert not web.tg.sent
     web_job = rows(web, "SELECT id FROM jobs WHERE payload->>'channel'='web' ORDER BY created_at DESC LIMIT 1")[0]["id"]
@@ -405,11 +418,7 @@ def test_a_rejected_or_frozen_bot_pauses_every_copy_until_an_operator_and_the_ow
 def test_late_copies_never_move_a_conversation_back_and_typed_replies_bind_per_channel(both):
     web = both
     message(web, 101, "/help")
-    web.bot.save(web.learner, lambda state: delivered(state))
-    web.bot.runtime.ai.responses.append(question_set(5))
-    message(web, 101, "/quiz 2026-09-24")
-    state = web.learner.read()[1]
-    session = state.assessments[state.active_assessment]
+    state, session = todays_quiz(web)
     first = rows(web, "SELECT displayed_target, telegram_target FROM coach_state WHERE learner_id=%s",
                  web.learner.learner_id)[0]
     assert first["displayed_target"] == state.target()
@@ -419,7 +428,7 @@ def test_late_copies_never_move_a_conversation_back_and_typed_replies_bind_per_c
     client, csrf = browser(web, "learner@example.test")
     callback = f"q:{session.id}:{session.question_ids[0]}:B"
     assert private(client, csrf, "/web/send", {"request_id": "6f0f3b1a-2d34-4b8e-9a4b-6a1c9f1d2e01",
-                                                 "callback": callback}).status_code == 200
+                                                 "callback": callback}).status_code == 202
     drain(web)
     targets = rows(web, "SELECT displayed_target, telegram_target FROM coach_state WHERE learner_id=%s",
                    web.learner.learner_id)[0]
@@ -846,12 +855,8 @@ def test_finishing_a_question_copy_takes_the_domain_locks_first_and_never_deadlo
     web = both
     learner = web.learner.learner_id
     message(web, 101, "/help")
-    web.bot.save(web.learner, lambda state: delivered(state))
-    web.bot.runtime.ai.responses.append(question_set(5))
     fail_question_once(web, 101)
-    message(web, 101, "/quiz 2026-09-24")
-    state = web.learner.read()[1]
-    session = state.assessments[state.active_assessment]
+    state, session = todays_quiz(web)
     one = state.target()
     copy = question_copy(web, one)
     assert (copy["status"], copy["attempts"]) == ("failed", 1)
