@@ -17,7 +17,7 @@ and technical examples should be checked against current vendor documentation; h
 are not claims that a real deployment was performed. No roadmap.sh articles or diagrams are copied.
 
 Catalog-topic theory, core session pacing and storyboards require **no runtime AI or GitHub fetch**.
-Personalized planning, quizzes, feedback and free-form questions still use the configured AI providers.
+Personalized planning, quizzes, feedback and free-form questions still use the configured AI provider (Groq only).
 Legacy topic aliases and historical authored/AI lessons remain supported. New delivered library lessons
 record their topic ID and version; do not edit a released version in place or delete it while history
 references it. Publish a new version and retain the old content when revising a course.
@@ -797,8 +797,7 @@ See `.env.example`; environment variables are loaded at operation startup, not n
 | `DATABASE_URL` | Provider-neutral private PostgreSQL URL; verified TLS for remote DBs; use a least-privilege runtime role |
 | `TELEGRAM_BOT_TOKEN`, `OWNER_ID` | Required messaging configuration; positive private-chat owner ID (`CHAT_ID` is a legacy alias) |
 | `TELEGRAM_WEBHOOK_SECRET` | Vercel-only requirement: 32-256 random URL-safe characters matching webhook registration |
-| `GROQ_API_KEY`, `GROQ_MODEL` | Optional primary provider. `GROQ_MODEL` is a comma-separated fallback list (default `openai/gpt-oss-120b,openai/gpt-oss-20b`); the first model is tried first and extra Groq models only after Gemini, because Groq quotas are per model |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | Optional fallback. Comma-separated list (default `gemini-3.8-flash,gemini-3.5-flash,gemini-2.5-flash`); newer Google projects get HTTP 404 for models in the LEGACY stage, so the next listed model is tried |
+| `GROQ_API_KEY`, `GROQ_MODEL` | The only AI provider. `GROQ_MODEL` is a comma-separated list of one to four models (default `openai/gpt-oss-120b,openai/gpt-oss-20b`), tried in order because Groq quotas are per model. Coaching prompts can contain private context (profile, documents, answers, feedback), so nothing falls back to another provider, not even on rate limits or errors: AI work waits and is retried. Until October 2026 a Google Gemini fallback existed; it was removed because Google's unpaid Gemini quota may use submitted content to improve Google's products. `GEMINI_API_KEY` and `GEMINI_MODEL` are no longer read |
 | `GITHUB_TOKEN` | Optional dashboard publishing PAT; Actions maps **`secrets.GH_PAT`** to this variable |
 | `DASHBOARD_REPO`, `DASHBOARD_PATH`, `DASHBOARD_URL` | Configured destination; no hard-coded personal repository or identity |
 | `LABS_ENABLED`, `LABS_TEMPLATE_REPO` | Hands-on labs kill switch (default `true`) and the public `owner/repository` code-lab template |
@@ -810,7 +809,7 @@ See `.env.example`; environment variables are loaded at operation startup, not n
 | `WEB_APP_URL`, `OWNER_EMAIL`, `EMAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | Web + email settings, all required in web mode and ignored otherwise. In GitHub Actions, `OWNER_EMAIL`, `EMAIL_FROM`, `SMTP_USERNAME` and `SMTP_PASSWORD` are **secrets**, because this public repository's run logs show variable values |
 | `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY` | Optional notifications for the installable web app (web mode only): one VAPID key pair from `skillcoach.web_push.generate_keys()`. Both or neither; a mismatched pair stops the app with a configuration error. In GitHub Actions the private key is a **secret** and the public key a variable |
 
-At least one AI provider is needed for generated coaching. Model quotas/free tiers are not promised. GitHub `DASHBOARD_*` and model settings are repository variables; database/Telegram/AI/PAT values are secrets. No secrets are needed for offline tests.
+A Groq key is needed for generated coaching. Model quotas/free tiers are not promised. GitHub `DASHBOARD_*` and model settings are repository variables; database/Telegram/AI/PAT values are secrets. No secrets are needed for offline tests.
 
 ## Web + email fallback (off by default)
 
@@ -986,13 +985,17 @@ stop working and Telegram delivery resumes, with nothing replayed.
 
 ## Telegram copies in both mode (built, not activated)
 
-**Status:** built and tested, but switched off. Using a replacement bot is on hold until Telegram
-answers about the frozen original bot. No new bot, token, webhook or production migration 015 exists
-for it yet, and enabling it is a separate, gated release.
+**Status:** built and tested, but switched off. The original bot @skillOpsDev_bot works again after
+Telegram's restriction ended (its token was rotated on 3 October 2026). Turning on both mode with it
+is a separate, gated release that is still pending: the owner's choice about updates that waited in
+Telegram while the webhook was off, a monitored privacy contact, migration 015 and a staged rollout.
+No replacement bot is used.
 
 `DELIVERY_CHANNEL=both` is web mode plus copies in Telegram through the bot of
 `TELEGRAM_BOT_TOKEN`. Everything in web mode still applies (sign-in, inbox, videos, email, push), and
-the web inbox stays the complete record: every message reaches it first, exactly as in web mode.
+the web inbox stays the complete record: every message reaches it first, exactly as in web mode. The
+draft [privacy policy](PRIVACY.md) describes the data involved; it is not published until a monitored
+contact for privacy requests is designated.
 
 - **Who gets copies:** only people who have sent the configured bot a message. A start is recorded per
   bot, so messaging one bot never authorizes copies from another. Everyone else keeps the web inbox and
@@ -1029,13 +1032,21 @@ the web inbox stays the complete record: every message reaches it first, exactly
   - While all copies are paused, button taps are still processed, but Telegram is not contacted to
     acknowledge them.
   - `/status` shows each learner only their own Telegram line.
-- **Restoring after a pause of all copies:**
-  1. The owner sends the bot a message.
+- **Restoring after a pause of all copies** (a provider pause, or the operator's gate below):
+  1. The owner sends the bot a message. It counts only if Telegram says it was sent after the pause
+     began and it arrived after it, so a message that waited in Telegram's queue does not count.
   2. An operator runs `python -m skillcoach.cli telegram-restore --confirm`. It is refused (exit code 4)
-     unless the owner's message came after the pause began.
-  3. Copies then go only to the owner, until Telegram accepts one; then everyone's resume.
+     without such a message, and changes nothing if a restoration is already on probation.
+  3. Copies then go to the owner only ("probation"). Scheduled lessons, notes and replies to older
+     messages reach the owner but never end probation.
+  4. The owner sends the bot another message. When Telegram accepts the reply to it, probation ends and
+     everyone's copies resume. A passing failure of that reply keeps probation until a retry succeeds.
 
   `python -m skillcoach.cli telegram-status` shows states and counts only, never IDs or text.
+- **Operator gate:** `python -m skillcoach.cli telegram-gate --confirm` pauses every copy on purpose
+  (code `operator_restoration`) before copies start, with no provider error recorded and nothing sent.
+  Opening it takes the restoration steps above. Running it again changes nothing, including during
+  probation.
 - **Bot identity:** Telegram update IDs, starts, file IDs and prompts are kept per bot.
   - `TELEGRAM_LEGACY_BOT_ID` names the bot whose updates are already recorded. If the configured bot is
     that same bot (a regenerated token), its records still deduplicate.
@@ -1043,15 +1054,20 @@ the web inbox stays the complete record: every message reaches it first, exactly
     another bot stays on the web.
   - Both mode refuses to start with a token whose bot ID cannot be read, or without
     `TELEGRAM_LEGACY_BOT_ID`.
-- **Enabling it later (only after the hold is lifted):**
-  1. Apply migration 015 with the release gate.
-  2. Set `DELIVERY_CHANNEL=both`, the token and `TELEGRAM_LEGACY_BOT_ID` in Vercel and GitHub, and
-     register the webhook with `TELEGRAM_WEBHOOK_SECRET`.
-  3. Release.
-  4. Each person sends the bot a message.
-
-  **Switching back** is `DELIVERY_CHANNEL=web`: queued copies are then suppressed and nothing is
-  replayed.
+- **Enabling it (only as an approved release):**
+  1. Back up, confirm no worker holds a lease, and apply migration 015.
+  2. Release the code in web mode first.
+  3. Set `DELIVERY_CHANNEL=both`, the token and `TELEGRAM_LEGACY_BOT_ID` in Vercel and GitHub. Run
+     `telegram-gate --confirm`, stage and check the deployment, then promote it and register the webhook
+     with `TELEGRAM_WEBHOOK_SECRET`.
+  4. Open the gate with the restoration steps. Each person then sends the bot a message to get copies.
+- **Switching back:**
+  1. Set `DELIVERY_CHANNEL=web` in Vercel and GitHub and redeploy, and delete the webhook.
+  2. Run `python -m skillcoach.cli telegram-copies-off --confirm`. Holding both worker leases, it
+     withdraws every open copy (code `copies_off`) and checks that none is left; sent copies and every
+     other message, email and push stay as they are. Code from before both mode fails an open copy as
+     an unknown kind and reports it, so this step must come before older code runs.
+  3. Only then point the web app and the workers at older code. All data is kept.
 
 ## Private import and privacy-safe dashboard
 
@@ -1094,10 +1110,10 @@ No software license purchase is required by this implementation, but open-source
 - Vercel Hobby is free for personal/non-commercial use and can pause features at usage limits. Verify the actual linked account is Hobby; a successful existing deployment does not prove its billing plan. Do not enable Pro or paid integrations.
 - A user-owned free PostgreSQL plan must be verified before provisioning or import. For example, Supabase Free documents a 500 MB database, two active projects and inactivity pausing. Neon Free documents 0.5 GB/project and compute/transfer limits. Free quotas and pauses can interrupt coaching. Database tables must not be anonymously exposed through provider data APIs.
 - Five-minute recovery can keep an autosuspending database awake. Check its compute quota against that polling frequency; do not assume “scale to zero” makes this usage free indefinitely. Any slower recovery frequency is a user-visible behavior change requiring an explicit decision.
-- Use AI keys only from verified free-tier accounts/models with no paid billing enabled. Gemini free-tier data handling differs from paid service; review privacy terms before sending resumes/JDs. Limits cause recoverable failures, not permission to upgrade.
+- Use AI keys only from verified free-tier accounts/models with no paid billing enabled. Coaching AI is Groq-only: Google's unpaid Gemini quota may use submitted content to improve Google's products (with possible human review) and Google asks for no personal information there, so it is not used. Groq does not retain inference data by default but may log it for up to 30 days for reliability or abuse checks unless Zero Data Retention is enabled in its Data Controls. Limits cause recoverable failures, not permission to upgrade.
 
 Before changing live state, create private, hash-verified backups outside the repository: the deployed-source Git bundle/ref, current original and upgraded source snapshots, deployed version/settings metadata, and the legacy dashboard JSON/private database snapshot. Never upload private snapshots as Actions artifacts or commit them. A source tag alone is not a data backup.
 
 Rollback procedure: pause new scheduled writers and webhook mutations first; restore the prior deployed source/version and matching environment configuration, then restore the corresponding private-state snapshot using the database provider's approved restore process. Re-enable only the previously recorded workflow/webhook settings and verify one owner-only interaction. If returning to the old GitHub-state implementation, explicitly approve that older privacy model before any public write; do not blindly republish a private backup. Keep new private state intact for diagnosis. Do not force-push, rewrite history, or delete the new database to simulate rollback.
 
-Free-plan references (reviewed 2026-09-25): [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions), [Vercel Hobby](https://vercel.com/docs/plans/hobby), [Neon plans](https://neon.com/docs/introduction/plans), [Supabase pricing](https://supabase.com/pricing), [Gemini billing](https://ai.google.dev/gemini-api/docs/billing).
+Free-plan references (reviewed 2026-09-25): [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions), [Vercel Hobby](https://vercel.com/docs/plans/hobby), [Neon plans](https://neon.com/docs/introduction/plans), [Supabase pricing](https://supabase.com/pricing). AI data handling (reviewed 2026-10-03): [Groq: your data](https://console.groq.com/docs/your-data), [Gemini API terms](https://ai.google.dev/gemini-api/terms) (why Gemini is not used).

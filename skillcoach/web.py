@@ -57,12 +57,18 @@ def authorized_update(update, owner: int | None = None):
         return "ignored", None
     if not text.strip() or len(text) > 16000:
         return "invalid", None
-    return "action", {
+    payload = {
         "type": "telegram",
         "text": text,
         "actor_id": sender["id"],
         "display_name": str(sender.get("first_name") or sender.get("username") or "")[:100],
     }
+    sent = message.get("date")
+    if type(sent) is int and sent > 0:
+        # When Telegram says the message was sent (Unix seconds). A Telegram copy restoration counts
+        # only owner messages sent after it began, never ones that waited in Telegram's queue.
+        payload["sent_at"] = sent
+    return "action", payload
 
 
 def create_app(runtime=None):

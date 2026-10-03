@@ -18,9 +18,17 @@ Telegram (accepted by Telegram is not the same as read by the learner).
 
 Health: a rejected token (401) or an explicit frozen-bot error pauses the bot's copies; blocked, not
 started, deactivated, unknown chat or an invalid peer pauses that one person. A person's pause ends when
-they message the bot again; one person's message never ends the bot's pause. The bot's pause ends only
-through an operator restoration, after the owner has messaged the bot, followed by a confirmed copy to
-the owner. Copies skipped while paused are never re-sent.
+they message the bot again; one person's message never ends the bot's pause. An operator can also pause
+the bot's copies on purpose (gate, code operator_restoration), e.g. before copies start. A bot-wide
+pause ends only through this sequence: the owner sends the bot a message after the pause began (by
+Telegram's own send time, so a message that waited in Telegram's queue does not count); an operator
+runs the restoration, which lets copies go to the owner only ('probation'); then Telegram accepts the
+reply to an owner message sent after the restoration began. Scheduled lessons, notes and replies to
+older messages reach the owner during probation but never end it. Copies skipped while paused are never
+re-sent.
+
+Rollback to code without Telegram copies: that code fails an open copy as an unknown kind and reports
+it, so copies_off() first withdraws every open copy with both worker leases held.
 """
 
 import logging
@@ -50,7 +58,13 @@ NARRATED = (
 PAUSED = {
     "credentials_rejected": "Telegram rejected the bot's credentials",
     "bot_frozen": "Telegram reported the bot as frozen",
+    "operator_restoration": "an operator paused them while restoring Telegram",
 }
+OPERATOR_GATE = "operator_restoration"
+OPEN_COPIES = "body->>'kind'='telegram' AND status IN ('pending','failed')"
+# The one statement that withdraws open copies before a rollback (copies_off); compatibility tests of
+# older code apply this same text.
+WITHDRAW_OPEN_COPIES = f"UPDATE outbox SET status='suppressed', error_code='copies_off' WHERE {OPEN_COPIES}"
 
 
 # Who and whether -------------------------------------------------------------------------------
@@ -234,7 +248,7 @@ def status(repo, config) -> dict:
     bot = config.telegram_namespace
     with repo.connection(readonly=True) as conn:
         whole = conn.execute(
-            "SELECT code, state, since FROM telegram_pauses WHERE bot_id=%s AND learner_id IS NULL "
+            "SELECT code, state, since, probation_since FROM telegram_pauses WHERE bot_id=%s AND learner_id IS NULL "
             "AND state<>'cleared'",
             (bot,),
         ).fetchone()
@@ -255,7 +269,16 @@ def status(repo, config) -> dict:
         ).fetchall()
     return {
         "copies_enabled": config.telegram_copies,
-        "bot": {"state": whole["state"], "code": whole["code"], "since": whole["since"].isoformat()}
+        "bot": {
+            "state": whole["state"],
+            "code": whole["code"],
+            "since": whole["since"].isoformat(),
+            **(
+                {"probation_since": whole["probation_since"].isoformat()}
+                if whole["state"] == "probation"
+                else {}
+            ),
+        }
         if whole
         else {"state": "active"},
         "people_paused": {row["code"]: row["n"] for row in people},
@@ -265,25 +288,106 @@ def status(repo, config) -> dict:
 
 
 def restore(repo, config) -> dict:
-    """Operator restoration of a bot-wide pause, after the owner has messaged the configured bot since
-    it began. Copies then go to the owner only, until one is accepted by Telegram ('probation')."""
+    """Operator restoration of a bot-wide pause (including the operator's own gate). It requires a
+    message from the owner to the configured bot that Telegram says was sent after the pause began; a
+    message that waited in Telegram's queue does not count. Copies then go to the owner only
+    ('probation') until Telegram accepts the reply to an owner message sent after this restoration."""
     bot = config.telegram_namespace
     with repo.connection() as conn:
         whole = conn.execute(
-            "SELECT * FROM telegram_pauses WHERE bot_id=%s AND learner_id IS NULL AND state='paused' FOR UPDATE",
+            "SELECT * FROM telegram_pauses WHERE bot_id=%s AND learner_id IS NULL AND state<>'cleared' FOR UPDATE",
             (bot,),
         ).fetchone()
         if not whole:
             return {"restored": False, "reason": "no_bot_pause"}
-        inbound = conn.execute(
-            "SELECT last_inbound_at FROM telegram_starts WHERE bot_id=%s AND learner_id='owner' "
-            "ORDER BY last_inbound_at DESC LIMIT 1",
+        if whole["state"] == "probation":
+            return {
+                "restored": False,
+                "reason": "already_on_probation",
+                "since": whole["probation_since"].isoformat(),
+            }
+        # Sent after the pause began by Telegram's clock, and received after it by ours.
+        owner = conn.execute(
+            "SELECT max(last_message_at) AS sent, max(last_inbound_at) AS received FROM telegram_starts "
+            "WHERE bot_id=%s AND learner_id='owner'",
             (bot,),
         ).fetchone()
-        if not inbound or inbound["last_inbound_at"] <= whole["since"]:
+        if owner["sent"] is None or owner["sent"] <= whole["since"] or owner["received"] <= whole["since"]:
             return {"restored": False, "reason": "owner_message_to_bot_required_after_pause"}
-        conn.execute("UPDATE telegram_pauses SET state='probation' WHERE id=%s", (whole["id"],))
-    return {"restored": True, "state": "probation", "next": "the next copy to the owner confirms it"}
+        started = conn.execute(
+            "UPDATE telegram_pauses SET state='probation', probation_since=now() WHERE id=%s RETURNING probation_since",
+            (whole["id"],),
+        ).fetchone()["probation_since"]
+    return {
+        "restored": True,
+        "state": "probation",
+        "since": started.isoformat(),
+        "next": "the owner sends the bot a new message; Telegram accepting the reply ends probation",
+    }
+
+
+def gate(repo, config) -> dict:
+    """Pause every Telegram copy of the configured bot on purpose before copies start (code
+    operator_restoration), so that only restore() and a fresh owner round trip can open them. Nothing
+    is sent and no provider error is recorded. Running it again is safe: an open bot-wide row of any
+    kind (including a restoration on probation, whose pending confirmation stays valid) is kept exactly
+    as it is and reported."""
+    if not config.telegram_copies:
+        return {"gated": False, "reason": "copies_are_off"}
+    bot = config.telegram_namespace
+    with repo.connection() as conn:
+        created = conn.execute(
+            "INSERT INTO telegram_pauses(bot_id,learner_id,code,state) SELECT %s,NULL,%s,'paused' "
+            "WHERE NOT EXISTS (SELECT 1 FROM telegram_pauses WHERE bot_id=%s AND learner_id IS NULL "
+            "AND state<>'cleared') ON CONFLICT DO NOTHING RETURNING id",
+            (bot, OPERATOR_GATE, bot),
+        ).fetchone()
+        row = conn.execute(
+            "SELECT code, state, since FROM telegram_pauses WHERE bot_id=%s AND learner_id IS NULL AND state<>'cleared'",
+            (bot,),
+        ).fetchone()
+    return {
+        "gated": True,
+        "new": created is not None,
+        "code": row["code"],
+        "state": row["state"],
+        "since": row["since"].isoformat(),
+    }
+
+
+def copies_off(repo, config) -> dict:
+    """Before handing workers and the web app back to code without Telegram copies: withdraw every open
+    copy (pending or failed, whatever its attempts or due time) with both worker leases held, so no
+    delivery or domain step is running, then verify none is left open. Sent copies, the web inbox,
+    emails, pushes and every other row are untouched. Refused in both mode."""
+    if config.telegram_copies:
+        return {"withdrawn": False, "reason": "switch_DELIVERY_CHANNEL_to_web_first"}
+    tokens = {}
+    try:
+        for name in ("domain", "delivery"):
+            token = repo.acquire(name, 60)
+            if not token:
+                return {"withdrawn": False, "reason": f"{name}_worker_busy_try_again"}
+            tokens[name] = token
+        try:
+            with repo.connection() as conn:
+                for name, token in tokens.items():
+                    repo._fence(conn, name, token)
+                withdrawn = conn.execute(WITHDRAW_OPEN_COPIES).rowcount
+                left = conn.execute(f"SELECT count(*) AS n FROM outbox WHERE {OPEN_COPIES}").fetchone()["n"]
+                if left:
+                    raise _CopiesRemain()  # rolls the whole withdrawal back
+        except _CopiesRemain:
+            # Something still in both mode (e.g. the web app) made a copy meanwhile: nothing changed.
+            return {"withdrawn": False, "reason": "new_copies_appeared_switch_every_writer_to_web_first"}
+        return {"withdrawn": True, "count": withdrawn, "open_copies_left": 0}
+    finally:
+        for name, token in tokens.items():
+            repo.release(name, token)
+
+
+class _CopiesRemain(Exception):
+    pass
 
 
 # Email reminders in both mode -------------------------------------------------------------------
@@ -589,11 +693,17 @@ def deliver(runtime, scoped, item, body, token, budget) -> bool:
                         scoped.learner_id,
                     ),
                 )
-            if scoped.is_owner:
+            if scoped.is_owner and source_bot(item["job_id"]) == config.telegram_namespace:
+                # Probation ends only when Telegram accepts the reply to an owner message sent (by
+                # Telegram's clock) and received (by ours) after the restoration began. Scheduled
+                # lessons, notes and replies to older messages never end it.
                 conn.execute(
-                    "UPDATE telegram_pauses SET state='cleared', cleared_at=now(), cleared_by='confirmed' "
-                    "WHERE bot_id=%s AND learner_id IS NULL AND state='probation'",
-                    (config.telegram_namespace,),
+                    "UPDATE telegram_pauses p SET state='cleared', cleared_at=now(), cleared_by='confirmed' "
+                    "FROM jobs j WHERE p.bot_id=%s AND p.learner_id IS NULL AND p.state='probation' "
+                    "AND j.id=%s AND j.learner_id='owner' AND j.created_at > p.probation_since "
+                    "AND j.payload->>'sent_at' ~ '^[0-9]{1,12}$' "
+                    "AND to_timestamp((j.payload->>'sent_at')::bigint) > p.probation_since",
+                    (config.telegram_namespace, item["job_id"]),
                 )
             if cache:
                 field, cache_key, file_id = cache

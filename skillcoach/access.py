@@ -3,6 +3,7 @@
 import hashlib
 import re
 import secrets
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from psycopg.types.json import Jsonb
@@ -378,11 +379,16 @@ def accept_update(repo, update_id: int, payload: dict, config) -> str:
         if member:
             # This person has messaged the configured bot, so it may write to them. Their own
             # recipient-level pause ends; a bot-wide pause never ends because of one person's message.
+            # last_message_at is when Telegram says their newest typed message was sent (button taps
+            # carry no such time), so a message that waited in Telegram's queue is never "fresh".
+            sent = payload.get("sent_at")
+            sent_at = datetime.fromtimestamp(sent, timezone.utc) if type(sent) is int and sent > 0 else None
             conn.execute(
-                "INSERT INTO telegram_starts(bot_id,telegram_id,learner_id) VALUES (%s,%s,%s) "
+                "INSERT INTO telegram_starts(bot_id,telegram_id,learner_id,last_message_at) VALUES (%s,%s,%s,%s) "
                 "ON CONFLICT (bot_id,telegram_id) DO UPDATE SET last_inbound_at=now(), "
-                "learner_id=EXCLUDED.learner_id",
-                (bot, actor, member["id"]),
+                "learner_id=EXCLUDED.learner_id, "
+                "last_message_at=greatest(telegram_starts.last_message_at, EXCLUDED.last_message_at)",
+                (bot, actor, member["id"], sent_at),
             )
             conn.execute(
                 "UPDATE telegram_pauses SET state='cleared', cleared_at=now(), cleared_by='inbound' "

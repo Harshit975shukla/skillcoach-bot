@@ -129,9 +129,8 @@ jobs:
           LABS_TEMPLATE_REPO: ${{ vars.LABS_TEMPLATE_REPO || 'Harshit975shukla/skillcoach-labs' }}
           LABS_GITHUB_TOKEN: ${{ secrets.LABS_GITHUB_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Coaching AI is Groq-only (no Gemini fallback), so no Google AI key is passed to workers.
           GROQ_MODEL: ${{ vars.GROQ_MODEL || 'openai/gpt-oss-120b,openai/gpt-oss-20b' }}
-          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash,gemini-3.5-flash,gemini-2.5-flash' }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           DASHBOARD_REPO: ${{ vars.DASHBOARD_REPO }}
           DASHBOARD_PATH: ${{ vars.DASHBOARD_PATH || 'docs/data.json' }}

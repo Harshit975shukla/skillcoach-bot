@@ -122,23 +122,19 @@ def test_storage_failure_is_retryable_http(harness, monkeypatch):
     assert "private connection" not in response.get_data(as_text=True)
 
 
-def test_provider_dispatch_fallback_and_invalid_json(config, monkeypatch):
-    ai = AI(replace(config, groq_key="fake", gemini_key="fake"))
+def test_provider_dispatch_stays_on_groq_and_invalid_json_fails_closed(config, monkeypatch):
+    ai = AI(replace(config, groq_key="fake"))
+    assert not hasattr(ai, "ask_gemini")
     calls = []
 
-    def groq(prompt, budget, **_):
-        calls.append("groq")
-        return '{"text": 123}'
-
-    def gemini(prompt, budget, **_):
-        calls.append("gemini")
-        return '{"text":"valid answer"}'
+    def groq(prompt, budget, *, model=None, **_):
+        calls.append(model)
+        return '{"text": 123}' if len(calls) == 1 else '{"text":"valid answer"}'
 
     monkeypatch.setattr(ai, "ask_groq", groq)
-    monkeypatch.setattr(ai, "ask_gemini", gemini)
     assert ai.structured("question", CoachingText, Budget()).text == "valid answer"
-    assert calls == ["groq", "gemini"]
-    monkeypatch.setattr(ai, "ask_gemini", lambda *args, **_: "not json")
+    assert calls == ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    monkeypatch.setattr(ai, "ask_groq", lambda *args, **_: "not json")
     with pytest.raises(ExternalError):
         ai.structured("question", CoachingText, Budget())
 

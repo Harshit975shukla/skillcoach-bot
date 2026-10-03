@@ -7,7 +7,7 @@ from test_http_and_edge_flows import Response, Session
 
 from skillcoach import clients
 from skillcoach.clients import AI, HTTP, Budget, ExternalError
-from skillcoach.config import DEFAULT_GEMINI_MODELS, DEFAULT_GROQ_MODELS, Config, ConfigurationError
+from skillcoach.config import DEFAULT_GROQ_MODELS, Config, ConfigurationError
 from skillcoach.models_base import Model
 from skillcoach.runtime import WORKER_STEP_SECONDS, Runtime
 
@@ -26,10 +26,6 @@ def groq_ok(body):
     return Response(200, {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(body)}}]})
 
 
-def gemini_ok(body):
-    return Response(200, {"candidates": [{"content": {"parts": [{"text": json.dumps(body)}]}}]})
-
-
 def daily_limit():
     return Failure(
         429,
@@ -43,23 +39,21 @@ def legacy_model():
 
 
 def ai(config, session, **changes):
-    values = {"groq_key": "private-groq", "gemini_key": "private-gemini", **changes}
+    values = {"groq_key": "private-groq", **changes}
     return AI(replace(config, **values), HTTP(session))
 
 
-def test_daily_limit_and_legacy_model_fall_through_to_a_current_model(config, caplog, monkeypatch):
+def test_daily_limit_and_retired_model_fall_through_to_the_next_groq_model(config, caplog, monkeypatch):
     sleeps = []
     monkeypatch.setattr(clients.time, "sleep", sleeps.append)
-    session = Session([daily_limit(), legacy_model(), gemini_ok({"items": ["ok"]})])
-    result = ai(
-        config, session, groq_model="openai/gpt-oss-120b", gemini_model="gemini-2.5-flash,gemini-3.8-flash"
-    ).structured("private prompt", Reply, Budget())
+    session = Session([daily_limit(), legacy_model(), groq_ok({"items": ["ok"]})])
+    result = ai(config, session, groq_model="m1,m2,m3").structured("private prompt", Reply, Budget())
     assert result.items == ["ok"] and not sleeps  # A 30-minute window is never slept on or retried.
-    urls = [call[1] for call in session.calls]
-    assert "groq.com" in urls[0] and "gemini-2.5-flash:" in urls[1] and "gemini-3.8-flash:" in urls[2]
+    assert all("api.groq.com" in call[1] for call in session.calls)
+    assert [call[2]["json"]["model"] for call in session.calls] == ["m1", "m2", "m3"]
     assert "limit=TPD" in caplog.text and "retry_after=1800" in caplog.text
     assert "remaining_tokens=0" in caplog.text and "status=NOT_FOUND" in caplog.text
-    assert "model=gemini-2.5-flash code=http_404" in caplog.text
+    assert "model=m2 code=http_404" in caplog.text
     assert "private" not in caplog.text
 
 
@@ -67,34 +61,40 @@ def test_short_provider_window_is_waited_once_within_budget(config, monkeypatch)
     sleeps = []
     monkeypatch.setattr(clients.time, "sleep", sleeps.append)
     session = Session([Failure(429, headers={"retry-after": "2"}), groq_ok({"items": ["ok"]})])
-    assert ai(config, session, gemini_key="").structured("prompt", Reply, Budget(20)).items == ["ok"]
+    assert ai(config, session).structured("prompt", Reply, Budget(20)).items == ["ok"]
     assert sleeps == [2.0] and len(session.calls) == 2
 
 
-def test_route_order_uses_extra_groq_models_only_after_gemini(config, monkeypatch):
+def test_routes_are_groq_only_and_exhausted_groq_fails_closed(config, monkeypatch):
     monkeypatch.setattr(clients.time, "sleep", lambda _: None)
-    session = Session([daily_limit(), legacy_model(), legacy_model(), groq_ok({"items": ["last resort"]})])
-    service = ai(config, session, groq_model="openai/gpt-oss-120b,openai/gpt-oss-20b", gemini_model="a,b")
-    assert service.routes() == [
+    models = "openai/gpt-oss-120b,openai/gpt-oss-20b"
+    assert ai(config, Session([]), groq_model=models).routes() == [
         ("groq", "openai/gpt-oss-120b"),
-        ("gemini", "a"),
-        ("gemini", "b"),
         ("groq", "openai/gpt-oss-20b"),
     ]
-    assert service.structured("prompt", Reply, Budget()).items == ["last resort"]
-    assert session.calls[3][2]["json"]["model"] == "openai/gpt-oss-20b"
+    # Every Groq model rate-limited or failing: the work fails (and is retried later). Coaching prompts
+    # can hold private context, so no other provider is ever tried.
+    session = Session([daily_limit(), daily_limit(), groq_ok({"items": ["never used"]})])
+    with pytest.raises(ExternalError, match="ai_unavailable_or_invalid"):
+        ai(config, session, groq_model=models).structured("private prompt", Reply, Budget())
+    assert len(session.calls) == 2 and all("api.groq.com" in call[1] for call in session.calls)
+    session = Session([Failure(503), Failure(503), groq_ok({"items": ["never used"]})])
+    with pytest.raises(ExternalError, match="ai_unavailable_or_invalid"):
+        ai(config, session, groq_model="only").structured("private prompt", Reply, Budget())
+    assert len(session.calls) == 2 and all("api.groq.com" in call[1] for call in session.calls)
 
 
-def test_rejected_credentials_skip_the_rest_of_that_provider(config):
-    session = Session([Failure(401), gemini_ok({"items": ["ok"]})])
-    service = ai(config, session, groq_model="openai/gpt-oss-120b,openai/gpt-oss-20b", gemini_model="g")
-    assert service.structured("prompt", Reply, Budget()).items == ["ok"]
-    assert len(session.calls) == 2
+def test_rejected_credentials_skip_the_remaining_groq_models(config):
+    session = Session([Failure(401), groq_ok({"items": ["never used"]})])
+    service = ai(config, session, groq_model="openai/gpt-oss-120b,openai/gpt-oss-20b")
+    with pytest.raises(ExternalError, match="ai_unavailable_or_invalid"):
+        service.structured("prompt", Reply, Budget())
+    assert len(session.calls) == 1
 
 
 def test_worker_budget_repairs_invalid_json_once_with_safe_hints(config, caplog):
     session = Session([groq_ok({"items": ["private-a", "b", "c"]}), groq_ok({"items": ["a", "b"]})])
-    service = ai(config, session, gemini_key="", groq_model="openai/gpt-oss-120b")
+    service = ai(config, session, groq_model="openai/gpt-oss-120b")
     assert service.structured("prompt", Reply, Budget(WORKER_STEP_SECONDS)).items == ["a", "b"]
     repaired = session.calls[1][2]["json"]["messages"][1]["content"]
     assert "YOUR PREVIOUS RESPONSE WAS REJECTED BY VALIDATION" in repaired
@@ -105,7 +105,7 @@ def test_worker_budget_repairs_invalid_json_once_with_safe_hints(config, caplog)
 
 def test_semantic_validator_failures_are_repaired_and_bounded(config):
     session = Session([groq_ok({"items": ["x"]}), groq_ok({"items": ["x"]}), groq_ok({"items": ["y"]})])
-    service = ai(config, session, gemini_key="", groq_model="m1,m2")
+    service = ai(config, session, groq_model="m1,m2")
 
     def validate(result):
         if result.items != ["y"]:
@@ -119,39 +119,33 @@ def test_semantic_validator_failures_are_repaired_and_bounded(config):
 def test_request_budgets_never_spend_time_on_repairs(config):
     session = Session([groq_ok({"items": ["a", "b", "c"]})])
     with pytest.raises(ExternalError, match="ai_unavailable_or_invalid"):
-        ai(config, session, gemini_key="", groq_model="only").structured("prompt", Reply, Budget(20))
+        ai(config, session, groq_model="only").structured("prompt", Reply, Budget(20))
     assert len(session.calls) == 1
 
 
-def test_gemini_requests_json_and_ignores_thought_parts(config):
-    body = {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [{"text": "private reasoning", "thought": True}, {"text": '{"items": ["ok"]}'}]
-                }
-            }
-        ]
-    }
-    session = Session([Response(200, body)])
-    service = ai(config, session, groq_key="", gemini_model="gemini-3.8-flash")
-    assert service.structured("prompt", Reply, Budget()).items == ["ok"]
-    generation = session.calls[0][2]["json"]["generationConfig"]
-    assert generation == {"maxOutputTokens": 16384, "responseMimeType": "application/json"}
+def test_without_a_groq_key_no_ai_request_is_made(config):
+    session = Session([groq_ok({"items": ["never used"]})])
+    with pytest.raises(ExternalError, match="ai_unavailable_or_invalid"):
+        ai(config, session, groq_key="").structured("private prompt", Reply, Budget())
+    assert not session.calls
 
 
 def test_model_chain_configuration(monkeypatch):
+    from dataclasses import fields
+
     for name, value in {
         "DATABASE_URL": "postgresql://test-only",
         "TELEGRAM_BOT_TOKEN": "fake",
         "OWNER_ID": "42",
+        # Left over from the removed Gemini fallback: no longer read, not even validated.
+        "GEMINI_API_KEY": "left-over",
+        "GEMINI_MODEL": "not a model list,,,,,",
     }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.delenv("GROQ_MODEL", raising=False)
-    monkeypatch.setenv("GEMINI_MODEL", "")
     config = Config.from_env()
-    assert config.groq_model == DEFAULT_GROQ_MODELS and config.gemini_model == DEFAULT_GEMINI_MODELS
-    assert DEFAULT_GEMINI_MODELS.split(",")[0] == "gemini-3.8-flash"
+    assert config.groq_model == DEFAULT_GROQ_MODELS
+    assert not [field.name for field in fields(Config) if "gemini" in field.name]
     monkeypatch.setenv("GROQ_MODEL", " openai/gpt-oss-120b , openai/gpt-oss-20b ,openai/gpt-oss-120b")
     assert AI(replace(Config.from_env(), groq_key="k")).routes() == [
         ("groq", "openai/gpt-oss-120b"),

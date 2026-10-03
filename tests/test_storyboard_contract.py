@@ -74,21 +74,22 @@ def test_wire_conversion_rejects_invalid_states_without_overwriting(change):
         canonical_response(json.dumps(body))
 
 
-def test_native_schema_success_still_rejects_graph_semantics_and_falls_back(config):
+def test_native_schema_success_still_rejects_graph_semantics_and_tries_the_next_groq_model(config):
     bad = wire_storyboard()
     bad["scenes"][0]["highlights"] = ["undeclared"]
     expected = reviewed_architecture("EC2")
     session = Session(
         [
             Response(200, {"choices": [{"message": {"content": json.dumps(bad)}}]}),
-            Response(200, {"candidates": [{"content": {"parts": [{"text": expected.model_dump_json()}]}}]}),
+            Response(200, {"choices": [{"message": {"content": json.dumps(wire_storyboard())}}]}),
         ]
     )
-    result = AI(replace(config, groq_key="fake", gemini_key="fake"), HTTP(session)).structured(
-        "Synthetic flow", Storyboard, Budget()
-    )
+    result = AI(replace(config, groq_key="fake"), HTTP(session)).structured("Synthetic flow", Storyboard, Budget())
     assert result == expected and len(session.calls) == 2
-    assert '"states"' in session.calls[1][2]["json"]["contents"][0]["parts"][0]["text"]
+    # The next model is Groq's too, with the same strict schema: there is no other provider.
+    assert all("api.groq.com" in call[1] for call in session.calls)
+    assert [call[2]["json"]["model"] for call in session.calls] == ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    assert session.calls[1][2]["json"]["response_format"]["json_schema"]["strict"] is True
 
 
 def test_other_models_and_provider_errors_do_not_get_unsupported_strict_settings(config):

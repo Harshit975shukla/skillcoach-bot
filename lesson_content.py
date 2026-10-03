@@ -1,6 +1,6 @@
 """
 Pre-written lesson content for all core topics.
-Gemini/Groq is only used to generate the interview Q&A at the end.
+Groq is only used to generate the interview Q&A at the end.
 This guarantees full, consistent lessons regardless of API availability.
 """
 

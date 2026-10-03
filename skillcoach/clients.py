@@ -218,42 +218,14 @@ class AI:
             raise ExternalError("invalid_ai_envelope")
         return text
 
-    def ask_gemini(self, prompt: str, budget: Budget, *, model: str | None = None) -> str:
-        name = model or model_chain(self.config.gemini_model)[0]
-        _, data = self.http.call(
-            "POST",
-            f"https://generativelanguage.googleapis.com/v1beta/models/{quote(name, safe='')}:generateContent",
-            budget=budget,
-            headers={"x-goog-api-key": self.config.gemini_key},
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                # Current Flash models spend part of this allowance on internal thinking.
-                "generationConfig": {"maxOutputTokens": 16384, "responseMimeType": "application/json"},
-            },
-            read_timeout=60,
-        )
-        try:
-            candidate = data["candidates"][0]
-            reason = candidate.get("finishReason")
-            if reason == "MAX_TOKENS":
-                raise ExternalError("ai_response_truncated")
-            if reason not in (None, "STOP"):
-                raise ExternalError("ai_response_refused", retryable=False)
-            text = "".join(p.get("text", "") for p in candidate["content"]["parts"] if not p.get("thought"))
-        except (KeyError, IndexError, TypeError, AttributeError):
-            raise ExternalError("invalid_ai_envelope") from None
-        if not text.strip():
-            raise ExternalError("invalid_ai_envelope")
-        return text
-
     def routes(self) -> list[tuple[str, str]]:
-        """Primary Groq model, then Gemini models, then extra Groq models as a last resort."""
-        groq = model_chain(self.config.groq_model) if self.config.groq_key else []
-        gemini = model_chain(self.config.gemini_model) if self.config.gemini_key else []
+        """The configured Groq models, in order. Coaching prompts can carry private context (profile,
+        documents, answers and feedback), so they go to Groq only: there is no other provider to fall
+        back to, not even on rate limits or errors. Without a usable Groq model the work fails and is
+        retried later. (Until October 2026 a Google Gemini fallback existed; it was removed because
+        Google's unpaid Gemini quota may use submitted content to improve Google's products.)"""
         return (
-            [("groq", name) for name in groq[:1]]
-            + [("gemini", name) for name in gemini]
-            + [("groq", name) for name in groq[1:]]
+            [("groq", name) for name in model_chain(self.config.groq_model)] if self.config.groq_key else []
         )
 
     def structured(self, prompt, model, budget: Budget, validate=None):
@@ -264,7 +236,7 @@ class AI:
         for provider, name in self.routes():
             if provider in unavailable:
                 continue
-            strict = provider == "groq" and model is Storyboard and name in STRICT_STORYBOARD_MODELS
+            strict = model is Storyboard and name in STRICT_STORYBOARD_MODELS
             wire_schema = response_schema() if strict else None
             base = (
                 prompt
@@ -284,10 +256,7 @@ class AI:
                     )
                 hints = None
                 try:
-                    if provider == "groq":
-                        raw = self.ask_groq(request, budget, schema=wire_schema, model=name)
-                    else:
-                        raw = self.ask_gemini(request, budget, model=name)
+                    raw = self.ask_groq(request, budget, schema=wire_schema, model=name)
                     text = canonical_response(raw) if strict else raw.strip()
                     if text.startswith("```") and text.endswith("```"):
                         text = text.split("\n", 1)[1].rsplit("```", 1)[0]

@@ -67,22 +67,21 @@ def test_telegram_transport_and_api_ok_false_are_not_silent(config):
     assert len(session.calls) == 1  # Do not blindly duplicate uncertain Telegram sends.
 
 
-def test_actual_groq_then_gemini_dispatch_and_no_provider(config):
-    config = replace(config, groq_key="fake-groq", gemini_key="fake-gemini")
+def test_rejected_groq_key_fails_closed_without_another_provider(config):
+    config = replace(config, groq_key="fake-groq")
     session = Session(
         [
             Response(401, {}),
             Response(200, {"candidates": [{"content": {"parts": [{"text": json.dumps(READINESS)}]}}]}),
         ]
     )
-    result = AI(config, HTTP(session)).structured("diagnostic", Readiness, Budget())
-    assert result.readiness_score == 61
-    assert "groq.com" in session.calls[0][1]
-    assert "generativelanguage.googleapis.com" in session.calls[1][1]
+    with pytest.raises(ExternalError, match="ai_unavailable_or_invalid"):
+        AI(config, HTTP(session)).structured("diagnostic", Readiness, Budget())
+    # Rejected credentials skip the remaining Groq models, and nothing else is called.
+    assert len(session.calls) == 1 and "api.groq.com" in session.calls[0][1]
     assert session.calls[0][2]["headers"]["Authorization"] == "Bearer fake-groq"
-    assert "fake-gemini" not in session.calls[1][1]
     with pytest.raises(ExternalError):
-        AI(replace(config, groq_key="", gemini_key="")).structured("diagnostic", Readiness, Budget())
+        AI(replace(config, groq_key="")).structured("diagnostic", Readiness, Budget())
 
 
 def test_terraform_storyboard_uses_valid_primary_without_unavailable_fallback(config):
@@ -100,7 +99,7 @@ def test_terraform_storyboard_uses_valid_primary_without_unavailable_fallback(co
             Response(404, {}),
         ]
     )
-    ai = AI(replace(config, groq_key="fake-primary", gemini_key="fake-fallback"), HTTP(session))
+    ai = AI(replace(config, groq_key="fake-primary"), HTTP(session))
     assert ai.structured("Synthetic Terraform lesson", Storyboard, Budget()).references == story["references"]
     assert len(session.calls) == 1
 
@@ -115,33 +114,17 @@ def test_terraform_storyboard_uses_valid_primary_without_unavailable_fallback(co
         ({"choices": [{"message": {"refusal": "private refusal"}}]}, "ai_response_refused"),
     ],
 )
-def test_groq_envelope_failures_have_safe_codes_and_use_fallback(config, caplog, envelope, code):
+def test_groq_envelope_failures_have_safe_codes_and_use_the_next_groq_model(config, caplog, envelope, code):
     session = Session(
         [
             Response(200, envelope),
-            Response(200, {"candidates": [{"content": {"parts": [{"text": json.dumps(READINESS)}]}}]}),
+            Response(200, {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(READINESS)}}]}),
         ]
     )
-    ai = AI(replace(config, groq_key="private-key", gemini_key="private-backup"), HTTP(session))
+    ai = AI(replace(config, groq_key="private-key"), HTTP(session))
     assert ai.structured("private prompt", Readiness, Budget()).readiness_score == 61
     assert len(session.calls) == 2 and f"code={code}" in caplog.text
-    assert "private" not in caplog.text
-
-
-@pytest.mark.parametrize(
-    "envelope,code",
-    [
-        ({"candidates": []}, "invalid_ai_envelope"),
-        ({"candidates": [{"finishReason": "MAX_TOKENS"}]}, "ai_response_truncated"),
-        ({"candidates": [{"finishReason": "SAFETY"}]}, "ai_response_refused"),
-    ],
-)
-def test_gemini_envelope_failures_remain_explicit(config, caplog, envelope, code):
-    session = Session([Response(200, envelope)])
-    ai = AI(replace(config, gemini_key="private-backup", gemini_model="gemini-3.8-flash"), HTTP(session))
-    with pytest.raises(ExternalError, match="ai_unavailable_or_invalid"):
-        ai.structured("private prompt", Readiness, Budget())
-    assert len(session.calls) == 1 and f"code={code}" in caplog.text
+    assert all("api.groq.com" in call[1] for call in session.calls)
     assert "private" not in caplog.text
 
 

@@ -193,9 +193,18 @@ def main(argv=None):
     sub.add_parser("telegram-status", help="Show Telegram copy health (both mode); states and counts only")
     restore = sub.add_parser(
         "telegram-restore",
-        help="After the owner has messaged the bot, let copies to the owner confirm a bot-wide pause is over",
+        help="After the owner has messaged the bot, let copies go to the owner only until a fresh reply is accepted",
     )
     restore.add_argument("--confirm", action="store_true")
+    gate = sub.add_parser(
+        "telegram-gate", help="Pause every Telegram copy on purpose before copies start (both mode)"
+    )
+    gate.add_argument("--confirm", action="store_true")
+    copies_off = sub.add_parser(
+        "telegram-copies-off",
+        help="Before running code without Telegram copies: withdraw every open copy (web mode only)",
+    )
+    copies_off.add_argument("--confirm", action="store_true")
     sub.add_parser("email-test", help="Send one test email to OWNER_EMAIL to check SMTP settings")
     sub.add_parser("poll", help="Explicit local polling adapter; refuses an active webhook")
     sub.add_parser("configure-telegram", help="Set the bot command menu and dashboard menu button")
@@ -266,7 +275,7 @@ def main(argv=None):
             return 0
         if args.command == "needs-media":
             return 0 if Repository(database_url()).needs_media() else 3
-        if args.command in ("telegram-status", "telegram-restore"):
+        if args.command in ("telegram-status", "telegram-restore", "telegram-gate", "telegram-copies-off"):
             from skillcoach import telegram_copies
             from skillcoach.config import Config
 
@@ -277,11 +286,21 @@ def main(argv=None):
                 return 0
             if not args.confirm:
                 raise ValueError(
-                    "Restoration resumes Telegram copies to the owner first; rerun with --confirm."
+                    {
+                        "telegram-restore": "Restoration resumes Telegram copies to the owner first",
+                        "telegram-gate": "The gate pauses every Telegram copy until restoration",
+                        "telegram-copies-off": "This withdraws every open Telegram copy",
+                    }[args.command]
+                    + "; rerun with --confirm."
                 )
-            result = telegram_copies.restore(repository, config)
+            action = {
+                "telegram-restore": (telegram_copies.restore, "restored"),
+                "telegram-gate": (telegram_copies.gate, "gated"),
+                "telegram-copies-off": (telegram_copies.copies_off, "withdrawn"),
+            }[args.command]
+            result = action[0](repository, config)
             print(json.dumps(result))
-            return 0 if result["restored"] else 4
+            return 0 if result[action[1]] else 4
         runtime = Runtime.from_env()
         if args.command == "email-test":
             print(json.dumps(email_test(runtime)))

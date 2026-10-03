@@ -8,8 +8,6 @@ class ConfigurationError(RuntimeError):
 
 
 DEFAULT_GROQ_MODELS = "openai/gpt-oss-120b,openai/gpt-oss-20b"
-# Newer Google projects cannot call models that reached the LEGACY stage; keep current ones first.
-DEFAULT_GEMINI_MODELS = "gemini-3.8-flash,gemini-3.5-flash,gemini-2.5-flash"
 
 
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+")
@@ -52,9 +50,7 @@ class Config:
     owner_id: int
     webhook_secret: str = ""
     groq_key: str = ""
-    gemini_key: str = ""
     groq_model: str = DEFAULT_GROQ_MODELS
-    gemini_model: str = DEFAULT_GEMINI_MODELS
     github_token: str = ""
     dashboard_repo: str = ""
     dashboard_path: str = "docs/data.json"
@@ -140,13 +136,9 @@ class Config:
         narration = os.getenv("NARRATION_ENABLED", "false").lower()
         requests_enabled = os.getenv("ACCESS_REQUESTS_ENABLED", "false").lower()
         groq_models = os.getenv("GROQ_MODEL", "").strip() or DEFAULT_GROQ_MODELS
-        gemini_models = os.getenv("GEMINI_MODEL", "").strip() or DEFAULT_GEMINI_MODELS
-        for models in (groq_models, gemini_models):
-            chain = model_chain(models)
-            if not 1 <= len(chain) <= 4 or not all(
-                re.fullmatch(r"[A-Za-z0-9._/:-]{1,100}", m) for m in chain
-            ):
-                raise ConfigurationError("GROQ_MODEL and GEMINI_MODEL must list one to four model names.")
+        chain = model_chain(groq_models)
+        if not 1 <= len(chain) <= 4 or not all(re.fullmatch(r"[A-Za-z0-9._/:-]{1,100}", m) for m in chain):
+            raise ConfigurationError("GROQ_MODEL must list one to four model names.")
         labs = os.getenv("LABS_ENABLED", "true").lower()
         labs_repo = os.getenv("LABS_TEMPLATE_REPO", "Harshit975shukla/skillcoach-labs")
         if labs not in ("true", "false"):
@@ -197,9 +189,7 @@ class Config:
             int(owner),
             secret,
             os.getenv("GROQ_API_KEY", ""),
-            os.getenv("GEMINI_API_KEY", ""),
             groq_models,
-            gemini_models,
             os.getenv("GITHUB_TOKEN", ""),
             repo,
             path,

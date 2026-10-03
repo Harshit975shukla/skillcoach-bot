@@ -17,20 +17,24 @@ ALTER TABLE access_audit ADD CONSTRAINT access_audit_receipt_fkey
 ALTER TABLE coach_state ADD COLUMN telegram_target jsonb;
 
 -- People who have messaged this bot. Telegram copies go only to someone who started the current bot;
--- a binding is never inferred from an email address or a name.
+-- a binding is never inferred from an email address or a name. last_message_at is when Telegram says
+-- their newest typed message was sent (NULL until one arrives), so a restoration can tell a fresh owner
+-- message from one that waited in Telegram's queue.
 CREATE TABLE telegram_starts (
     bot_id bigint NOT NULL CHECK (bot_id >= 0),
     telegram_id bigint NOT NULL CHECK (telegram_id > 0),
     learner_id text NOT NULL REFERENCES learners(id),
     first_inbound_at timestamptz NOT NULL DEFAULT now(),
     last_inbound_at timestamptz NOT NULL DEFAULT now(),
+    last_message_at timestamptz,
     PRIMARY KEY (bot_id, telegram_id)
 );
 CREATE INDEX telegram_starts_learner ON telegram_starts(learner_id);
 
 -- Telegram health, with its history kept. A row with learner_id NULL is the whole bot (credentials
--- rejected or an explicit frozen error); otherwise one recipient. 'probation' is an authorized
--- restoration waiting for a confirmed owner reply. Codes come from a fixed vocabulary only.
+-- rejected, an explicit frozen error, or an operator's restoration gate); otherwise one recipient.
+-- 'probation' is an operator-authorized restoration, begun at probation_since, waiting for Telegram to
+-- accept the reply to an owner message sent after that moment. Codes come from a fixed vocabulary only.
 CREATE TABLE telegram_pauses (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     bot_id bigint NOT NULL CHECK (bot_id >= 0),
@@ -38,9 +42,11 @@ CREATE TABLE telegram_pauses (
     code text NOT NULL CHECK (code ~ '^[a-z_]{1,40}$'),
     state text NOT NULL CHECK (state IN ('paused', 'probation', 'cleared')),
     since timestamptz NOT NULL DEFAULT now(),
+    probation_since timestamptz,
     cleared_at timestamptz,
     cleared_by text CHECK (cleared_by IN ('inbound', 'operator', 'confirmed')),
-    CHECK ((state = 'cleared') = (cleared_at IS NOT NULL))
+    CHECK ((state = 'cleared') = (cleared_at IS NOT NULL)),
+    CHECK (state <> 'probation' OR probation_since IS NOT NULL)
 );
 CREATE UNIQUE INDEX telegram_pauses_open ON telegram_pauses(bot_id, coalesce(learner_id, ''))
     WHERE state <> 'cleared';

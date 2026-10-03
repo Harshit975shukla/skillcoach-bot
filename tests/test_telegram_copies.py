@@ -114,12 +114,19 @@ def drain(web):
             return
 
 
-def message(web, actor, text=None, callback=None, *, update_id=None, run=True):
-    """One Telegram update from `actor` to the configured bot."""
+def sent(offset=0):
+    """A Telegram send time (whole Unix seconds, like Telegram's `date`), `offset` seconds from now. A
+    message the test sends after an operator step uses a small positive offset, so the whole-second
+    send time is certainly later than the step's exact time."""
+    return int(time.time()) + offset
+
+
+def message(web, actor, text=None, callback=None, *, update_id=None, run=True, sent_at=None):
+    """One Telegram update from `actor` to the configured bot (a typed message carries its send time)."""
     web.update_id += 1
     payload = {"type": "telegram", "actor_id": actor, "display_name": f"Person {actor}"}
     if callback is None:
-        payload["text"] = text
+        payload.update(text=text, sent_at=sent() if sent_at is None else sent_at)
     else:
         payload.update(callback=callback, callback_id="fake")
     outcome = web.bot.repo.accept_update(update_id or web.update_id, payload, web.bot.runtime.config)
@@ -396,15 +403,18 @@ def test_a_rejected_or_frozen_bot_pauses_every_copy_until_an_operator_and_the_ow
     config, repo = web.bot.runtime.config, web.bot.repo
     assert telegram_copies.restore(repo, config) == {
         "restored": False, "reason": "owner_message_to_bot_required_after_pause"}
-    message(web, OWNER, "/help")
+    message(web, OWNER, "/help", sent_at=sent(2))
     assert web.tg.calls == calls
     assert telegram_copies.restore(repo, config)["state"] == "probation"
     assert telegram_copies.status(repo, config)["bot"]["state"] == "probation"
-    # ...then only the owner gets copies until one is accepted.
+    # ...then only the owner gets copies. A note reaching the owner does not end probation: only
+    # Telegram accepting the reply to an owner message sent after the restoration does.
     note(web, web.learner)
     assert web.tg.calls == calls
     note(web, web.owner)
-    assert web.tg.to(OWNER) and pauses(web)[0]["cleared_by"] == "confirmed"
+    assert web.tg.to(OWNER) and pauses(web)[0]["state"] == "probation"
+    message(web, OWNER, "/help", sent_at=sent(2))
+    assert pauses(web)[0]["cleared_by"] == "confirmed"
     web.tg.sent.clear()
     note(web, web.learner)
     assert [entry["chat"] for entry in web.tg.sent] == [101]
@@ -934,7 +944,8 @@ def test_button_taps_are_processed_but_not_acknowledged_through_a_paused_bot(bot
     assert web.tg.acks == ["cb-healthy"] and web.tg.calls == calls
     # On probation, only the owner's taps are acknowledged.
     with web.bot.repo.connection() as conn:
-        conn.execute("UPDATE telegram_pauses SET state='probation' WHERE bot_id=%s AND learner_id IS NULL", (NEW_BOT,))
+        conn.execute("UPDATE telegram_pauses SET state='probation', probation_since=now() "
+                     "WHERE bot_id=%s AND learner_id IS NULL", (NEW_BOT,))
     tap(101, "cb-learner")
     tap(OWNER, "cb-owner")
     assert web.tg.acks == ["cb-healthy", "cb-owner"]
@@ -973,3 +984,166 @@ def test_status_shows_only_the_learners_own_telegram_copies(both):
     assert status(101).splitlines()[-1] == (
         "Telegram copies: paused for everyone. Everything continues here and by email reminders.")
     assert telegram_copies.learner_view(repo, replace(config, delivery_channel="web"), "owner") is None
+
+
+def test_a_typed_message_carries_telegrams_send_time_and_nothing_else_does():
+    from skillcoach.web import authorized_update
+
+    def update(**fields):
+        return {"update_id": 1, "message": {"chat": {"id": 7, "type": "private"}, "from": {"id": 7},
+                                            "text": "/help", **fields}}
+
+    assert authorized_update(update(date=1759460000))[1]["sent_at"] == 1759460000
+    for bad in (None, "1759460000", -5, 0, True, 1.5):
+        assert "sent_at" not in authorized_update(update(date=bad))[1]
+    tap = {"update_id": 2, "callback_query": {"id": "c", "data": "home:today", "from": {"id": 7},
+                                              "message": {"date": 1759460000, "chat": {"id": 7, "type": "private"}}}}
+    assert "sent_at" not in authorized_update(tap)[1]
+
+
+@pytest.mark.postgres
+def test_the_operator_gate_opens_only_after_a_fresh_owner_round_trip(both):
+    web = both
+    repo, config = web.bot.repo, web.bot.runtime.config
+    assert telegram_copies.gate(repo, replace(config, delivery_channel="web")) == {
+        "gated": False, "reason": "copies_are_off"}
+    first = telegram_copies.gate(repo, config)
+    assert (first["gated"], first["new"], first["code"], first["state"]) == (True, True, "operator_restoration", "paused")
+    assert telegram_copies.gate(repo, config)["new"] is False  # running it again changes nothing
+    # People can start the bot while the gate is closed. Nothing is sent to anyone, and nothing is
+    # reported as a Telegram failure.
+    message(web, 101, "/help")
+    message(web, OWNER, "/help", sent_at=sent(-3600))  # waited in Telegram's queue since before the gate
+    note(web, web.owner, web.learner)
+    assert web.tg.calls == 0 and not copies(web)
+    assert not rows(web, "SELECT 1 FROM outbox WHERE id LIKE 'telegram-health:%%'")
+    assert telegram_copies.learner_view(repo, config, web.learner.learner_id).startswith(
+        "Telegram copies: paused for everyone.")
+    # A message that waited in Telegram's queue does not open the gate. A fresh one lets the operator
+    # restore copies, to the owner only.
+    assert telegram_copies.restore(repo, config) == {
+        "restored": False, "reason": "owner_message_to_bot_required_after_pause"}
+    message(web, OWNER, "/help", sent_at=sent(2), run=False)  # fresh, received, not yet answered
+    restored = telegram_copies.restore(repo, config)
+    assert (restored["restored"], restored["state"]) == (True, "probation")
+    assert telegram_copies.restore(repo, config)["reason"] == "already_on_probation"
+    assert telegram_copies.status(repo, config)["bot"]["probation_since"] == restored["since"]
+    # Repeating the gate during probation keeps the in-flight restoration exactly as it is.
+    before = rows(web, "SELECT id, code, state, since, probation_since FROM telegram_pauses")
+    again = telegram_copies.gate(repo, config)
+    assert (again["new"], again["state"], again["code"]) == (False, "probation", "operator_restoration")
+    assert rows(web, "SELECT id, code, state, since, probation_since FROM telegram_pauses") == before
+    # On probation, copies reach the owner only. Neither the reply to a message received before the
+    # restoration nor a scheduled note ends probation.
+    drain(web)
+    note(web, web.owner, web.learner)
+    assert web.tg.sent and {entry["chat"] for entry in web.tg.sent} == {OWNER}
+    assert pauses(web)[0]["state"] == "probation"
+    # The reply to a fresh owner message fails for a passing reason: probation holds across the retry...
+    web.tg.failures[OWNER] = [tg_error(503, retryable=True)]
+    message(web, OWNER, "/help", sent_at=sent(2))
+    reply = copies(web, "owner")[-1]
+    assert reply["status"] == "failed" and pauses(web)[0]["state"] == "probation"
+    # ...and ends once Telegram accepts that reply. Then everyone's copies resume.
+    retry_now(web, reply["id"])
+    assert copies(web, "owner")[-1]["status"] == "sent"
+    assert [(p["code"], p["state"], p["cleared_by"]) for p in pauses(web)] == [
+        ("operator_restoration", "cleared", "confirmed")]
+    web.tg.sent.clear()
+    note(web, web.learner)
+    assert [entry["chat"] for entry in web.tg.sent] == [101]
+
+
+@pytest.mark.postgres
+def test_copies_off_withdraws_only_open_copies_with_both_workers_quiet(both):
+    web = both
+    repo, config = web.bot.repo, web.bot.runtime.config
+    for actor in (OWNER, 101):
+        message(web, actor, "/help")
+    accepted = copies(web, "owner")[-1]
+    assert accepted["status"] == "sent"
+    web.tg.failures[101] = [tg_error(503, retryable=True)]
+    note(web, web.learner)
+    retrying = copies(web, web.learner.learner_id)[-1]
+    web.tg.failures[101] = [tg_error(503, retryable=True)]
+    note(web, web.learner)
+    spent = copies(web, web.learner.learner_id)[-1]
+    with repo.connection() as conn:
+        conn.execute("UPDATE outbox SET attempts=5 WHERE id=%s", (spent["id"],))
+        # A copy not yet tried, and not due for an hour.
+        latest = conn.execute("SELECT id FROM outbox WHERE learner_id='owner' AND body->>'kind'='text' "
+                              "AND status='sent' ORDER BY sequence DESC LIMIT 1").fetchone()["id"]
+        conn.execute("INSERT INTO outbox(id,job_id,body,learner_id,access_generation,available_at) "
+                     "SELECT %s, job_id, %s, learner_id, access_generation, now()+interval '1 hour' "
+                     "FROM outbox WHERE id=%s",
+                     (latest + ":tg-waiting", Jsonb({"kind": "telegram", "copy_of": latest, "bot": NEW_BOT}), latest))
+    open_ids = {retrying["id"], spent["id"], latest + ":tg-waiting"}
+    assert {row["id"] for row in rows(web, f"SELECT id FROM outbox WHERE {telegram_copies.OPEN_COPIES}")} == open_ids
+    others = "SELECT id, status, error_code, attempts FROM outbox WHERE body->>'kind' IS DISTINCT FROM 'telegram' ORDER BY id"
+    before = rows(web, others)
+    # Refused while copies are on, and while any worker holds its lease: nothing changes.
+    assert telegram_copies.copies_off(repo, config) == {"withdrawn": False, "reason": "switch_DELIVERY_CHANNEL_to_web_first"}
+    web_mode = replace(config, delivery_channel="web")
+    for busy in ("domain", "delivery"):
+        token = repo.acquire(busy, 60)
+        try:
+            assert telegram_copies.copies_off(repo, web_mode) == {
+                "withdrawn": False, "reason": f"{busy}_worker_busy_try_again"}
+        finally:
+            repo.release(busy, token)
+    assert len(rows(web, f"SELECT id FROM outbox WHERE {telegram_copies.OPEN_COPIES}")) == 3
+    # Withdrawn: every open copy, whatever its attempts or due time. The accepted copy and every other
+    # row (inbox, email, push) are exactly as before, and both leases are free again.
+    assert telegram_copies.copies_off(repo, web_mode) == {"withdrawn": True, "count": 3, "open_copies_left": 0}
+    assert {row["id"]: (row["status"], row["error_code"]) for row in copies(web) if row["id"] in open_ids} == {
+        key: ("suppressed", "copies_off") for key in open_ids}
+    assert rows(web, "SELECT status FROM outbox WHERE id=%s", accepted["id"])[0]["status"] == "sent"
+    assert rows(web, others) == before
+    for name in ("domain", "delivery"):
+        token = repo.acquire(name, 5)
+        assert token
+        repo.release(name, token)
+    assert telegram_copies.copies_off(repo, web_mode)["count"] == 0
+
+
+def test_operator_commands_need_confirm_and_report_refusals_with_exit_4(monkeypatch, capsys):
+    from skillcoach import cli
+
+    config = replace(Config("postgresql://test-only", NEW_TOKEN, 42, "a" * 32), delivery_channel="both",
+                     telegram_legacy_bot_id=LEGACY_BOT)
+    monkeypatch.setattr(Config, "from_env", classmethod(lambda cls, **_: config))
+    monkeypatch.setattr(cli, "Repository", lambda url: "repository")
+    monkeypatch.setattr(cli, "database_url", lambda: "postgresql://test-only")
+    calls = []
+    outcomes = {
+        "gate": {"gated": True, "new": True},
+        "restore": {"restored": False, "reason": "owner_message_to_bot_required_after_pause"},
+        "copies_off": {"withdrawn": False, "reason": "switch_DELIVERY_CHANNEL_to_web_first"},
+    }
+    for name, outcome in outcomes.items():
+        monkeypatch.setattr(telegram_copies, name, lambda repo, cfg, name=name, outcome=outcome:
+                            calls.append((name, repo, cfg)) or outcome)
+    for command in ("telegram-gate", "telegram-restore", "telegram-copies-off"):
+        assert cli.main([command]) != 0  # nothing happens without --confirm
+    assert not calls
+    assert cli.main(["telegram-gate", "--confirm"]) == 0
+    assert cli.main(["telegram-restore", "--confirm"]) == 4
+    assert cli.main(["telegram-copies-off", "--confirm"]) == 4
+    assert [(name, repo) for name, repo, _ in calls] == [
+        ("gate", "repository"), ("restore", "repository"), ("copies_off", "repository")]
+    assert '"reason": "owner_message_to_bot_required_after_pause"' in capsys.readouterr().out
+
+
+# The test-only branch compat-716f677-schema15 checks that the code live before both mode (716f677) works
+# on this exact migration 015 and this exact withdrawal statement; both identities are pinned here too.
+FINAL_015_SHA256 = "1ec4cdec57c92697a65cd8177117ba4b0d9a6071097f60d8d0db896ebc53f11b"
+WITHDRAW_SHA256 = "e4759e6e7c5eb2793c00cfc7556f9e3b97bf9ae33eb065e630f8abd2387aa00a"
+
+
+def test_the_rollback_proof_covers_this_exact_migration_and_withdrawal():
+    import hashlib
+    from pathlib import Path
+
+    migration = Path(__file__).resolve().parents[1] / "skillcoach" / "migrations" / "015_telegram_copies.sql"
+    assert hashlib.sha256(migration.read_bytes().replace(b"\r\n", b"\n")).hexdigest() == FINAL_015_SHA256
+    assert hashlib.sha256(telegram_copies.WITHDRAW_OPEN_COPIES.encode()).hexdigest() == WITHDRAW_SHA256
