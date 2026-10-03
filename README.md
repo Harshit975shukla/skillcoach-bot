@@ -988,8 +988,9 @@ stop working and Telegram delivery resumes, with nothing replayed.
 ## Telegram copies in both mode (built, not activated)
 
 **Status:** built and tested, but switched off. The original bot @skillOpsDev_bot works again after
-Telegram's restriction ended (its token was rotated on 3 October 2026), and this code and migration
-015 were released in web mode on 3 October 2026. Turning on both mode is a separate, gated release.
+Telegram's restriction ended (its token was rotated on 3 October 2026), and the both-mode code and
+migration 015 were released in web mode on 3 October 2026 (ce9ec1c). Turning on both mode is a
+separate, gated release.
 The owner chose to have the updates that waited in Telegram processed, and their Telegram username as
 the privacy contact; the release waits for that username and its approval. No replacement bot is used.
 

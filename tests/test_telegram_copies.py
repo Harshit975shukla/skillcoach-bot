@@ -9,6 +9,7 @@ import secrets
 import threading
 import time
 from dataclasses import replace
+from uuid import uuid4
 
 import pytest
 from psycopg.types.json import Jsonb
@@ -1147,3 +1148,69 @@ def test_the_rollback_proof_covers_this_exact_migration_and_withdrawal():
     migration = Path(__file__).resolve().parents[1] / "skillcoach" / "migrations" / "015_telegram_copies.sql"
     assert hashlib.sha256(migration.read_bytes().replace(b"\r\n", b"\n")).hexdigest() == FINAL_015_SHA256
     assert hashlib.sha256(telegram_copies.WITHDRAW_OPEN_COPIES.encode()).hexdigest() == WITHDRAW_SHA256
+
+
+def consent_step(scoped):
+    state = scoped.read()[1]
+    assert state.journey and state.journey.stage == "consent" and state.journey.consent_at is None
+    return state
+
+
+def coaching_targets(web, learner):
+    return rows(web, "SELECT displayed_target, telegram_target FROM coach_state WHERE learner_id=%s", learner)[0]
+
+
+@pytest.mark.postgres
+def test_privacy_in_the_web_conversation_during_consent_changes_nothing_and_agree_still_works(both):
+    web = both
+    runtime = web.bot.runtime
+    runtime.config = replace(runtime.config, delivery_channel="web")
+    learner = web.learner.learner_id
+    client, csrf = browser(web, "learner@example.test")
+
+    def send(**body):
+        response = private(client, csrf, "/web/send", {"request_id": str(uuid4()), **body})
+        assert response.status_code == 202
+        drain(web)
+
+    send(text="/onboard")
+    before = consent_step(web.learner)
+    targets, ai_calls = coaching_targets(web, learner), len(runtime.ai.calls)
+    assert targets["displayed_target"] == before.target()
+    send(text="/privacy")
+    reply = rows(web, "SELECT o.body FROM outbox o JOIN jobs j ON j.id=o.job_id WHERE o.learner_id=%s "
+                 "AND j.payload->>'text'='/privacy' AND o.body->>'kind'='text'", learner)
+    assert len(reply) == 1 and runtime.config.privacy_policy_url in reply[0]["body"]["text"]
+    assert "target" not in reply[0]["body"] and "buttons" not in reply[0]["body"]
+    # No AI call, no implicit consent, and the consent question is still the current prompt.
+    after = consent_step(web.learner)
+    assert len(runtime.ai.calls) == ai_calls and after.target() == before.target() and after.focus == "onboarding"
+    assert coaching_targets(web, learner) == targets
+    send(callback=f"j:{before.journey.id}:{before.target()['question']}:agree")
+    agreed = web.learner.read()[1].journey
+    assert agreed.consent_at is not None and agreed.stage == "goal"
+
+
+@pytest.mark.postgres
+def test_privacy_in_telegram_during_consent_changes_nothing_and_agree_still_works(both):
+    web = both
+    runtime = web.bot.runtime
+    learner = web.learner.learner_id
+    message(web, 101, "/onboard")
+    before = consent_step(web.learner)
+    targets, ai_calls = coaching_targets(web, learner), len(runtime.ai.calls)
+    # The consent prompt was copied to Telegram, so it is also this learner's Telegram prompt.
+    assert targets["telegram_target"] == {"bot": NEW_BOT, "target": before.target()}
+    message(web, 101, "/privacy")
+    job = f"telegram:{NEW_BOT}:{web.update_id}"
+    reply = rows(web, "SELECT id, body FROM outbox WHERE job_id=%s AND body->>'kind'='text'", job)
+    assert len(reply) == 1 and runtime.config.privacy_policy_url in reply[0]["body"]["text"]
+    copy = rows(web, "SELECT status FROM outbox WHERE id=%s", reply[0]["id"] + telegram_copies.COPY)
+    assert copy == [{"status": "sent"}]
+    assert runtime.config.privacy_policy_url in web.tg.to(101)[-1]["text"]
+    after = consent_step(web.learner)
+    assert len(runtime.ai.calls) == ai_calls and after.target() == before.target() and after.focus == "onboarding"
+    assert coaching_targets(web, learner) == targets
+    message(web, 101, callback=f"j:{before.journey.id}:{before.target()['question']}:agree")
+    agreed = web.learner.read()[1].journey
+    assert agreed.consent_at is not None and agreed.stage == "goal"

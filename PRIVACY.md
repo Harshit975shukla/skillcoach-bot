@@ -60,10 +60,12 @@ exposed through any public API.
 
 ## Consent
 
-Before personalized coaching starts, guided setup shows what is shared and with whom, names Groq as the
-AI service and points to this policy (/privacy), and asks you to choose **Agree**. You can stop at that
-point with /cancel. People who agreed before this wording saw "the configured AI providers", which then
-meant Groq and the Gemini fallback described above.
+Before personalized coaching starts, guided setup shows what is shared and with whom and asks you to
+choose **Agree**. You can stop at that point with /cancel. The version running on 3 October 2026 says
+your data goes to "the configured AI providers": until that day this meant Groq and the Gemini fallback
+described above, and since then it means Groq only. The update that publishes this policy names Groq
+in that text and adds /privacy, which links to this policy. Earlier agreements are kept as they were
+given; they are not re-dated.
 
 ## How long it is kept
 
@@ -91,5 +93,6 @@ coaching until you resume it; it does not delete or erase data.
 
 ## Version
 
-Draft of 3 October 2026. It describes SkillCoach as released on that date, including the update that
-names Groq in guided setup and adds /privacy.
+Draft of 3 October 2026. It describes the version of SkillCoach running on that date, and the update
+that will publish this policy (which names Groq in guided setup and adds /privacy). That update is not
+released yet.
