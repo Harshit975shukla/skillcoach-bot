@@ -797,7 +797,7 @@ See `.env.example`; environment variables are loaded at operation startup, not n
 | `DATABASE_URL` | Provider-neutral private PostgreSQL URL; verified TLS for remote DBs; use a least-privilege runtime role |
 | `TELEGRAM_BOT_TOKEN`, `OWNER_ID` | Required messaging configuration; positive private-chat owner ID (`CHAT_ID` is a legacy alias) |
 | `TELEGRAM_WEBHOOK_SECRET` | Vercel-only requirement: 32-256 random URL-safe characters matching webhook registration |
-| `GROQ_API_KEY`, `GROQ_MODEL` | The only AI provider. `GROQ_MODEL` is a comma-separated list of one to four models (default `openai/gpt-oss-120b,openai/gpt-oss-20b`), tried in order because Groq quotas are per model. Coaching prompts can contain private context (profile, documents, answers, feedback), so nothing falls back to another provider, not even on rate limits or errors: AI work waits and is retried. Until October 2026 a Google Gemini fallback existed; it was removed because Google's unpaid Gemini quota may use submitted content to improve Google's products. `GEMINI_API_KEY` and `GEMINI_MODEL` are no longer read |
+| `GROQ_API_KEY`, `GROQ_MODEL` | The only AI provider. `GROQ_MODEL` is a comma-separated list of one to four models (default `openai/gpt-oss-120b,openai/gpt-oss-20b`), tried in order because Groq quotas are per model. Coaching prompts can contain private context (profile, documents, answers, feedback), so nothing falls back to another provider, not even on rate limits or errors: AI work waits and is retried. Until October 2026 a Google Gemini fallback existed; it was removed because Google's unpaid Gemini quota may use submitted content to improve Google's products. `GEMINI_API_KEY` and `GEMINI_MODEL` are no longer read, but older code still uses them, so they matter for any rollback (see "Switching back" under both mode) |
 | `GITHUB_TOKEN` | Optional dashboard publishing PAT; Actions maps **`secrets.GH_PAT`** to this variable |
 | `DASHBOARD_REPO`, `DASHBOARD_PATH`, `DASHBOARD_URL` | Configured destination; no hard-coded personal repository or identity |
 | `LABS_ENABLED`, `LABS_TEMPLATE_REPO` | Hands-on labs kill switch (default `true`) and the public `owner/repository` code-lab template |
@@ -1062,12 +1062,18 @@ contact for privacy requests is designated.
      with `TELEGRAM_WEBHOOK_SECRET`.
   4. Open the gate with the restoration steps. Each person then sends the bot a message to get copies.
 - **Switching back:**
-  1. Set `DELIVERY_CHANNEL=web` in Vercel and GitHub and redeploy, and delete the webhook.
+  1. Prefer staying on this code in web mode: set `DELIVERY_CHANNEL=web` in Vercel and GitHub and
+     redeploy, and delete the webhook.
   2. Run `python -m skillcoach.cli telegram-copies-off --confirm`. Holding both worker leases, it
      withdraws every open copy (code `copies_off`) and checks that none is left; sent copies and every
      other message, email and push stay as they are. Code from before both mode fails an open copy as
      an unknown kind and reports it, so this step must come before older code runs.
-  3. Only then point the web app and the workers at older code. All data is kept.
+  3. Only if older code is truly needed, point the web app and the workers at it. All data is kept.
+     Code from before October 2026 falls back to Google Gemini with private coaching context whenever
+     `GEMINI_API_KEY` is set, so first make Gemini unavailable to both the workers (GitHub secret) and
+     the web app. A Vercel deployment keeps the settings it was built with, so promoting an earlier
+     deployment can bring the old Gemini key back even after the project setting is removed: stage
+     the older code freshly without the key and verify that before promoting it.
 
 ## Private import and privacy-safe dashboard
 
