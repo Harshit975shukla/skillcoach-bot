@@ -8,6 +8,8 @@ class ConfigurationError(RuntimeError):
 
 
 DEFAULT_GROQ_MODELS = "openai/gpt-oss-120b,openai/gpt-oss-20b"
+# The public privacy policy (PRIVACY.md in this public repository); PRIVACY_POLICY_URL overrides it.
+DEFAULT_PRIVACY_POLICY_URL = "https://github.com/Harshit975shukla/skillcoach-bot/blob/main/PRIVACY.md"
 
 
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+")
@@ -79,6 +81,7 @@ class Config:
     # The bot whose Telegram update IDs were recorded before receipts carried a bot ID (migration 015).
     # Unset: this deployment has only ever used the configured bot.
     telegram_legacy_bot_id: int = 0
+    privacy_policy_url: str = DEFAULT_PRIVACY_POLICY_URL
 
     @property
     def telegram_bot_id(self) -> int:
@@ -170,6 +173,12 @@ class Config:
         legacy_bot = os.getenv("TELEGRAM_LEGACY_BOT_ID", "").strip()
         if legacy_bot and not re.fullmatch(r"[1-9]\d{4,15}", legacy_bot):
             raise ConfigurationError("TELEGRAM_LEGACY_BOT_ID must be the numeric ID of a bot.")
+        privacy = os.getenv("PRIVACY_POLICY_URL", "").strip() or DEFAULT_PRIVACY_POLICY_URL
+        from urllib.parse import urlsplit
+
+        parsed_privacy = urlsplit(privacy)
+        if parsed_privacy.scheme != "https" or not parsed_privacy.hostname or parsed_privacy.username:
+            raise ConfigurationError("PRIVACY_POLICY_URL must be an HTTPS address of the privacy policy.")
         web = web_settings()
         if web["delivery_channel"] == "both":
             # Copies, receipts and prompts are tied to the bot's identity: never guess it.
@@ -205,6 +214,7 @@ class Config:
             os.getenv("LABS_GITHUB_TOKEN", ""),
             **web,
             telegram_legacy_bot_id=int(legacy_bot) if legacy_bot else 0,
+            privacy_policy_url=privacy,
         )
 
 

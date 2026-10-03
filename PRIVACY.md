@@ -1,12 +1,12 @@
 # SkillCoach privacy policy (DRAFT, not yet published)
 
-> **Draft status.** This text is not linked from the bot or the web app yet. It becomes the policy only
-> once a monitored contact for privacy requests is filled in below and the owner publishes it (for
-> example as the bot's privacy policy in @BotFather). Until then Telegram's
+> **Draft status.** This becomes the policy once the contact below is filled in and the owner sets it as
+> the bot's privacy policy in @BotFather. Until then Telegram's
 > [Standard Privacy Policy for Bots and Mini Apps](https://telegram.org/privacy-tpa) applies to the bot.
 >
-> **Contact for privacy requests: NOT YET DESIGNATED.** Reminder emails say replies are not read, so they
-> are not a contact.
+> **Contact for privacy requests: the owner on Telegram, @(username to be added).** The owner chose their
+> Telegram username as the contact; their account has no username yet. Reminder emails say replies are
+> not read, so they are not a contact.
 
 SkillCoach is a private Cloud and DevOps coaching service run by one person (the owner) for a small,
 invitation-only group. It is reached through the Telegram bot @skillOpsDev_bot and the web app at
@@ -24,6 +24,9 @@ exposed through any public API.
   any resume or job description text you submit.
 - **Conversation:** the messages SkillCoach sends you and the requests you send it, kept as the record
   the web inbox shows. Telegram update numbers are kept to avoid processing a message twice.
+- **Telegram delivery:** when SkillCoach also sends its messages through Telegram, when you last
+  messaged the bot (only people who have messaged it get Telegram copies), whether deliveries to you or
+  to everyone are paused, and the last question the bot showed you there.
 - **Technical records:** sign-in records (only keyed hashes of codes and addresses), web sessions,
   notification subscriptions for the devices where you turned notifications on, rendered lesson
   videos, usage counts per day, and an audit log of access decisions.
@@ -35,11 +38,11 @@ exposed through any public API.
   resume or job description text when you use those features. Groq's documentation says it does not
   keep inference data by default, but may log it for up to 30 days to investigate reliability or abuse
   unless its Zero Data Retention setting is on ([Groq: your data](https://console.groq.com/docs/your-data)).
-- **Google's Gemini API** is the fallback in the version of SkillCoach running today: when Groq is
-  unavailable, the same kinds of requests can go to Gemini. On Google's unpaid quota, Google may use
-  submitted content to improve its products, and human reviewers may read it
-  ([Gemini API terms](https://ai.google.dev/gemini-api/terms)). A prepared update removes this fallback
-  so that coaching requests go to Groq only; this sentence changes when that update is released.
+- **Google's Gemini API** was a fallback until 3 October 2026: when Groq was unavailable, the same kinds
+  of requests could go to Gemini. On Google's unpaid quota, Google may use submitted content to improve
+  its products, and human reviewers may read it ([Gemini API terms](https://ai.google.dev/gemini-api/terms)).
+  Since 3 October 2026 coaching requests go to Groq only; if Groq is unavailable, the work waits and is
+  retried instead.
 - **Telegram** carries bot messages. **Supabase** hosts the database. **Vercel** hosts the web app and
   bot webhook. **GitHub** runs the scheduled workers; no learner data is committed to the public code
   repository, and worker logs do not record message content.
@@ -57,9 +60,10 @@ exposed through any public API.
 
 ## Consent
 
-Before personalized coaching starts, guided setup shows what is shared and with whom, and asks you to
-choose **Agree**. You can stop at that point with /cancel. That consent text says your data goes to "the
-configured AI providers" without naming them; it should name them when this policy is published.
+Before personalized coaching starts, guided setup shows what is shared and with whom, names Groq as the
+AI service and points to this policy (/privacy), and asks you to choose **Agree**. You can stop at that
+point with /cancel. People who agreed before this wording saw "the configured AI providers", which then
+meant Groq and the Gemini fallback described above.
 
 ## How long it is kept
 
@@ -79,7 +83,7 @@ computer, made before software releases.
 ## Your requests
 
 You can ask for a copy of your data, a correction, or deletion, and you can withdraw your consent, by
-writing to the contact above (to be designated). These requests are handled by hand by the owner;
+messaging the owner on Telegram (see the contact above). These requests are handled by hand by the owner;
 there is no button for them. Telegram's terms for bots require a response within the time applicable
 law allows and no later than 30 days. Simply stopping use of the service does not withdraw consent or
 delete anything, and scheduled lessons and reminders keep coming. /pause stops future scheduled
@@ -87,5 +91,5 @@ coaching until you resume it; it does not delete or erase data.
 
 ## Version
 
-Draft of 3 October 2026. It describes the version of SkillCoach running on that date, and notes where a
-prepared but unreleased update changes something.
+Draft of 3 October 2026. It describes SkillCoach as released on that date, including the update that
+names Groq in guided setup and adds /privacy.

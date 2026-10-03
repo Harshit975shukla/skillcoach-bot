@@ -1423,8 +1423,8 @@ class Service:
                 self.state.draft = Draft(id=stable_id(self.job["id"]))
                 self.state.focus = "draft"
                 self.say(
-                    "Paste your actual resume text. It stays in private PostgreSQL and is sent to your "
-                    "configured AI provider for analysis, never to the public dashboard. "
+                    "Paste your actual resume text. It stays in private PostgreSQL and is sent to Groq, the "
+                    "AI service SkillCoach uses, for analysis, never to the public dashboard. "
                     "/cancel preserves your previous profile.",
                     target=self.state.target(),
                 )
@@ -1744,6 +1744,13 @@ class Service:
 
             telegram = learner_view(self.repo, self.config, self.repo.learner_id)
             self.say(json.dumps(counts, indent=2) + (f"\n{telegram}" if telegram else ""))
+        elif cmd == "privacy":
+            self.say(
+                "SkillCoach privacy policy: " + self.config.privacy_policy_url + "\n\n"
+                "It explains what is stored, who processes it (AI coaching uses Groq) and how to ask for a "
+                "copy, a correction or the deletion of your data. /pause stops scheduled coaching; it does "
+                "not delete anything."
+            )
 
     def complete_task(self, arg: str):
         parts = arg.split()

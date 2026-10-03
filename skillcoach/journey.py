@@ -10,11 +10,12 @@ from skillcoach.models import Diagnostic, Profile, Readiness
 from skillcoach.timeutil import IST, streak
 
 DISCLOSURE = (
-    "Your documents, conversations, answers and detailed feedback stay private and are sent to the "
-    "configured AI providers only for coaching. The owner can see your approved catalog-topic plan, "
-    "learning-based reasons, activity, task completion and aggregate assessment results, not your "
-    "resume, employer, job description or private answers. Nothing is published publicly. "
-    "Continue only if you agree. /cancel keeps your existing validated profile and history."
+    "Your documents, conversations, answers and detailed feedback stay private and are sent to Groq, the "
+    "AI service SkillCoach uses, only for coaching. The owner's admin pages show your approved "
+    "catalog-topic plan, learning-based reasons, activity, task completion and aggregate assessment "
+    "results, not your resume, employer, job description or private answers. Nothing is published "
+    "publicly. Privacy policy: /privacy. Continue only if you agree. /cancel keeps your existing "
+    "validated profile and history."
 )
 
 

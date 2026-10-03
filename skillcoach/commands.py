@@ -56,6 +56,7 @@ COMMANDS = {
     "voice": "<on|off> narration (when available)",
     "publish": "Queue an anonymous dashboard summary",
     "status": "Private pending/retry queue counts",
+    "privacy": "Privacy policy and how to ask about your data",
 }
 
 GROUPS = (
@@ -119,6 +120,7 @@ GROUPS = (
             "voice",
             "publish",
             "status",
+            "privacy",
             "start",
             "help",
         ),
@@ -137,7 +139,8 @@ def help_text(*, admin=True):
         lines.append("\nOWNER ACCESS MANAGEMENT")
         lines += [f"/{name} - {description}" for name, description in ADMIN_COMMANDS.items()]
     lines.append(
-        "\nPrivacy: the owner sees access, activity counts, delivery health and rating totals; with consent, "
-        "catalog topics and assessment summaries. Never your documents, answers or feedback."
+        "\nPrivacy: the admin pages show the owner access, activity counts, delivery health and rating "
+        "totals; with consent, catalog topics and assessment summaries, never your documents, answers or "
+        "feedback. AI coaching uses Groq. Full policy: /privacy"
     )
     return "\n".join(lines)

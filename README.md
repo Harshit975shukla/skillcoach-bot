@@ -535,6 +535,7 @@ Help is generated from `skillcoach/commands.py`. `/profile` displays the private
 | `/progress`, `/skills`, `/stats`, `/streak` | Study days, streak, quiz accuracy, lessons understood, honest task counts and interview metrics |
 | `/resume` | Feedback on the actual stored resume/JD; never resumes notifications |
 | `/pause`, `/unpause`, `/cancel`, `/retry`, `/status` | Notification, flow and recovery controls |
+| `/privacy` | The privacy policy's address ([PRIVACY.md](PRIVACY.md), or `PRIVACY_POLICY_URL`) and how to ask about your data |
 | `/media video`, `/media static` | Animated video default; static is opt-in |
 | `/publish`, `/dashboard` | Anonymous summary export and configured dashboard link |
 | `/labs`, `/lab <id>` | Your labs, what is pending, and the steps for each free or optional route |
@@ -806,6 +807,7 @@ See `.env.example`; environment variables are loaded at operation startup, not n
 | `SCHEDULER_REPO`, `SCHEDULER_GITHUB_TOKEN` | Vercel-only: this bot's `owner/repository` and a token allowed to dispatch its workflows (Actions: write). The token falls back to `GITHUB_TOKEN`. In web mode the same settings start the bounded worker wake for requested lessons (see web mode) |
 | `DELIVERY_CHANNEL` | `telegram` (default), `web` for the web + email fallback below, or `both` for web mode plus Telegram copies (see "Telegram copies in both mode"; not activated) |
 | `TELEGRAM_LEGACY_BOT_ID` | Both mode only: the public numeric ID of the bot whose Telegram updates are already recorded (the digits before `:` in its token); the configured bot's own ID if it is the same bot with a new token |
+| `PRIVACY_POLICY_URL` | Optional HTTPS address of the privacy policy that `/privacy` and the guided-setup consent point to. Empty uses [PRIVACY.md](PRIVACY.md) in this public repository |
 | `WEB_APP_URL`, `OWNER_EMAIL`, `EMAIL_FROM`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` | Web + email settings, all required in web mode and ignored otherwise. In GitHub Actions, `OWNER_EMAIL`, `EMAIL_FROM`, `SMTP_USERNAME` and `SMTP_PASSWORD` are **secrets**, because this public repository's run logs show variable values |
 | `WEB_PUSH_PUBLIC_KEY`, `WEB_PUSH_PRIVATE_KEY` | Optional notifications for the installable web app (web mode only): one VAPID key pair from `skillcoach.web_push.generate_keys()`. Both or neither; a mismatched pair stops the app with a configuration error. In GitHub Actions the private key is a **secret** and the public key a variable |
 
@@ -986,16 +988,16 @@ stop working and Telegram delivery resumes, with nothing replayed.
 ## Telegram copies in both mode (built, not activated)
 
 **Status:** built and tested, but switched off. The original bot @skillOpsDev_bot works again after
-Telegram's restriction ended (its token was rotated on 3 October 2026). Turning on both mode with it
-is a separate, gated release that is still pending: the owner's choice about updates that waited in
-Telegram while the webhook was off, a monitored privacy contact, migration 015 and a staged rollout.
-No replacement bot is used.
+Telegram's restriction ended (its token was rotated on 3 October 2026), and this code and migration
+015 were released in web mode on 3 October 2026. Turning on both mode is a separate, gated release.
+The owner chose to have the updates that waited in Telegram processed, and their Telegram username as
+the privacy contact; the release waits for that username and its approval. No replacement bot is used.
 
 `DELIVERY_CHANNEL=both` is web mode plus copies in Telegram through the bot of
 `TELEGRAM_BOT_TOKEN`. Everything in web mode still applies (sign-in, inbox, videos, email, push), and
 the web inbox stays the complete record: every message reaches it first, exactly as in web mode. The
-draft [privacy policy](PRIVACY.md) describes the data involved; it is not published until a monitored
-contact for privacy requests is designated.
+draft [privacy policy](PRIVACY.md) describes the data involved; it is published (set in @BotFather and
+linked by `/privacy`) once its contact is filled in.
 
 - **Who gets copies:** only people who have sent the configured bot a message. A start is recorded per
   bot, so messaging one bot never authorizes copies from another. Everyone else keeps the web inbox and

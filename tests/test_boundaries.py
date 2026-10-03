@@ -301,3 +301,35 @@ def test_readiness_authenticates_before_reading_private_storage(harness, monkeyp
     assert response.status_code == 200 and response.json["private_storage"] is True
     assert response.json["courses"] == {"version": "2026-09-29", "topics": 199, "modules": 23}
     assert len(reads) == 1 and "profile" not in response.json
+
+
+def test_privacy_policy_is_reachable_and_the_consent_names_the_ai_service(harness, monkeypatch):
+    from test_flows import command
+
+    from skillcoach.config import DEFAULT_PRIVACY_POLICY_URL
+    from skillcoach.journey import DISCLOSURE
+
+    assert "/privacy - " in help_text() and "/privacy - " in help_text(admin=False)
+    assert "Groq" in DISCLOSURE and "/privacy" in DISCLOSURE and "configured AI provider" not in DISCLOSURE
+    command(harness, "/privacy")
+    reply = harness.telegram.messages[-1][0]
+    assert DEFAULT_PRIVACY_POLICY_URL in reply and "Groq" in reply
+    harness.runtime.config = replace(harness.runtime.config, privacy_policy_url="https://example.test/policy")
+    command(harness, "/privacy")
+    assert "https://example.test/policy" in harness.telegram.messages[-1][0]
+    # The address comes from PRIVACY_POLICY_URL (HTTPS only), else the repository's PRIVACY.md.
+    for name, value in {"DATABASE_URL": "postgresql://test-only", "TELEGRAM_BOT_TOKEN": "fake", "OWNER_ID": "42"}.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("PRIVACY_POLICY_URL", raising=False)
+    assert Config.from_env().privacy_policy_url == DEFAULT_PRIVACY_POLICY_URL
+    monkeypatch.setenv("PRIVACY_POLICY_URL", " https://example.test/privacy ")
+    assert Config.from_env().privacy_policy_url == "https://example.test/privacy"
+    for bad in ("http://example.test/privacy", "https://user@example.test/p", "privacy.md"):
+        monkeypatch.setenv("PRIVACY_POLICY_URL", bad)
+        with pytest.raises(ConfigurationError, match="PRIVACY_POLICY_URL"):
+            Config.from_env()
+    root = Path(__file__).resolve().parents[1]
+    assert DEFAULT_PRIVACY_POLICY_URL.endswith("/blob/main/PRIVACY.md") and (root / "PRIVACY.md").exists()
+    worker = (root / ".github" / "workflows" / "coach-job.yml").read_text(encoding="utf-8")
+    assert "          PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}\n" in worker
+    assert "\nPRIVACY_POLICY_URL=\n" in (root / ".env.example").read_text(encoding="utf-8")

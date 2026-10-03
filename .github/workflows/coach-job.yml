@@ -140,6 +140,8 @@ jobs:
           DELIVERY_CHANNEL: ${{ vars.DELIVERY_CHANNEL || 'telegram' }}
           # Both mode only: the public numeric ID of the bot whose updates are already recorded.
           TELEGRAM_LEGACY_BOT_ID: ${{ vars.TELEGRAM_LEGACY_BOT_ID }}
+          # Optional: the privacy policy's address (defaults to PRIVACY.md in this public repository).
+          PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}
           WEB_APP_URL: ${{ vars.WEB_APP_URL }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
