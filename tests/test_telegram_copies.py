@@ -114,7 +114,7 @@ def drain(web):
             return
 
 
-def sent(offset=0):
+def telegram_time(offset=0):
     """A Telegram send time (whole Unix seconds, like Telegram's `date`), `offset` seconds from now. A
     message the test sends after an operator step uses a small positive offset, so the whole-second
     send time is certainly later than the step's exact time."""
@@ -126,7 +126,7 @@ def message(web, actor, text=None, callback=None, *, update_id=None, run=True, s
     web.update_id += 1
     payload = {"type": "telegram", "actor_id": actor, "display_name": f"Person {actor}"}
     if callback is None:
-        payload.update(text=text, sent_at=sent() if sent_at is None else sent_at)
+        payload.update(text=text, sent_at=telegram_time() if sent_at is None else sent_at)
     else:
         payload.update(callback=callback, callback_id="fake")
     outcome = web.bot.repo.accept_update(update_id or web.update_id, payload, web.bot.runtime.config)
@@ -403,7 +403,7 @@ def test_a_rejected_or_frozen_bot_pauses_every_copy_until_an_operator_and_the_ow
     config, repo = web.bot.runtime.config, web.bot.repo
     assert telegram_copies.restore(repo, config) == {
         "restored": False, "reason": "owner_message_to_bot_required_after_pause"}
-    message(web, OWNER, "/help", sent_at=sent(2))
+    message(web, OWNER, "/help", sent_at=telegram_time(2))
     assert web.tg.calls == calls
     assert telegram_copies.restore(repo, config)["state"] == "probation"
     assert telegram_copies.status(repo, config)["bot"]["state"] == "probation"
@@ -413,7 +413,7 @@ def test_a_rejected_or_frozen_bot_pauses_every_copy_until_an_operator_and_the_ow
     assert web.tg.calls == calls
     note(web, web.owner)
     assert web.tg.to(OWNER) and pauses(web)[0]["state"] == "probation"
-    message(web, OWNER, "/help", sent_at=sent(2))
+    message(web, OWNER, "/help", sent_at=telegram_time(2))
     assert pauses(web)[0]["cleared_by"] == "confirmed"
     web.tg.sent.clear()
     note(web, web.learner)
@@ -1013,7 +1013,7 @@ def test_the_operator_gate_opens_only_after_a_fresh_owner_round_trip(both):
     # People can start the bot while the gate is closed. Nothing is sent to anyone, and nothing is
     # reported as a Telegram failure.
     message(web, 101, "/help")
-    message(web, OWNER, "/help", sent_at=sent(-3600))  # waited in Telegram's queue since before the gate
+    message(web, OWNER, "/help", sent_at=telegram_time(-3600))  # waited in Telegram's queue since before the gate
     note(web, web.owner, web.learner)
     assert web.tg.calls == 0 and not copies(web)
     assert not rows(web, "SELECT 1 FROM outbox WHERE id LIKE 'telegram-health:%%'")
@@ -1023,7 +1023,7 @@ def test_the_operator_gate_opens_only_after_a_fresh_owner_round_trip(both):
     # restore copies, to the owner only.
     assert telegram_copies.restore(repo, config) == {
         "restored": False, "reason": "owner_message_to_bot_required_after_pause"}
-    message(web, OWNER, "/help", sent_at=sent(2), run=False)  # fresh, received, not yet answered
+    message(web, OWNER, "/help", sent_at=telegram_time(2), run=False)  # fresh, received, not yet answered
     restored = telegram_copies.restore(repo, config)
     assert (restored["restored"], restored["state"]) == (True, "probation")
     assert telegram_copies.restore(repo, config)["reason"] == "already_on_probation"
@@ -1041,7 +1041,7 @@ def test_the_operator_gate_opens_only_after_a_fresh_owner_round_trip(both):
     assert pauses(web)[0]["state"] == "probation"
     # The reply to a fresh owner message fails for a passing reason: probation holds across the retry...
     web.tg.failures[OWNER] = [tg_error(503, retryable=True)]
-    message(web, OWNER, "/help", sent_at=sent(2))
+    message(web, OWNER, "/help", sent_at=telegram_time(2))
     reply = copies(web, "owner")[-1]
     assert reply["status"] == "failed" and pauses(web)[0]["state"] == "probation"
     # ...and ends once Telegram accepts that reply. Then everyone's copies resume.
