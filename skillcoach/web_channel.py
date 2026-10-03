@@ -578,8 +578,8 @@ def notification(job, messages, config):
         "kind": "email",
         "subject": subject,
         "text": f"{text}\n\nContinue in SkillCoach: {config.web_app_url}/web\n\n"
-        "You get these emails because SkillCoach runs on the web while its Telegram bot is "
-        "unavailable. Replies to this address are not read.",
+        "You get this reminder because SkillCoach runs in the web app. SkillCoach does not process email "
+        f"replies. Privacy policy and requests: {config.privacy_policy_url}",
     }
     for key in ("scheduled", "scheduled_date"):
         if key in first:

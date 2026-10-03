@@ -300,7 +300,9 @@ def test_notifications_cover_scheduled_and_mentor_work_only(config):
     assert body["kind"] == "email" and body["subject"] == "Today's SkillCoach lesson is ready"
     assert body["text"].startswith("Today: IAM roles") and "**" not in body["text"] and "…" in body["text"]
     assert body["scheduled"] is True and body["scheduled_date"] == "2026-10-01"
-    assert body["text"].rstrip().endswith("Replies to this address are not read.")
+    # The policy (whose contact may be this sender's address) is linked; no claim that replies go unread.
+    assert body["text"].rstrip().endswith("Privacy policy and requests: " + settings.privacy_policy_url)
+    assert "not read" not in body["text"] and "Telegram bot is unavailable" not in body["text"]
     quiz = {"payload": {"type": "schedule", "kind": "quiz"}}
     assert (
         notification(quiz, [{"kind": "text", "text": "Q1"}], settings)["subject"]

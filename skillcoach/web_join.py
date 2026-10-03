@@ -322,7 +322,8 @@ def access_email(conn, key, member, status, config):
                     "kind": "email",
                     "subject": subject,
                     "text": text.format(url=config.web_app_url.rstrip("/"))
-                    + "\n\nReplies to this address are not read.",
+                    + "\n\nSkillCoach does not process email replies. Privacy policy and requests: "
+                    + config.privacy_policy_url,
                     "to_hash": keyed(config, "email", member["email"]),
                 }
             ),

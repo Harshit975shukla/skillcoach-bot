@@ -1,12 +1,8 @@
-# SkillCoach privacy policy (DRAFT, not yet published)
+# SkillCoach privacy policy
 
-> **Draft status.** This becomes the policy once the contact below is filled in and the owner sets it as
-> the bot's privacy policy in @BotFather. Until then Telegram's
-> [Standard Privacy Policy for Bots and Mini Apps](https://telegram.org/privacy-tpa) applies to the bot.
->
-> **Contact for privacy requests: the owner on Telegram, @(username to be added).** The owner chose their
-> Telegram username as the contact; their account has no username yet. Reminder emails say replies are
-> not read, so they are not a contact.
+**Contact for privacy requests:** email the owner at shuklaharshit975@gmail.com, with "SkillCoach privacy"
+in the subject. The owner reads these requests. SkillCoach's automatic emails may come from the same
+address; the app itself does not process replies to them.
 
 SkillCoach is a private Cloud and DevOps coaching service run by one person (the owner) for a small,
 invitation-only group. It is reached through the Telegram bot @skillOpsDev_bot and the web app at
@@ -61,11 +57,11 @@ exposed through any public API.
 ## Consent
 
 Before personalized coaching starts, guided setup shows what is shared and with whom and asks you to
-choose **Agree**. You can stop at that point with /cancel. The version running on 3 October 2026 says
-your data goes to "the configured AI providers": until that day this meant Groq and the Gemini fallback
-described above, and since then it means Groq only. The update that publishes this policy names Groq
-in that text and adds /privacy, which links to this policy. Earlier agreements are kept as they were
-given; they are not re-dated.
+choose **Agree**. You can stop at that point with /cancel. Before the update that published this policy,
+that text said your data goes to "the configured AI providers": until 3 October 2026 this meant Groq and
+the Gemini fallback described above, and from then on Groq only. Since that update, the text names Groq
+and points to this policy (/privacy). Agreements given earlier are kept as they were given; they are not
+re-dated.
 
 ## How long it is kept
 
@@ -85,7 +81,7 @@ computer, made before software releases.
 ## Your requests
 
 You can ask for a copy of your data, a correction, or deletion, and you can withdraw your consent, by
-messaging the owner on Telegram (see the contact above). These requests are handled by hand by the owner;
+emailing the owner at the contact address above. These requests are handled by hand by the owner;
 there is no button for them. Telegram's terms for bots require a response within the time applicable
 law allows and no later than 30 days. Simply stopping use of the service does not withdraw consent or
 delete anything, and scheduled lessons and reminders keep coming. /pause stops future scheduled
@@ -93,6 +89,5 @@ coaching until you resume it; it does not delete or erase data.
 
 ## Version
 
-Draft of 3 October 2026. It describes the version of SkillCoach running on that date, and the update
-that will publish this policy (which names Groq in guided setup and adds /privacy). That update is not
-released yet.
+3 October 2026. It takes effect with the SkillCoach update that names Groq in guided setup and adds
+/privacy, and it is the bot's privacy policy in Telegram from then on.

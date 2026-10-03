@@ -990,15 +990,14 @@ stop working and Telegram delivery resumes, with nothing replayed.
 **Status:** built and tested, but switched off. The original bot @skillOpsDev_bot works again after
 Telegram's restriction ended (its token was rotated on 3 October 2026), and the both-mode code and
 migration 015 were released in web mode on 3 October 2026 (ce9ec1c). Turning on both mode is a
-separate, gated release.
-The owner chose to have the updates that waited in Telegram processed, and their Telegram username as
-the privacy contact; the release waits for that username and its approval. No replacement bot is used.
+separate, gated release. The owner chose to have the updates that waited in Telegram processed, and
+their email address as the privacy contact. No replacement bot is used.
 
 `DELIVERY_CHANNEL=both` is web mode plus copies in Telegram through the bot of
 `TELEGRAM_BOT_TOKEN`. Everything in web mode still applies (sign-in, inbox, videos, email, push), and
 the web inbox stays the complete record: every message reaches it first, exactly as in web mode. The
-draft [privacy policy](PRIVACY.md) describes the data involved; it is published (set in @BotFather and
-linked by `/privacy`) once its contact is filled in.
+[privacy policy](PRIVACY.md) describes the data involved; it is linked by `/privacy`, by the reminder
+emails and in @BotFather.
 
 - **Who gets copies:** only people who have sent the configured bot a message. A start is recorded per
   bot, so messaging one bot never authorizes copies from another. Everyone else keeps the web inbox and
