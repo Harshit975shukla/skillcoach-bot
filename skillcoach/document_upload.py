@@ -10,13 +10,20 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
-from skillcoach.documents import MAX_FILE, DocumentError, profile_hash, require_profile, text_value
+from skillcoach.documents import (
+    MAX_FILE,
+    MAX_FILE_LABEL,
+    DocumentError,
+    profile_hash,
+    require_profile,
+    text_value,
+)
 from skillcoach.models import State
 
 
 def extract(raw, filename, kind):
     if not 0 < len(raw) <= MAX_FILE:
-        raise DocumentError("Upload a PDF or UTF-8 TXT file no larger than 256 KB.")
+        raise DocumentError(f"Upload a PDF or UTF-8 TXT file no larger than {MAX_FILE_LABEL}.")
     if filename.lower().endswith(".txt"):
         try:
             text = raw.decode("utf-8-sig")
@@ -98,7 +105,7 @@ def preview(runtime, identity, identifier, kind, raw, filename):
     except (ValueError, TypeError, AttributeError):
         raise DocumentError("A valid upload request identifier is required.") from None
     if kind not in ("resume", "jd") or not 0 < len(raw) <= MAX_FILE:
-        raise DocumentError("Choose resume or job description and a PDF/TXT file up to 256 KB.")
+        raise DocumentError(f"Choose resume or job description and a PDF/TXT file up to {MAX_FILE_LABEL}.")
     # Include format, not filename, in the idempotency binding.
     suffix = filename.rsplit(".", 1)[-1].lower()
     fingerprint = hashlib.sha256(kind.encode() + b":" + suffix.encode() + b":" + raw).hexdigest()

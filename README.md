@@ -62,7 +62,9 @@ Changing pace never rewrites already prepared or completed tasks.
 Use `/updateresume` or `/updatejd`, paste text, then explicitly confirm **Keep current plan** or
 **Propose future changes**. To switch from a Telegram paste prompt to upload, `/cancel` the prompt
 before opening `/dashboard`. The personal dashboard supports UTF-8 TXT and text-based PDF uploads:
-256 KB maximum, 15 PDF pages, 16000 extracted characters. Resume text must have at least 80 characters
+4 MB maximum, 15 PDF pages, 16000 extracted characters. Vercel caps a function request body at 4.5 MB,
+so 4 MB is the largest file that always fits; larger files need a smaller export or pasted text.
+Resume text must have at least 80 characters
 and job descriptions at least 50. Encrypted/scanned PDFs, images, DOCX and non-UTF-8 text fail explicitly.
 PDFs are processed locally in a short-lived bounded process (8-second wall limit; Linux CPU/address-space
 limits), without external OCR or persisted original files. Parser failures do not replace saved documents.

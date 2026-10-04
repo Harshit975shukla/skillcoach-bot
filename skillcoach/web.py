@@ -78,11 +78,16 @@ def create_app(runtime=None):
     @app.before_request
     def upload_limit():
         if request.path == "/app/documents/preview":
-            request.max_content_length = 280 * 1024
+            from skillcoach.documents import MAX_FILE
+
+            # The file plus its form fields and multipart boundaries (still under Vercel's 4.5 MB).
+            request.max_content_length = MAX_FILE + 64 * 1024
 
     @app.errorhandler(413)
     def content_too_large(error):
-        return jsonify(error="Request is too large. Document files must be at most 256 KB."), 413
+        from skillcoach.documents import MAX_FILE_LABEL
+
+        return jsonify(error=f"Request is too large. Document files must be at most {MAX_FILE_LABEL}."), 413
 
     from skillcoach.admin import register_admin
     from skillcoach.dashboard import register_dashboard

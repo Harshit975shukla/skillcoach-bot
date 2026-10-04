@@ -5,7 +5,10 @@ import json
 from datetime import timedelta
 
 MAX_TEXT = 16000
-MAX_FILE = 256 * 1024
+# An upload travels in one Vercel Function request, whose body is capped at 4.5 MB, so 4 MB is the
+# largest file that always fits with its multipart overhead. Only the extracted text is kept.
+MAX_FILE = 4 * 1024 * 1024
+MAX_FILE_LABEL = "4 MB"
 
 
 class DocumentError(ValueError):

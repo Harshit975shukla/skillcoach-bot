@@ -1,6 +1,9 @@
 import io
+import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -9,7 +12,7 @@ from test_dashboard import signed
 from test_flows import PROFILE, READINESS, RESUME, command
 from test_journey import callback, core_guide, proposal, shared_journey
 
-from skillcoach.documents import DocumentError
+from skillcoach.documents import MAX_FILE, MAX_FILE_LABEL, DocumentError
 from skillcoach.models import Profile, Readiness, Task
 from skillcoach.timeutil import IST
 from skillcoach.web import create_app
@@ -298,6 +301,54 @@ def pdf_bytes(
     return output.getvalue()
 
 
+def padded_pdf(size):
+    """A text resume PDF carrying an incompressible photo-sized image, about `size` bytes long."""
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject, NumberObject
+
+    writer = PdfWriter(clone_from=PdfReader(io.BytesIO(pdf_bytes())))
+    width = 1000
+    height = max(1, (size - 4000) // (width * 3))
+    image = DecodedStreamObject()
+    image.set_data(os.urandom(width * height * 3))
+    image.update(
+        {
+            NameObject("/Type"): NameObject("/XObject"),
+            NameObject("/Subtype"): NameObject("/Image"),
+            NameObject("/Width"): NumberObject(width),
+            NameObject("/Height"): NumberObject(height),
+            NameObject("/ColorSpace"): NameObject("/DeviceRGB"),
+            NameObject("/BitsPerComponent"): NumberObject(8),
+        }
+    )
+    writer.pages[0]["/Resources"][NameObject("/XObject")] = DictionaryObject(
+        {NameObject("/Im0"): writer._add_object(image)}
+    )
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def test_upload_limit_is_4_mb_everywhere_and_under_the_platform_cap():
+    """Uploads pass through one Vercel Function request (body capped at 4.5 MB): the file limit, the
+    request limit and the dashboard's own check and wording all agree on 4 MB."""
+    from skillcoach.document_extract import extract_pdf
+
+    assert MAX_FILE == 4 * 1024 * 1024 and MAX_FILE_LABEL == "4 MB"
+    assert MAX_FILE + 64 * 1024 < 4_500_000
+    static = Path(__file__).resolve().parents[1] / "skillcoach" / "static"
+    script = (static / "dashboard.js").read_text(encoding="utf-8")
+    assert "file.size > 4 * 1024 * 1024" in script and "PDF or TXT file up to 4 MB." in script
+    assert "Maximum 4 MB, 15 PDF pages" in (static / "dashboard.html").read_text(encoding="utf-8")
+    # A photo-heavy resume close to the limit still parses quickly, far inside the 8-second guard.
+    raw = padded_pdf(MAX_FILE - 50_000)
+    assert 256 * 1024 < len(raw) <= MAX_FILE
+    started = time.perf_counter()
+    assert "Synthetic resume" in extract_pdf(raw)["text"]
+    assert time.perf_counter() - started < 2
+    assert extract_pdf(b"%PDF-" + b"0" * MAX_FILE)["error"] == "invalid_pdf"
+
+
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="Windows child startup exceeds the production 8s guard; real subprocess tested on Linux CI",
@@ -306,13 +357,14 @@ def test_pdf_text_extraction_is_local_bounded_and_rejects_invalid_files():
     from skillcoach.document_upload import extract
 
     assert "Synthetic resume" in extract(pdf_bytes(), "resume.pdf", "resume")
+    assert "Synthetic resume" in extract(padded_pdf(MAX_FILE - 50_000), "resume.pdf", "resume")
     assert extract(RESUME.encode(), "resume.txt", "resume") == RESUME.strip()
     for raw, name in [
         (pdf_bytes(encrypted=True), "resume.pdf"),
         (b"%PDF-broken", "resume.pdf"),
         (b"not PDF", "fake.pdf"),
         (b"\xff" * 100, "resume.txt"),
-        (b"x" * (256 * 1024 + 1), "resume.txt"),
+        (b"x" * (MAX_FILE + 1), "resume.txt"),
         (b"PKzip", "resume.docx"),
         (pdf_bytes(text=""), "scan.pdf"),
     ]:
@@ -473,7 +525,11 @@ def test_upload_cancel_expiry_conflict_during_parsing_and_limits(upload_api, mon
     assert scoped.read()[1].profile.target_role == "newer target"
     assert not scoped.read()[1].profile.resume_text
     assert client.get("/app/documents/confirm", base_url="https://localhost").status_code == 405
-    assert upload(client, headers, raw=b"x" * (281 * 1024)).status_code == 413
+    # One byte over the file limit: refused with the limit named. Past the request limit: 413.
+    too_big = upload(client, headers, raw=b"x" * (MAX_FILE + 1))
+    assert too_big.status_code == 409 and MAX_FILE_LABEL in too_big.json["error"]
+    oversized = upload(client, headers, raw=b"x" * (MAX_FILE + 65 * 1024))
+    assert oversized.status_code == 413 and MAX_FILE_LABEL in oversized.json["error"]
 
 
 @pytest.mark.postgres
@@ -514,6 +570,10 @@ def test_authenticated_pdf_multipart_preview_cancel_and_invalid_files(upload_api
     value = upload(client, headers, raw=pdf_bytes(), name="resume.pdf")
     assert value.status_code == 200
     assert confirm_upload(client, headers, value.json, "cancel").json["cancelled"]
+    # A photo-sized resume PDF, far past the old 256 KB limit, previews like any other.
+    large = upload(client, headers, raw=padded_pdf(1_000_000), name="resume.pdf")
+    assert large.status_code == 200, large.json
+    assert confirm_upload(client, headers, large.json, "cancel").json["cancelled"]
     writer = PdfWriter()
     for _ in range(16):
         writer.add_blank_page(500, 500)

@@ -862,8 +862,8 @@
     event.preventDefault();
     if (uploadBusy || !documentCsrf) return;
     const file = $("document-file").files[0];
-    if (!file || file.size > 256 * 1024) {
-      $("document-status").textContent = "Choose one PDF or TXT file up to 256 KB."; return;
+    if (!file || file.size > 4 * 1024 * 1024) {
+      $("document-status").textContent = "Choose one PDF or TXT file up to 4 MB."; return;
     }
     const requestEpoch = epoch;
     uploadBusy = true; $("document-preview-button").disabled = true;
