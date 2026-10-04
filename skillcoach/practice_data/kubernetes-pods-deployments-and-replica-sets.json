@@ -1,0 +1,522 @@
+{
+  "topic": "kubernetes/kubernetes-pods-deployments-and-replica-sets",
+  "version": "2026-10-04",
+  "review": "AI-assisted practice written for SkillCoach and checked against the official Kubernetes documentation on 4 Oct 2026. Not independently expert-reviewed.",
+  "references": [
+    "https://kubernetes.io/docs/concepts/workloads/pods/",
+    "https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/",
+    "https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/",
+    "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/"
+  ],
+  "lessons": [
+    {
+      "id": "pods",
+      "title": "Pods: the disposable unit",
+      "goal": "Explain what containers in a Pod share, and why Pods are replaced rather than repaired.",
+      "icon": "pod",
+      "takeaways": [
+        "Containers in one Pod share an IP address and port space, and can share volumes.",
+        "A crashing container restarts inside the same Pod; a lost Pod is replaced by a new one.",
+        "Replacement Pods get a new identity, so clients connect through a Service, not a Pod IP."
+      ],
+      "steps": [
+        {
+          "type": "choice",
+          "id": "guess-node-fails",
+          "pretest": true,
+          "prompt": "Take a guess before we start. A node fails for good (the machine is gone), and one of your Pods was running on it. What happens to that Pod?",
+          "options": [
+            {"text": "Kubernetes moves the same Pod to a healthy node.", "why": "A Pod is never moved. It stays bound to one node for its whole life."},
+            {"text": "That Pod is gone. If a controller owns it, the controller creates a new Pod on a healthy node.", "correct": true, "why": "Pods aren't moved or repaired. Controllers make replacements."},
+            {"text": "The Pod is restored when the machine is rebuilt.", "why": "A rebuilt machine is a new node. The old Pod object is deleted, not resumed."}
+          ],
+          "explain": "A Pod runs on one node until it finishes, is deleted, is evicted or its node fails. Kubernetes never moves a Pod. A controller such as a ReplicaSet creates a **replacement Pod**, with a new UID, on a healthy node. You'll see why that matters in a minute."
+        },
+        {
+          "type": "teach",
+          "id": "what-is-a-pod",
+          "title": "A Pod is a shared home for containers",
+          "body": "A **Pod** is the smallest thing Kubernetes runs. It wraps one or more containers that always run together on the same node.\n\nContainers in a Pod share **one IP address and one set of ports**, and can mount the **same volumes**. Think of a Pod as a flat: the containers are flatmates with one street address and a shared storeroom.",
+          "visual": {
+            "kind": "tree",
+            "caption": "One Pod, with one IP address, holding two containers and a volume they both use.",
+            "boxes": [
+              {"label": "Pod web-7d4b9c5f6-x2kfp", "note": "IP 10.1.2.7", "tone": "accent", "children": [
+                {"label": "Container app", "note": "listens on :8080"},
+                {"label": "Container log-shipper", "note": "reads the logs"},
+                {"label": "Volume logs", "note": "shared by both", "tone": "muted"}
+              ]}
+            ]
+          }
+        },
+        {
+          "type": "choice",
+          "id": "localhost",
+          "prompt": "In one Pod, the `app` container listens on port 8080. The `proxy` container in the **same Pod** needs to call it. Which address reaches it?",
+          "options": [
+            {"text": "`localhost:8080`", "correct": true, "why": "The containers share the Pod's network namespace, so `localhost` reaches the other container."},
+            {"text": "`app:8080`, because every container gets its own DNS name", "why": "Containers inside a Pod don't get their own DNS names."},
+            {"text": "None: containers in a Pod are isolated from each other's network", "why": "It's the opposite. They share one IP address and port space."},
+            {"text": "The node's IP address on port 8080", "why": "A container port isn't opened on the node unless you configure that explicitly."}
+          ],
+          "explain": "Every container in a Pod shares the Pod's network namespace: the same IP address and port space. Inside the Pod, containers find each other on `localhost`."
+        },
+        {
+          "type": "truefalse",
+          "id": "same-port",
+          "statement": "Two containers in the same Pod can both listen on port 8080.",
+          "answer": false,
+          "explain": "They share one port space, exactly like two processes on one machine. The second one can't bind port 8080, so containers in a Pod must use different ports."
+        },
+        {
+          "type": "teach",
+          "id": "replaced-not-repaired",
+          "title": "Pods are replaced, not repaired",
+          "body": "Two different things can go wrong, and Kubernetes handles them differently:\n\n- **A container crashes.** The kubelet restarts that container inside the same Pod, waiting longer after each crash (by default 10 s, 20 s, 40 s and so on, up to 5 minutes). The Pod keeps its name and IP, and its restart count goes up.\n- **The Pod itself is lost**: deleted, evicted, or its node failed. That Pod is gone for good. A controller notices one is missing and creates a **new Pod**, with a new UID. A Deployment's replacement Pod also gets a new name and usually a new IP."
+        },
+        {
+          "type": "choice",
+          "id": "crashloop",
+          "prompt": "`kubectl get pods` shows this Pod for an hour. What is happening?",
+          "context": "```text\nNAME                    READY   STATUS             RESTARTS   AGE\nweb-7d4b9c5f6-x2kfp     0/1     CrashLoopBackOff   7          61m\n```",
+          "options": [
+            {"text": "The kubelet keeps restarting the crashing container inside this Pod, waiting longer each time.", "correct": true, "why": "Same name and age, rising RESTARTS: these are container restarts inside one Pod."},
+            {"text": "The ReplicaSet deletes the Pod and creates a new one after every crash.", "why": "A replacement Pod would have a new name and a fresh AGE. Here both stay the same."},
+            {"text": "The scheduler keeps moving the Pod between nodes to find one that works.", "why": "Pods are never moved. The scheduler only places new Pods."},
+            {"text": "Kubernetes gave up on the Pod after 7 failures.", "why": "BackOff means it's waiting before the next try. It keeps retrying."}
+          ],
+          "explain": "**CrashLoopBackOff** means a container keeps exiting and the kubelet is waiting before restarting it again. The Pod isn't replaced, so its name and IP stay the same. Next, find out why it exits: `kubectl logs web-7d4b9c5f6-x2kfp --previous` and `kubectl describe pod web-7d4b9c5f6-x2kfp`."
+        },
+        {
+          "type": "choice",
+          "id": "stale-ip",
+          "prompt": "Your frontend calls a backend Pod at `10.1.2.7`. It worked yesterday; today the calls time out. The backend Deployment shows 3/3 Pods ready. What is the most likely cause?",
+          "options": [
+            {"text": "The backend Pod was replaced, and the new Pod has a different IP address.", "correct": true, "why": "Replacement Pods usually get new IPs, so a hard-coded Pod IP goes stale."},
+            {"text": "Pod IPs expire every 24 hours and must be renewed.", "why": "Pod IPs don't expire on a timer. They change when Pods are replaced."},
+            {"text": "The Deployment is broken: it should keep the same Pods forever.", "why": "3/3 ready means it's healthy. Replacing Pods is normal."}
+          ],
+          "explain": "Pods come and go, so their IPs aren't stable. A **Service** gives clients one stable name and virtual IP, and sends traffic to whichever Pods currently match its selector. Point clients at the Service, never at a Pod IP."
+        },
+        {
+          "type": "fill",
+          "id": "owner-references",
+          "prompt": "Complete the command that shows which controller owns a Pod.",
+          "template": "kubectl get pod web-7d4b9c5f6-x2kfp -o jsonpath='{.metadata.___[0].kind}'",
+          "code": true,
+          "answer": ["ownerReferences"],
+          "distractors": ["labels", "owner", "annotations"],
+          "explain": "A Pod created by a controller records it in `.metadata.ownerReferences`. For a Deployment's Pod this prints `ReplicaSet`: the Deployment owns the ReplicaSet, and the ReplicaSet owns the Pod."
+        },
+        {
+          "type": "choice",
+          "id": "bare-pod",
+          "prompt": "You created a Pod directly with `kubectl run`, so no controller owns it. Its node fails for good. What brings the Pod back?",
+          "options": [
+            {"text": "Nothing. With no controller, nobody replaces it.", "correct": true, "why": "Nothing is watching for it to go missing."},
+            {"text": "The ReplicaSet that every Pod belongs to.", "why": "A Pod from `kubectl run` has no ReplicaSet."},
+            {"text": "The kubelet on another node restarts it.", "why": "A kubelet only restarts containers of Pods already on its own node."}
+          ],
+          "explain": "This is the answer to the guess you made at the start, and the reason you rarely create Pods yourself. Run them under a controller such as a Deployment, which creates replacements and handles updates."
+        },
+        {
+          "type": "explain",
+          "id": "why-not-bare",
+          "prompt": "Explain to a teammate, in one or two sentences, why important apps shouldn't run as bare Pods.",
+          "points": [
+            "A lost Pod is gone: it's never moved or repaired.",
+            "A controller (ReplicaSet, Deployment) notices missing Pods and creates replacements.",
+            "Replacements get new identities, so clients reach them through a Service."
+          ],
+          "model": "A bare Pod disappears for good if it's deleted or its node fails, because nothing owns it. A Deployment's ReplicaSet notices the missing Pod and creates a replacement, and clients keep working because they connect through a Service rather than a Pod IP."
+        }
+      ]
+    },
+    {
+      "id": "replicasets",
+      "title": "ReplicaSets: counting by labels",
+      "goal": "Predict how a ReplicaSet reacts, and know why you change the Deployment instead.",
+      "icon": "replicaset",
+      "takeaways": [
+        "A ReplicaSet compares the Pods matching its selector with `replicas`, then creates or deletes Pods to close the gap.",
+        "Labels decide membership, not names.",
+        "A Deployment owns its ReplicaSets: change the Deployment, not them."
+      ],
+      "steps": [
+        {
+          "type": "choice",
+          "id": "guess-labels",
+          "pretest": true,
+          "prompt": "Take a guess before we start. A ReplicaSet selects Pods labelled `app=web`. You create a separate Pod by hand with the label `app=web`. Does the ReplicaSet count it?",
+          "options": [
+            {"text": "Yes: matching labels make it count, even though the ReplicaSet didn't create it.", "correct": true, "why": "Labels, not who created the Pod, decide which Pods a ReplicaSet counts."},
+            {"text": "No: a ReplicaSet only counts Pods it created itself.", "why": "Membership is decided by the label selector. You'll see what that leads to."},
+            {"text": "Only if the Pod's name starts with the ReplicaSet's name.", "why": "Names play no part in membership."}
+          ],
+          "explain": "A ReplicaSet counts every Pod its selector matches, as long as no other controller owns that Pod. Keep this in mind: it explains self-healing, and a surprise later in this lesson."
+        },
+        {
+          "type": "teach",
+          "id": "thermostat",
+          "title": "A ReplicaSet is a thermostat for Pods",
+          "body": "A **ReplicaSet** holds a desired count (`replicas`) and a **label selector**. It keeps comparing the two:\n\n- fewer matching Pods than `replicas`: it creates Pods from its template;\n- more matching Pods: it deletes some.\n\nLike a thermostat, it doesn't care why the number changed, only that it differs from the target.",
+          "visual": {
+            "kind": "tree",
+            "caption": "A ReplicaSet with replicas 3 and selector app=web, counting the three Pods labelled app=web.",
+            "boxes": [
+              {"label": "ReplicaSet web-75675f5897", "note": "replicas: 3 · selector app=web", "tone": "accent", "children": [
+                {"label": "Pod", "note": "app=web"},
+                {"label": "Pod", "note": "app=web"},
+                {"label": "Pod", "note": "app=web"}
+              ]}
+            ]
+          }
+        },
+        {
+          "type": "choice",
+          "id": "delete-one",
+          "prompt": "A ReplicaSet wants 3 Pods. You delete one with `kubectl delete pod`. What do you see a few seconds later?",
+          "options": [
+            {"text": "3 Pods again: a new Pod with a new name replaced the deleted one.", "correct": true, "why": "The count dropped to 2, so the ReplicaSet created one more."},
+            {"text": "2 Pods, until you recreate the deleted one yourself.", "why": "Closing that gap is exactly the ReplicaSet's job."},
+            {"text": "3 Pods, including the deleted Pod restored under its old name.", "why": "Deleted Pods aren't restored. A new Pod with a generated name appears."}
+          ],
+          "explain": "Self-healing is just counting: 2 matching Pods, desired 3, so create 1."
+        },
+        {
+          "type": "truefalse",
+          "id": "names",
+          "statement": "A ReplicaSet decides which Pods belong to it by their names.",
+          "answer": false,
+          "explain": "The **label selector** decides membership. A Pod whose labels match, and that no other controller owns, counts toward `replicas`, whatever its name."
+        },
+        {
+          "type": "choice",
+          "id": "adopt",
+          "prompt": "A ReplicaSet with `replicas: 3` and selector `app=web` is running 3 Pods. You create one extra bare Pod labelled `app=web`. What happens?",
+          "options": [
+            {"text": "The ReplicaSet adopts it because its labels match, counts 4 Pods and deletes one to get back to 3.", "correct": true, "why": "Labels decide membership, and the count is then over target."},
+            {"text": "Nothing: a ReplicaSet only manages Pods it created itself.", "why": "A ReplicaSet also acquires matching Pods that have no owner."},
+            {"text": "The API server rejects the new Pod because the label is already in use.", "why": "Labels aren't unique. Many objects can share a label."}
+          ],
+          "explain": "The Kubernetes docs describe exactly this: a matching Pod without an owner is acquired by the ReplicaSet, which then deletes Pods to return to its desired count. Don't create Pods that match a controller's selector."
+        },
+        {
+          "type": "teach",
+          "id": "hash-label",
+          "title": "How a Deployment keeps versions apart",
+          "body": "You normally don't create ReplicaSets yourself. A **Deployment** creates one for each version of its Pod template.\n\nEach gets a `pod-template-hash` label, computed by hashing the template, and is named `<deployment>-<hash>`, such as `web-75675f5897`. The hash goes into the ReplicaSet's selector and its Pods' labels, so two versions never claim each other's Pods.\n\nThe ownership chain is **Deployment → ReplicaSet → Pods**.",
+          "visual": {
+            "kind": "tree",
+            "caption": "Deployment web owns ReplicaSet web-75675f5897, which owns three Pods carrying the same pod-template-hash.",
+            "boxes": [
+              {"label": "Deployment web", "note": "replicas: 3", "tone": "accent", "children": [
+                {"label": "ReplicaSet web-75675f5897", "note": "pod-template-hash=75675f5897", "children": [
+                  {"label": "Pod", "note": "…-x2kfp"},
+                  {"label": "Pod", "note": "…-9qzlm"},
+                  {"label": "Pod", "note": "…-h7tsw"}
+                ]}
+              ]}
+            ]
+          }
+        },
+        {
+          "type": "choice",
+          "id": "scale-which",
+          "prompt": "Deployment `web` runs 3 Pods through ReplicaSet `web-75675f5897`. You need 5 Pods. What should you change?",
+          "options": [
+            {"text": "The Deployment: `kubectl scale deployment/web --replicas=5`", "correct": true, "why": "The Deployment is the source of truth for its ReplicaSets."},
+            {"text": "The ReplicaSet: `kubectl scale rs/web-75675f5897 --replicas=5`", "why": "The Deployment controller sets its ReplicaSet back to the Deployment's count, so this won't stick."},
+            {"text": "Create two Pods with `kubectl run` labelled `app=web`", "why": "Bare Pods with matching labels can be adopted, then deleted to get back to the desired count."}
+          ],
+          "explain": "Change the object at the top of the ownership chain. The Kubernetes docs say not to manage ReplicaSets that a Deployment owns."
+        },
+        {
+          "type": "match",
+          "id": "who-does-what",
+          "prompt": "Match each object to its job.",
+          "pairs": [
+            ["Pod", "Runs containers that share an IP and volumes"],
+            ["ReplicaSet", "Keeps a set number of matching Pods running"],
+            ["Deployment", "Rolls out new versions and keeps history for rollback"],
+            ["Label selector", "Decides which Pods a controller counts"],
+            ["pod-template-hash", "Keeps each version's Pods separate"]
+          ]
+        },
+        {
+          "type": "spot",
+          "id": "selector-mismatch",
+          "prompt": "The API server rejects this Deployment. Tap a line that causes it.",
+          "lang": "yaml",
+          "lines": [
+            "apiVersion: apps/v1",
+            "kind: Deployment",
+            "metadata:",
+            "  name: web",
+            "spec:",
+            "  replicas: 3",
+            "  selector:",
+            "    matchLabels:",
+            "      app: web",
+            "  template:",
+            "    metadata:",
+            "      labels:",
+            "        app: api",
+            "    spec:",
+            "      containers:",
+            "        - name: web",
+            "          image: nginx:1.27"
+          ],
+          "answers": [8, 12],
+          "explain": "`spec.selector` must match the Pod template's labels, or the API server rejects the Deployment. Here the selector wants `app: web` but the template labels its Pods `app: api`. The selector is also immutable after creation, so choose it carefully."
+        },
+        {
+          "type": "explain",
+          "id": "how-it-counts",
+          "prompt": "In your own words: how does a ReplicaSet decide how many Pods to create or delete?",
+          "points": [
+            "It counts the Pods whose labels match its selector.",
+            "It compares that count with `replicas`.",
+            "Too few: it creates Pods from its template. Too many: it deletes some."
+          ],
+          "model": "A ReplicaSet keeps counting the Pods that match its label selector and compares the count with `replicas`. If there are too few it creates Pods from its template; if there are too many it deletes some."
+        }
+      ]
+    },
+    {
+      "id": "rolling-updates",
+      "title": "Rolling updates by the numbers",
+      "goal": "Work out what a rolling update may do with maxSurge and maxUnavailable.",
+      "icon": "rollout",
+      "takeaways": [
+        "Only a change to `.spec.template` starts a rollout. Scaling never does.",
+        "maxSurge rounds up and maxUnavailable rounds down. Both default to 25%.",
+        "With 3 replicas and the defaults: 1 extra Pod allowed, none may be unavailable."
+      ],
+      "steps": [
+        {
+          "type": "choice",
+          "id": "guess-rollout",
+          "pretest": true,
+          "prompt": "Take a guess before we start. You change the image of a Deployment with 4 replicas and the default settings. How are its Pods replaced?",
+          "options": [
+            {"text": "Gradually: a few new Pods start while old ones stop, so the app keeps serving.", "correct": true, "why": "That's a rolling update, the default strategy."},
+            {"text": "All old Pods stop first, then all new Pods start.", "why": "That's the Recreate strategy, which you have to choose explicitly."},
+            {"text": "Each running Pod is updated in place and keeps its name.", "why": "A Deployment never edits its running Pods; it creates new ones from the new template."}
+          ],
+          "explain": "By default a Deployment does a **rolling update**: it replaces Pods a few at a time. This lesson is about the two numbers that decide how many."
+        },
+        {
+          "type": "teach",
+          "id": "what-triggers",
+          "title": "What starts a rollout",
+          "body": "A Deployment rolls out a new version **only when its Pod template (`.spec.template`) changes**: a new image, an environment variable, a template label.\n\nScaling, or changing the rollout strategy itself, updates the Deployment but creates **no new revision**."
+        },
+        {
+          "type": "choice",
+          "id": "trigger",
+          "prompt": "Which change starts a new rollout of Deployment `web`?",
+          "options": [
+            {"text": "`kubectl set image deployment/web nginx=nginx:1.28`", "correct": true, "why": "The image is part of the Pod template."},
+            {"text": "`kubectl scale deployment/web --replicas=6`", "why": "Scaling changes `replicas`, not the template."},
+            {"text": "Changing `maxSurge` from 25% to 50%", "why": "The strategy isn't part of the Pod template. The next rollout simply uses the new limit."},
+            {"text": "Adding a label to the Deployment's own `metadata`", "why": "Only labels inside `.spec.template.metadata` belong to the Pod template."}
+          ],
+          "explain": "Rule of thumb: if the change would make new Pods look different, it's a template change and starts a rollout."
+        },
+        {
+          "type": "teach",
+          "id": "two-limits",
+          "title": "Two numbers set the pace",
+          "body": "A rolling update scales a **new** ReplicaSet up and the **old** one down, within two limits:\n\n- **maxSurge**: how many Pods may be created above the desired count. A percentage **rounds up**.\n- **maxUnavailable**: how many of the desired Pods may be unavailable. A percentage **rounds down**.\n\nBoth default to **25%**. Worked example with 4 replicas: 25% of 4 is exactly 1, so Kubernetes may add 1 Pod above the desired 4, and at least 3 must stay available.",
+          "visual": {
+            "kind": "slots",
+            "caption": "4 replicas with the defaults: at the start, one old Pod stops while one new Pod starts, and three old Pods keep serving.",
+            "rows": [
+              {"label": "Old ReplicaSet", "slots": ["old", "old", "old", "stopping"]},
+              {"label": "New ReplicaSet", "slots": ["starting"]}
+            ]
+          }
+        },
+        {
+          "type": "fill",
+          "id": "ten-replicas",
+          "prompt": "Now you try it with 10 replicas and the default 25% limits.",
+          "template": "Up to ___ extra Pods may be created, and at least ___ Pods must stay available.",
+          "answer": ["3", "8"],
+          "distractors": ["2", "7", "10"],
+          "explain": "25% of 10 is 2.5. maxSurge rounds **up** to 3 extra Pods. maxUnavailable rounds **down** to 2, so 10 − 2 = 8 Pods must stay available."
+        },
+        {
+          "type": "choice",
+          "id": "three-replicas",
+          "prompt": "Deployment `web` has 3 replicas and the default strategy. During a rollout, what do the limits allow?",
+          "options": [
+            {"text": "Up to 1 extra Pod, and all 3 must stay available", "correct": true, "why": "25% of 3 is 0.75: surge rounds up to 1, unavailable rounds down to 0."},
+            {"text": "No extra Pods, and 1 may be unavailable", "why": "That's the rounding reversed. Surge rounds up, unavailable rounds down."},
+            {"text": "Up to 1 extra Pod, and 1 may be unavailable", "why": "maxUnavailable rounds down: 0.75 becomes 0."},
+            {"text": "Nothing: 25% of 3 isn't a whole Pod, so the rollout can't start", "why": "Rounding turns the percentages into whole numbers, 1 and 0."}
+          ],
+          "explain": "With 3 replicas the defaults give maxSurge 1 and maxUnavailable 0. Kubernetes adds one new Pod, waits until it's ready, then removes one old Pod, and repeats."
+        },
+        {
+          "type": "choice",
+          "id": "no-room",
+          "prompt": "You set `maxSurge: 1` and `maxUnavailable: 0`. The cluster has no spare CPU for even one more Pod. What happens when you roll out?",
+          "options": [
+            {"text": "The new Pod stays Pending and the rollout waits, while all old Pods keep serving.", "correct": true, "why": "It can't remove an old Pod first (0 unavailable), and the surge Pod can't be scheduled."},
+            {"text": "Kubernetes deletes an old Pod to make room.", "why": "`maxUnavailable: 0` forbids taking an old Pod away before a new one is ready."},
+            {"text": "The rollout switches to Recreate by itself.", "why": "The strategy never changes on its own."}
+          ],
+          "explain": "`maxUnavailable: 0` buys updates without losing capacity, but it needs room for the surge Pod. Plan spare capacity, or allow some unavailability."
+        },
+        {
+          "type": "order",
+          "id": "rollout-cycle",
+          "prompt": "Put one rolling-update cycle in order (3 replicas, default limits).",
+          "steps": [
+            "You change the image in the Pod template.",
+            "The Deployment controller creates a new ReplicaSet.",
+            "The new ReplicaSet creates one extra Pod.",
+            "The new Pod passes its readiness check and becomes available.",
+            "The old ReplicaSet scales down by one Pod.",
+            "The cycle repeats until all 3 Pods run the new version."
+          ],
+          "explain": "With maxUnavailable 0, an old Pod is removed only after a new one is available. That's why readiness probes matter: they gate every step of the rollout."
+        },
+        {
+          "type": "teach",
+          "id": "recreate",
+          "title": "The other strategy: Recreate",
+          "body": "With `strategy.type: Recreate`, **all** old Pods are stopped before any new ones are created. Expect downtime, but two versions never run at the same time.\n\nUse it when versions can't run side by side, for example when the new version writes data the old one can't read."
+        },
+        {
+          "type": "choice",
+          "id": "pick-strategy",
+          "prompt": "Version 2 of your app changes a shared file format that version 1 can't read. Running both versions at once would corrupt data. Which strategy fits?",
+          "options": [
+            {"text": "Recreate: all old Pods stop before any new Pod starts", "correct": true, "why": "The versions never overlap, at the cost of some downtime."},
+            {"text": "RollingUpdate with the defaults", "why": "Old and new Pods run side by side during a rolling update."},
+            {"text": "RollingUpdate with `maxUnavailable: 0`", "why": "That keeps old Pods serving longer, so the versions overlap even more."}
+          ],
+          "explain": "A rolling update always overlaps versions for a while. When the overlap itself is the problem, Recreate (with planned downtime) or a staged data migration is the honest choice."
+        },
+        {
+          "type": "explain",
+          "id": "why-three-stay",
+          "prompt": "Explain why a default rollout of a 3-replica Deployment never drops below 3 available Pods.",
+          "points": [
+            "25% of 3 is 0.75.",
+            "maxUnavailable rounds down to 0, so no desired Pod may be unavailable.",
+            "maxSurge rounds up to 1, so a new Pod starts first and an old one stops only once it's ready."
+          ],
+          "model": "25% of 3 is 0.75. maxUnavailable rounds down to 0, so no desired Pod may be taken away, and maxSurge rounds up to 1, so Kubernetes starts one new Pod first and removes an old Pod only after the new one is ready."
+        }
+      ]
+    },
+    {
+      "id": "rollback",
+      "title": "Stalled rollouts and rollback",
+      "goal": "Diagnose a stuck rollout and get back to a working version.",
+      "icon": "rollback",
+      "takeaways": [
+        "When new Pods never get ready, the rollout stalls and the old Pods keep serving.",
+        "ProgressDeadlineExceeded only reports the problem. Kubernetes doesn't roll back for you.",
+        "`kubectl rollout undo` scales a previous ReplicaSet back up. History is kept by revisionHistoryLimit (default 10)."
+      ],
+      "steps": [
+        {
+          "type": "choice",
+          "id": "guess-users",
+          "pretest": true,
+          "prompt": "Take a guess. You roll out image `web:2.0` with a typo in the tag, on a 3-replica Deployment with the default limits. Are users affected?",
+          "options": [
+            {"text": "Not yet: the new Pod can't start, so the 3 old Pods keep serving.", "correct": true, "why": "maxUnavailable is 0 here, and a Pod that never becomes ready never takes an old Pod's place."},
+            {"text": "Yes: Kubernetes stops the old Pods first, so the app goes down.", "why": "That's the Recreate strategy, not a rolling update."},
+            {"text": "Yes: a third of requests now fail on the broken Pod.", "why": "Pods that aren't ready receive no Service traffic, and this one isn't even running."}
+          ],
+          "explain": "A bad image stalls the rollout instead of breaking the app, **as long as** the limits and readiness checks are right. With 3 replicas, the default limits keep all 3 old Pods serving."
+        },
+        {
+          "type": "teach",
+          "id": "stalled",
+          "title": "What a stalled rollout looks like",
+          "body": "When new Pods never become ready (a bad image, a failing readiness probe, too little quota), the rollout **stalls**:\n\n- `kubectl rollout status` waits and doesn't finish;\n- `kubectl get rs` shows two ReplicaSets: the old one with its Pods, the new one stuck;\n- after `progressDeadlineSeconds` (default **600 s**) the Deployment reports **ProgressDeadlineExceeded**.\n\nThat condition is only a report. **Kubernetes doesn't roll back by itself.**",
+          "example": "```text\nNAME             DESIRED   CURRENT   READY   AGE\nweb-75675f5897   3         3         3       2d\nweb-5f7c8d9b6c   1         1         0       12m\n```"
+        },
+        {
+          "type": "truefalse",
+          "id": "auto-rollback",
+          "statement": "After ProgressDeadlineExceeded, Kubernetes rolls the Deployment back to the previous version.",
+          "answer": false,
+          "explain": "The docs say Kubernetes takes no action on a stalled Deployment other than reporting the condition. A person or a tool acts on it, for example with `kubectl rollout undo`."
+        },
+        {
+          "type": "choice",
+          "id": "first-look",
+          "prompt": "The new Pod is stuck at `0/1 ImagePullBackOff`. Which command best shows **why**?",
+          "options": [
+            {"text": "`kubectl describe pod web-5f7c8d9b6c-7xk2q`", "correct": true, "why": "Its Events show the pull error, such as a missing tag or denied access."},
+            {"text": "`kubectl logs web-5f7c8d9b6c-7xk2q`", "why": "The container never started, so there are no logs to read."},
+            {"text": "`kubectl rollout undo deployment/web`", "why": "Undo removes the symptom, but it doesn't tell you what went wrong."},
+            {"text": "`kubectl delete deployment web`", "why": "That deletes every Pod, including the healthy old ones."}
+          ],
+          "explain": "Image and scheduling problems show up in the Pod's **Events**, which `kubectl describe` prints. Logs exist only once a container has run."
+        },
+        {
+          "type": "fill",
+          "id": "undo",
+          "prompt": "Complete the command that returns `web` to its previous version.",
+          "template": "kubectl rollout ___ deployment/web",
+          "code": true,
+          "answer": ["undo"],
+          "distractors": ["restart", "status", "pause", "history"],
+          "explain": "`rollout undo` returns to the previous revision: the previous ReplicaSet scales up and the broken one scales down. Add `--to-revision=N` to pick a revision from `kubectl rollout history`."
+        },
+        {
+          "type": "teach",
+          "id": "history",
+          "title": "Where rollback history lives",
+          "body": "Each revision's Pod template is stored in its **ReplicaSet**. Old ReplicaSets are scaled to 0 but kept, up to `revisionHistoryLimit` (default **10**).\n\n`kubectl rollout undo` scales an old ReplicaSet back up. Only the Pod template rolls back: `replicas` stays as it is."
+        },
+        {
+          "type": "choice",
+          "id": "history-zero",
+          "prompt": "A teammate sets `revisionHistoryLimit: 0` to keep `kubectl get rs` tidy. What do you lose?",
+          "options": [
+            {"text": "The ability to undo a rollout, because old ReplicaSets are cleaned up.", "correct": true, "why": "The rollback history is the old ReplicaSets themselves."},
+            {"text": "Nothing: rollout history is stored separately from ReplicaSets.", "why": "History lives in the old ReplicaSets. Delete them and it's gone."},
+            {"text": "The ability to scale the Deployment.", "why": "Scaling doesn't depend on history."}
+          ],
+          "explain": "The docs say a limit of 0 cleans up all old ReplicaSets, so a new rollout can't be undone. Keep a small number instead of 0."
+        },
+        {
+          "type": "order",
+          "id": "respond",
+          "prompt": "Put the response to a stuck rollout in order.",
+          "steps": [
+            "Confirm it's stuck: `kubectl rollout status deployment/web`",
+            "See both versions: `kubectl get rs`",
+            "Find the cause in the new Pod's events: `kubectl describe pod <new-pod>`",
+            "Return to the last good version: `kubectl rollout undo deployment/web`",
+            "Fix the image or probe, then roll out again"
+          ],
+          "explain": "Confirm, compare, diagnose, restore, then fix. Here the old Pods are still serving, so you can diagnose first. If users were affected, you'd undo first and diagnose afterwards."
+        },
+        {
+          "type": "explain",
+          "id": "interview",
+          "prompt": "**Interview question:** you deploy a new image and `kubectl rollout status` hangs. Users report no errors yet. What is Kubernetes doing, how do you find the cause, and how do you get back to a good state?",
+          "points": [
+            "Two ReplicaSets exist: the new one is limited by maxSurge, the old one keeps serving within maxUnavailable.",
+            "New Pods that aren't ready stall the rollout instead of taking traffic.",
+            "Diagnose with `rollout status`, `get rs`, `describe pod` and its events (image pull, probe, quota).",
+            "Kubernetes won't roll back by itself: ProgressDeadlineExceeded only reports.",
+            "Recover with `kubectl rollout undo`, then fix and roll out again."
+          ],
+          "model": "The Deployment created a new ReplicaSet, but its Pods never became ready, so the rollout stalled within maxSurge while the old ReplicaSet kept serving within maxUnavailable. I'd check `kubectl rollout status` and `kubectl get rs`, then `kubectl describe pod` on a new Pod to read its events. Kubernetes won't roll back on its own, so I'd run `kubectl rollout undo`, fix the cause and roll out again."
+        }
+      ]
+    }
+  ]
+}

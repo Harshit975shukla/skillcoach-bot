@@ -31,7 +31,7 @@ packages = ["skillcoach"]
 py-modules = ["lesson_content"]
 
 [tool.setuptools.package-data]
-skillcoach = ["migrations/*.sql", "certs/*.crt", "static/*", "course_data/*/*.json"]
+skillcoach = ["migrations/*.sql", "certs/*.crt", "static/*", "course_data/*/*.json", "practice_data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

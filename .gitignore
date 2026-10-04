@@ -25,3 +25,5 @@ node_modules/
 legacy*.json
 private*.json
 .vercel/
+# Local design-hook cache (machine-specific paths)
+.impeccable/hook.cache.json

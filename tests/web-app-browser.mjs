@@ -165,7 +165,7 @@ async function checkHeader(page, label) {
     };
   });
   assert.ok(layout.scroll <= layout.width, `${label}: no sideways scrolling`);
-  assert.deepEqual(layout.items.map(item => item.id), ["notify", "dashboard-link", "logout"], label);
+  assert.deepEqual(layout.items.map(item => item.id), ["notify", "practice-link", "dashboard-link", "logout"], label);
   const middle = item => (item.top + item.bottom) / 2;
   layout.items.forEach((item, index) => {
     assert.ok(item.left >= 0 && item.right <= layout.width, `${label}: ${item.id} inside the screen`);

@@ -46,6 +46,7 @@
     for (const id of ["signin", "join", "chat", "reader"]) $(id).hidden = id !== view;
     $("logout").hidden = !["chat", "reader"].includes(view);
     $("dashboard-link").hidden = $("logout").hidden;
+    $("practice-link").hidden = $("logout").hidden;
   }
   function reset() {
     epoch += 1;

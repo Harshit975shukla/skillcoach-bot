@@ -43,6 +43,7 @@ jobs:
       - run: npm run test:webdash
       - run: npm run test:sw
       - run: npm run test:app
+      - run: npm run test:practice
       - name: Render authored diagrams and check animated media locally
         run: |
           export PATH="$PWD/node_modules/.bin:$PATH"

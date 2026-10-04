@@ -59,6 +59,7 @@ def register_web(app, runtime_factory):
         csrf_token,
         digest,
         feed,
+        keyed,
         logout,
         same_origin,
         start_login,
@@ -135,6 +136,58 @@ def register_web(app, runtime_factory):
     @app.get("/web")
     def web_page():
         return app.send_static_file("web.html")
+
+    @app.get("/web/practice")
+    def web_practice_page():
+        """Practice: short answer-first lessons. The page is public; its data needs the /web session."""
+        return app.send_static_file("practice.html")
+
+    @app.post("/web/practice/catalog")
+    @endpoint
+    def web_practice_catalog():
+        """The practice path. Read-only: progress stays on the learner's device under an opaque key
+        that differs per learner, so people sharing a browser never see each other's progress."""
+        from skillcoach.practice import catalog
+
+        runtime = runtime_on()
+        session, _ = authenticate(request, runtime, mutate=True)
+        body_of(set())
+        data = catalog()
+        data["progress_key"] = keyed(runtime.config, "practice", session["learner_id"])[:32]
+        return jsonify(data)
+
+    @app.post("/web/practice/lesson")
+    @endpoint
+    def web_practice_lesson():
+        from skillcoach.practice import lesson as practice_lesson
+
+        runtime = runtime_on()
+        authenticate(request, runtime, mutate=True)
+        body = body_of({"topic", "lesson"})
+        topic, lesson_id = body.get("topic"), body.get("lesson")
+        data = (
+            practice_lesson(topic, lesson_id) if isinstance(topic, str) and isinstance(lesson_id, str) else None
+        )
+        if data is None:
+            return jsonify(error="Choose a lesson from the practice path."), 404
+        return jsonify(data)
+
+    @app.post("/web/practice/review")
+    @endpoint
+    def web_practice_review():
+        """The questions behind the learner's due spaced-review cards (IDs only; no answers sent)."""
+        from skillcoach.practice import REVIEW_LIMIT, review
+
+        runtime = runtime_on()
+        authenticate(request, runtime, mutate=True)
+        items = body_of({"items"}).get("items")
+        if (
+            not isinstance(items, list)
+            or not 1 <= len(items) <= REVIEW_LIMIT
+            or not all(isinstance(item, str) and len(item) <= 220 for item in items)
+        ):
+            raise WebDenied("Choose up to 20 review cards.")
+        return jsonify(steps=review(items))
 
     @app.get("/web/dashboard")
     @endpoint

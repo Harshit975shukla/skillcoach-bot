@@ -551,6 +551,40 @@ Plans use the actual target role, level, gaps, prior topics, task evidence and r
 
 Resume/JD alignment scores are explicitly provisional document-based estimates. Diagnostic scores are limited evidence, not a guarantee of job readiness. Private resume/JD/answer text is sent to your configured AI provider when you invoke those features; configure an acceptable provider/data-retention policy before use.
 
+## Practice path (Duolingo-style test version, not deployed)
+
+`/web/practice` turns the syllabus into short, answer-first lessons on a winding path. It is linked
+from the web app's header (**Practice**) and needs the signed-in `/web` session. This is a test
+version for the owner's review; it has not been deployed.
+
+- **Hand-crafted unit:** Kubernetes Pods, ReplicaSets and Deployments, as four lessons in
+  `skillcoach/practice_data/`. The lessons are AI-assisted and were checked against the official
+  Kubernetes documentation on 4 Oct 2026; they are not independently expert-reviewed, and the app
+  says so.
+- **Automatic lessons:** every other library topic gets two lessons built without AI from its course
+  package (concepts, key terms, end-to-end flow, interview question). They are labelled
+  "Built from the course notes".
+- **How it teaches:**
+  - a guess before the lesson starts (pretest);
+  - one idea per card, with small diagrams;
+  - an immediate question after each idea, with feedback for every option;
+  - a worked example, then one with parts left to fill in;
+  - any wrong answer is asked again at the end of the lesson;
+  - an "I'm guessing" flag, so lucky guesses come back tomorrow;
+  - "explain it in your own words", then tick the key points you covered;
+  - spaced review on a fixed schedule (1, 3, 7, 16, 35 days), with topics mixed together.
+- **Motivation without punishment:** XP, a daily goal and a streak. There are no lives or hearts.
+- **Privacy:**
+  - Answers are checked in the browser.
+  - Progress (lessons done, XP, streak and review schedule) stays in that browser's `localStorage`,
+    under a separate key for each learner. It does not sync between devices yet.
+  - Text typed for "explain it" is never sent or stored.
+  - The three POST endpoints (`/web/practice/catalog`, `/lesson`, `/review`) are read-only, need web
+    mode, the session, the CSRF token and the same origin, and write nothing to the database.
+- **Preview locally** with synthetic data: run `npm run preview:practice`, then open
+  `http://127.0.0.1:8765/web/practice`.
+- **Tests:** `tests/test_practice.py` and `npm run test:practice`.
+
 ## Free learning library
 
 `/resources` and **Free resources** in the private dashboard expose 30 curated links across cloud,

@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex">
+  <title>Practice · SkillCoach</title>
+  <link rel="manifest" href="/web/manifest.webmanifest">
+  <link rel="icon" href="/static/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <meta name="theme-color" content="#f5f7fa" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17212b" media="(prefers-color-scheme: dark)">
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <link rel="stylesheet" href="/static/practice.css">
+  <script src="/static/lesson-content.js" defer></script>
+  <script src="/static/practice.js" defer></script>
+</head>
+<body class="practice">
+  <!-- THESIS: a climbing path of five-minute, answer-first lessons where every mistake comes back
+       until it is understood; refuses lives/hearts punishment and the course-list dashboard.
+       OWN-WORLD: SkillCoach's system (system-ui, slate ink on a cool page, one blue accent, light/dark
+       from the device) made tactile: round path nodes and answer tiles that press down onto a darker
+       base edge; green for correct, red for repair, amber XP, an orange streak flame.
+       STORY: open Practice, see the next lesson and due reviews, answer bite-size questions with
+       explained feedback, repair mistakes at the end, leave with takeaways and when cards return.
+       FIRST VIEWPORT: phone: header with streak and today's XP, a compact Today panel with one primary
+       Continue and a Review button, then the course: earlier topics folded into one row, the active
+       unit's banner and its winding route of lesson glyphs with a Start callout. Desktop: path in the
+       centre column, Today panel on the right.
+       FORM: winding skill path + full-screen lesson player (1 of 7: path, today queue, mastery graph,
+       incident runbook, flashcard deck, tutor chat, syllabus list); brief-pinned "Duolingo type", no seed. -->
+  <div class="p-shell" id="shell">
+    <header class="p-header">
+      <a class="brand" href="/web">SkillCoach</a>
+      <nav class="p-nav" aria-label="SkillCoach">
+        <a href="/web">Coach</a>
+        <a href="/web/practice" aria-current="page">Practice</a>
+      </nav>
+      <div class="p-stats" id="stats" hidden>
+        <span class="stat stat-streak" id="streak" title="Days in a row with practice">
+          <span class="stat-icon" data-icon="flame"></span><b id="streak-count">0</b>
+          <span class="visually-hidden" id="streak-label">day streak</span>
+        </span>
+        <span class="stat stat-xp" id="goal" title="Today's practice goal">
+          <span class="stat-icon" data-icon="bolt"></span><b id="goal-xp">0</b><span class="goal-of">/<span id="goal-target">20</span> XP</span>
+          <span class="visually-hidden">today</span>
+        </span>
+      </div>
+    </header>
+
+    <div id="notice" class="notice p-notice" role="status" aria-live="polite">Loading practice…</div>
+    <p id="retry-wrap" hidden><button id="retry" type="button">Try again</button></p>
+
+    <section id="signed-out" class="p-message" hidden aria-labelledby="signed-out-title">
+      <h1 id="signed-out-title">Sign in to practise</h1>
+      <p id="signed-out-text">Practice uses your SkillCoach web sign-in. Sign in with your email, then come back here.</p>
+      <a class="chunky primary" href="/web">Sign in to SkillCoach</a>
+    </section>
+
+    <div id="home" class="home" hidden>
+      <aside class="p-today" aria-labelledby="today-title">
+        <h1 id="today-title">Practice</h1>
+        <p id="today-text" class="today-text"></p>
+        <div class="p-today-actions">
+          <button id="continue" class="chunky primary" type="button"></button>
+          <button id="review" class="chunky" type="button"></button>
+        </div>
+        <p id="review-note" class="today-note"></p>
+      </aside>
+
+      <section class="course" aria-labelledby="course-title">
+        <div class="course-head">
+          <div>
+            <h2 id="course-title"></h2>
+            <p id="course-meta" class="course-meta"></p>
+          </div>
+          <label class="course-pick">
+            <span>Course</span>
+            <select id="module"></select>
+          </label>
+        </div>
+        <p id="path-note" class="path-note" role="status" aria-live="polite"></p>
+        <ol id="path" class="path"></ol>
+        <p class="device-note">Progress is saved in this browser on this device.</p>
+      </section>
+    </div>
+  </div>
+
+  <section id="player" class="player" hidden aria-label="Lesson">
+    <div class="player-top">
+      <button id="quit" class="quit" type="button" aria-label="Leave this lesson"><span data-icon="close"></span></button>
+      <div id="progress" class="progress" role="progressbar" aria-label="Lesson progress"
+           aria-valuemin="0" aria-valuemax="10" aria-valuenow="0"><span id="progress-fill" class="progress-fill"></span></div>
+      <span id="repair-count" class="repair-count" hidden></span>
+    </div>
+    <div id="stage" class="stage"></div>
+    <footer class="player-bar">
+      <div class="bar-inner">
+        <button id="guess" class="guess" type="button" aria-pressed="false" hidden>I'm guessing</button>
+        <button id="check" class="chunky primary" type="button" disabled>Check</button>
+      </div>
+    </footer>
+    <div id="feedback" class="feedback" hidden>
+      <div class="feedback-inner">
+        <div class="feedback-text">
+          <h2 id="feedback-title" tabindex="-1"></h2>
+          <div id="feedback-body" class="feedback-body"></div>
+        </div>
+        <button id="next" class="chunky" type="button">Continue</button>
+      </div>
+    </div>
+    <div id="quit-sheet" class="quit-sheet" hidden role="alertdialog" aria-modal="true"
+         aria-labelledby="quit-title" aria-describedby="quit-text">
+      <div class="quit-card">
+        <h2 id="quit-title">Leave this lesson?</h2>
+        <p id="quit-text">Your answers in this lesson won't be saved.</p>
+        <div class="quit-actions">
+          <button id="quit-stay" class="chunky primary" type="button">Keep going</button>
+          <button id="quit-leave" class="chunky" type="button">Leave</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="summary" class="summary" hidden aria-labelledby="summary-title">
+    <div class="summary-inner">
+      <div class="burst" id="burst" aria-hidden="true"><span class="burst-mark" data-icon="check"></span></div>
+      <h1 id="summary-title" tabindex="-1"></h1>
+      <p id="summary-sub" class="summary-sub"></p>
+      <dl class="summary-stats">
+        <div><dt>XP earned</dt><dd id="sum-xp">0</dd></div>
+        <div><dt>First-try accuracy</dt><dd id="sum-accuracy">–</dd></div>
+        <div><dt>Streak</dt><dd id="sum-streak">0</dd></div>
+      </dl>
+      <section class="remember" aria-labelledby="remember-title">
+        <h2 id="remember-title">Remember</h2>
+        <ul id="sum-takeaways"></ul>
+      </section>
+      <p id="sum-review" class="summary-review"></p>
+      <div class="summary-actions">
+        <button id="sum-next" class="chunky primary" type="button"></button>
+        <button id="sum-home" class="chunky" type="button">Back to the path</button>
+      </div>
+      <details class="provenance">
+        <summary>About this lesson</summary>
+        <p id="sum-provenance"></p>
+        <ul id="sum-references"></ul>
+      </details>
+    </div>
+  </section>
+</body>
+</html>
