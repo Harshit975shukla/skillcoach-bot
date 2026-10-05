@@ -9,9 +9,10 @@ from test_flows import PROFILE, READINESS, RESUME, command
 
 from skillcoach.catalog import TOPICS
 from skillcoach.clients import ExternalError
-from skillcoach.journey import safe_learning_view, session_dates
+from skillcoach.journey import PLAN_EVIDENCE_CHARS, safe_learning_view, session_dates
 from skillcoach.journey_models import Journey, LearningPlan, PlanDraft
-from skillcoach.models import Profile
+from skillcoach.models import Diagnostic, Profile
+from skillcoach.service import Service
 from skillcoach.timeutil import IST
 from skillcoach.web import create_app
 
@@ -256,6 +257,66 @@ def test_day_one_dates_respect_ist_and_weekend_slots():
     assert len(set(session_dates(sunday))) == 5
     assert all(day.weekday() < 5 for day in session_dates(sunday))
     assert session_dates(datetime(2026, 9, 28, 9, tzinfo=IST))[0].isoformat() == "2026-09-29"
+
+
+LONG_RESUME = "Platform engineer resume line: Terraform, Kubernetes and AWS delivery work. " * 220
+LONG_JD = "Job description line: cloud networking, CI/CD pipelines and incident response. " * 220
+
+
+def wire_request(prompt, model):
+    """The request the real AI client sends: the prompt followed by the response schema."""
+    return prompt + "\nReturn ONLY JSON matching this schema:\n" + json.dumps(model.model_json_schema())
+
+
+def test_long_documents_and_history_keep_ai_prompts_under_the_provider_request_limit(harness, monkeypatch):
+    # Groq's free tier refused a 38,700-character weekly-plan request (HTTP 413, 8,000 tokens a minute).
+    h = harness
+    answers = ["/onboard", "agree", "Cloud engineering", "2", "beginner", "30", "Asia/Kolkata"]
+    for value in [*answers, LONG_RESUME]:
+        command(h, value)
+    h.ai.responses.append(DIAGNOSTIC)
+    command(h, LONG_JD)
+    prompt, model = h.ai.calls[-1]
+    assert model == "Diagnostic" and len(wire_request(prompt, Diagnostic)) < 6000
+    assert "Terraform" in prompt and "cloud networking" in prompt and prompt.count("[...]") == 2
+    assert h.repo.state.journey.resume_text == LONG_RESUME.strip()
+
+    modes = []
+
+    def oversized_evidence(self, *, compact=False):
+        modes.append(compact)
+        return ("c" if compact else "d") * 30_000
+
+    monkeypatch.setattr(Service, "context", oversized_evidence)
+    finish_setup(h)
+    prompt, model = h.ai.calls[-1]
+    assert model == "PlanDraft" and modes == [False, True]
+    assert len(wire_request(prompt, PlanDraft)) < 24_000  # about 6,000 tokens at 4 characters a token
+    assert "d" * 100 not in prompt and "c" * PLAN_EVIDENCE_CHARS + " [...]" in prompt
+    assert "c" * (PLAN_EVIDENCE_CHARS + 1) not in prompt
+    assert "Terraform" in prompt and "cloud networking" in prompt and LONG_JD[:2000] not in prompt
+    assert prompt.endswith("Catalog (topic IDs):\n" + "\n".join(TOPICS))
+    assert TOPICS[TOPIC][1] not in prompt
+
+
+def test_onboard_shows_the_current_diagnostic_question_again_for_a_chat_that_never_showed_it(harness):
+    h = harness
+    setup(h)
+    command(h, "Actual diagnostic answer 0")
+    j = h.repo.state.journey
+    target = j.target()
+    h.repo.displayed = None  # for example a Telegram chat that reconnected after the question was sent
+    command(h, "Typed before the question was shown here")
+    assert "no matching active question" in h.telegram.messages[-1][0]
+    command(h, "/onboard")
+    text, buttons = h.telegram.messages[-1]
+    assert text.startswith("Diagnostic 2/5") and h.repo.displayed == target
+    assert buttons == [[{"text": "I don't know yet", "callback_data": f"j:{j.id}:diagnostic-1:unknown"}]]
+    assert h.repo.state.journey.diagnostic_answers == ["Actual diagnostic answer 0"]
+    command(h, "Second actual answer")
+    assert h.repo.state.journey.diagnostic_answers == ["Actual diagnostic answer 0", "Second actual answer"]
+    assert h.telegram.messages[-1][0].startswith("Diagnostic 3/5")
+    assert len(h.ai.calls) == 1 and len(h.repo.answer_keys) == 2
 
 
 @pytest.mark.postgres

@@ -258,6 +258,35 @@ def test_personalized_context_includes_errors_and_actual_tasks(harness):
     assert context["tasks"][0]["title"] == "Policy exercise"
 
 
+def test_compact_context_keeps_fewer_shorter_recent_items_and_default_is_unchanged(harness):
+    h = harness
+    h.repo.state.profile = Profile(**PROFILE)
+    for i in range(40):
+        h.repo.state.tasks[f"task-{i}"] = Task(
+            id=f"task-{i}",
+            origin=f"unique-{i}",
+            title=f"Exercise {i} " + "detail " * 40,
+            skill="IAM",
+            detail="Private",
+            assigned_date=date(2026, 9, 25),
+        )
+        h.repo.state.lessons[f"lesson-{i}"] = {"topic": f"Topic {i}", "feedback": "clear " * 60}
+    service = Service(h.repo, h.ai, h.runtime.config, lambda: h.clock.now)
+    service.state = h.repo.state
+    full, compact = service.context(), service.context(compact=True)
+    assert full == service.context(compact=False)
+    full, compact = json.loads(full), json.loads(compact)
+    lessons = "lessons_prepared_and_delivery_state_not_mastery"
+    assert len(full["tasks"]) == 30 and len(full[lessons]) == 20
+    assert full["tasks"][-1]["title"] == h.repo.state.tasks["task-39"].title
+    assert len(compact["tasks"]) == 10 and len(compact[lessons]) == 8
+    newest = compact["tasks"][-1]["title"]
+    assert newest.startswith("Exercise 39 ") and newest.endswith("...")
+    assert all(len(task["title"]) <= 243 for task in compact["tasks"])
+    assert compact["profile"] == full["profile"] and compact["tasks"][-1]["status"] == "pending"
+    assert len(service.context(compact=True)) < len(service.context()) / 3
+
+
 def test_failed_export_notice_is_visible_but_success_is_not(harness):
     h = harness
     h.publisher.fail = True

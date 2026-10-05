@@ -39,6 +39,17 @@ def stable_id(key: str) -> str:
     return uuid5(NAMESPACE_URL, "skillcoach:" + key).hex[:20]
 
 
+def _brief(value, limit=240):
+    """Long strings shortened at a word, for prompts that must stay small."""
+    if isinstance(value, dict):
+        return {key: _brief(item, limit) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_brief(item, limit) for item in value]
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit].rsplit(" ", 1)[0] + "..."
+    return value
+
+
 def topic_key(topic: str) -> str:
     from lesson_content import LESSONS
 
@@ -128,9 +139,12 @@ class Service:
         self.generations += 1
         return result
 
-    def context(self):
+    def context(self, *, compact=False):
+        """Recent learning evidence for AI prompts. compact keeps fewer, shorter recent items, for
+        prompts that must stay within the AI provider's request limit (the weekly plan)."""
         from skillcoach.progress import answered
 
+        lessons, tasks, errors, interviews = (8, 10, 6, 2) if compact else (20, 30, 15, 5)
         profile = self.state.profile
         scores = {}
         for _, question, answer in list(answered(self.state))[-40:]:
@@ -143,13 +157,13 @@ class Service:
             "preference": self.state.preference,
             "lessons_prepared_and_delivery_state_not_mastery": [
                 {k: v for k, v in record.items() if k in ("topic", "date", "delivered_at", "feedback")}
-                for record in list(self.state.lessons.values())[-20:]
+                for record in list(self.state.lessons.values())[-lessons:]
             ],
             "recent_quiz_results_by_topic": {topic: f"{r}/{t} correct" for topic, (r, t) in scores.items()},
             "certification_goal": self.certification_goal(),
             "tasks": [
                 {"title": t.title, "skill": t.skill, "status": t.status}
-                for t in list(self.state.tasks.values())[-30:]
+                for t in list(self.state.tasks.values())[-tasks:]
             ],
             "recent_errors": [
                 {
@@ -160,14 +174,14 @@ class Service:
                 for session in self.state.assessments.values()
                 for index, answer in enumerate(session.answers)
                 if not answer.correct
-            ][-15:],
+            ][-errors:],
             "interview_evidence": [
                 {"skill": item.question.skill, "feedback": item.feedback.model_dump()}
                 for item in self.state.interviews.values()
                 if item.feedback
-            ][-5:],
+            ][-interviews:],
         }
-        return json.dumps(context, ensure_ascii=False)
+        return json.dumps(_brief(context) if compact else context, ensure_ascii=False)
 
     def certification_goal(self):
         from skillcoach.certifications import TRACKS, weakest
