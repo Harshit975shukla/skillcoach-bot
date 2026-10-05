@@ -24,7 +24,10 @@ async function open(width, height, scheme = "light") {
   page.on("pageerror", error => problems.push("pageerror: " + error.message));
   page.on("console", message => {
     // Expected 403/503 answers are logged by the browser as failed loads; scripts must log nothing.
-    if (message.type() === "error" && !message.text().startsWith("Failed to load resource")) problems.push("console: " + message.text());
+    // Chrome logs "Manifest: ... Syntax error." when a reload cuts off the manifest fetch.
+    if (message.type() === "error"
+        && !message.text().startsWith("Failed to load resource")
+        && !message.text().startsWith("Manifest:")) problems.push("console: " + message.text());
   });
   await page.setViewport({width, height, deviceScaleFactor: 1});
   await page.emulateMediaFeatures([{name: "prefers-reduced-motion", value: "reduce"},
