@@ -45,7 +45,18 @@ def test_the_hand_crafted_unit_is_valid_and_teaches_with_every_exercise_type():
     assert all(url.startswith("https://kubernetes.io/docs/") for url in unit().references)
     assert "Not independently expert-reviewed" in unit().review
     types = {step.type for lesson in lessons for step in lesson.steps}
-    assert types == {"teach", "choice", "truefalse", "match", "order", "fill", "spot", "explain"}
+    assert types == {
+        "teach",
+        "choice",
+        "truefalse",
+        "match",
+        "order",
+        "fill",
+        "spot",
+        "explain",
+        "type",
+        "scenario",
+    }
     for lesson in lessons:
         assert 8 <= len(lesson.steps) <= 12 and 2 <= len(lesson.takeaways) <= 4
         # Answer first: every lesson opens with a question (a guess before teaching or a check), and
@@ -111,6 +122,15 @@ def test_rolling_update_arithmetic_in_the_lessons_matches_the_kubernetes_roundin
             "three practice",
         ),
         (lambda s: s.update(references=["http://insecure.example"]), "references"),
+        (
+            lambda s: s["lessons"][1]["steps"][9].update(answers=["kubectl get rs", "kubectl  get rs"]),
+            "differ after normalising",
+        ),
+        (
+            lambda s: s["lessons"][3]["steps"][9]["stages"][0]["options"][1].update(correct=True),
+            "exactly one correct",
+        ),
+        (lambda s: s["lessons"][3]["steps"][9].update(stages=[]), "stages"),
     ],
 )
 def test_invalid_authored_content_is_rejected(change, message):
@@ -137,8 +157,8 @@ def test_every_library_topic_gets_lessons_without_ai():
         assert guess.type == "choice" and guess.pretest and len(guess.options) == 3
         assert next(option.text for option in guess.options if option.correct) == apply.steps[1].steps[0]
         assert [step.type for step in rest].count("choice") == 4
-        assert {"teach", "choice", "match"} <= {step.type for step in core.steps}
-        assert {"order", "explain"} <= {step.type for step in apply.steps}
+        assert {"teach", "choice", "truefalse", "match"} <= {step.type for step in core.steps}
+        assert {"order", "truefalse", "fill", "type", "explain"} <= {step.type for step in apply.steps}
         assert (core.icon, apply.icon) == ("idea", "target")
         for lesson in (core, apply):
             for step in lesson.steps:
@@ -296,3 +316,59 @@ def test_practice_routes_need_the_session_and_change_nothing(web):
     sign_in(web, "owner@example.test", client=owner)
     other = post(web, "/web/practice/catalog", {}, client=owner)
     assert other.status_code == 200 and other.json["progress_key"] != key
+
+
+def test_derived_lessons_vary_the_exercises_and_stay_correct():
+    answers = set()
+    for topic in TOPICS:
+        if topic == FEATURED:
+            continue
+        core, apply = practice._derived(topic)
+        package = practice.get_package(topic).lesson
+        names = {concept.name: concept for concept in package.concepts}
+        claim = next(step for step in core.steps if step.id == "true-or-false")
+        named = re.search(r"This describes \*\*(.+)\*\*\.$", claim.statement).group(1)
+        described = re.search(r"^This describes \*\*(.+?)\*\*\.", claim.explain).group(1)
+        assert named in names and described in names and claim.answer == (named == described)
+        answers.add(claim.answer)
+        steps = {step.id: step for step in apply.steps}
+        flow = steps["order"].steps if "order" in steps else steps["flow"].steps
+        before, after = re.findall(r"^- (.+)$", steps["flow-claim"].statement, re.M)
+        assert steps["flow-claim"].answer == (flow.index(before) < flow.index(after))
+        fill, recall = steps["term-fill"], steps["term-recall"]
+        terms = dict(practice._terms(package))
+        assert fill.answer[0] in terms and all(token in terms for token in fill.distractors)
+        assert "`" not in fill.template and "*" not in fill.template
+        term = recall.answers[0]
+        assert terms[term] == recall.context and term != fill.answer[0]
+        assert practice.typed_key(term, False) not in practice.typed_key(recall.context, False)
+        # The review queue can bring the new questions back.
+        items = [f"{topic}|apply|{step_id}" for step_id in ("flow-claim", "term-fill", "term-recall")]
+        assert [step["item"] for step in practice.review(items)] == items
+    assert answers == {True, False}, "both true and false statements are asked"
+
+
+def test_typed_answers_ignore_spacing_but_commands_keep_their_words():
+    assert practice.typed_key("$  kubectl   get rs ", True) == "kubectl get rs"
+    assert practice.typed_key("kubectl get RS", True) != practice.typed_key("kubectl get rs", True)
+    assert practice.typed_key(" Pipe-Fail ", False) == "pipefail"
+    view = practice.lesson(FEATURED, "replicasets")["lesson"]["steps"]
+    typed = next(step for step in view if step["type"] == "type")
+    assert typed["terminal"] and typed["accept"] == [
+        "kubectl get rs",
+        "kubectl get replicasets",
+        "kubectl get replicaset",
+    ]
+    assert typed["answer"] == "kubectl get rs" and typed["output"][0].startswith("NAME")
+    assert text_of(typed["hint"]).startswith("It's a kubectl get command")
+
+
+def test_scenarios_reveal_output_only_through_their_stages_and_hints_are_optional():
+    view = practice.lesson(FEATURED, "rollback")["lesson"]["steps"]
+    scenario = next(step for step in view if step["type"] == "scenario")
+    assert scenario["title"].startswith("Incident") and len(scenario["stages"]) == 3
+    for stage in scenario["stages"]:
+        assert sum(option["correct"] for option in stage["options"]) == 1
+        assert stage["output"][0].startswith("$ kubectl ")
+    assert "hint" not in scenario
+    assert all("hint" not in step for step in practice.lesson(FEATURED, "pods")["lesson"]["steps"])

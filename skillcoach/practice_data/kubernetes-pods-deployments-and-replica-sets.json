@@ -1,7 +1,7 @@
 {
   "topic": "kubernetes/kubernetes-pods-deployments-and-replica-sets",
-  "version": "2026-10-04",
-  "review": "AI-assisted practice written for SkillCoach and checked against the official Kubernetes documentation on 4 Oct 2026. Not independently expert-reviewed.",
+  "version": "2026-10-05",
+  "review": "AI-assisted practice written for SkillCoach and checked against the official Kubernetes documentation on 5 Oct 2026. Not independently expert-reviewed.",
   "references": [
     "https://kubernetes.io/docs/concepts/workloads/pods/",
     "https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/",
@@ -271,6 +271,23 @@
           "explain": "`spec.selector` must match the Pod template's labels, or the API server rejects the Deployment. Here the selector wants `app: web` but the template labels its Pods `app: api`. The selector is also immutable after creation, so choose it carefully."
         },
         {
+          "type": "type",
+          "id": "list-replicasets",
+          "prompt": "List the ReplicaSets in the current namespace. Type the command.",
+          "terminal": true,
+          "answers": [
+            "kubectl get rs",
+            "kubectl get replicasets",
+            "kubectl get replicaset"
+          ],
+          "output": [
+            "NAME             DESIRED   CURRENT   READY   AGE",
+            "web-75675f5897   3         3         3       2d"
+          ],
+          "hint": "It's a `kubectl get` command. ReplicaSets also have a short name.",
+          "explain": "`kubectl get rs` (short for `replicasets`) lists each ReplicaSet with its desired, current and ready Pods. A Deployment's ReplicaSet is named `<deployment>-<pod-template-hash>`."
+        },
+        {
           "type": "explain",
           "id": "how-it-counts",
           "prompt": "In your own words: how does a ReplicaSet decide how many Pods to create or delete?",
@@ -502,6 +519,107 @@
             "Fix the image or probe, then roll out again"
           ],
           "explain": "Confirm, compare, diagnose, restore, then fix. Here the old Pods are still serving, so you can diagnose first. If users were affected, you'd undo first and diagnose afterwards."
+        },
+        {
+          "type": "type",
+          "id": "history-command",
+          "prompt": "Before you undo, list the saved revisions of the Deployment `web`. Type the command.",
+          "terminal": true,
+          "answers": [
+            "kubectl rollout history deployment/web",
+            "kubectl rollout history deploy/web",
+            "kubectl rollout history deployment web",
+            "kubectl rollout history deploy web"
+          ],
+          "output": [
+            "deployment.apps/web",
+            "REVISION  CHANGE-CAUSE",
+            "1         <none>",
+            "2         <none>"
+          ],
+          "hint": "It's a `kubectl rollout` subcommand, like `undo` and `status`.",
+          "explain": "`kubectl rollout history` lists the revisions kept in old ReplicaSets. `kubectl rollout undo --to-revision=1` would pick one of them."
+        },
+        {
+          "type": "scenario",
+          "id": "bad-tag",
+          "title": "Incident: the rollout never finishes",
+          "situation": "You updated the 3-replica Deployment `web` to a new image. Ten minutes later your CI job is still waiting, and nobody has reported errors yet.",
+          "log": [
+            "$ kubectl set image deployment/web web=web:2.0",
+            "deployment.apps/web image updated"
+          ],
+          "stages": [
+            {
+              "prompt": "Where do you look first?",
+              "options": [
+                {
+                  "text": "`kubectl rollout status deployment/web`",
+                  "correct": true,
+                  "why": "It shows whether the rollout is still progressing, and how far it got."
+                },
+                {
+                  "text": "`kubectl delete deployment web`",
+                  "why": "That also deletes the healthy old Pods that are still serving users."
+                },
+                {
+                  "text": "`kubectl scale deployment/web --replicas=6`",
+                  "why": "More copies of a broken template don't help, and scaling doesn't start a new rollout."
+                }
+              ],
+              "output": [
+                "$ kubectl rollout status deployment/web",
+                "Waiting for deployment \"web\" rollout to finish: 1 out of 3 new replicas have been updated..."
+              ]
+            },
+            {
+              "prompt": "`kubectl get pods` shows the new Pod `web-5f7c8d9b6c-7xk2q` at `0/1 ImagePullBackOff`. What next?",
+              "options": [
+                {
+                  "text": "`kubectl describe pod web-5f7c8d9b6c-7xk2q`",
+                  "correct": true,
+                  "why": "Its Events explain why the image can't be pulled."
+                },
+                {
+                  "text": "`kubectl logs web-5f7c8d9b6c-7xk2q`",
+                  "why": "The container never started, so there are no logs to read."
+                },
+                {
+                  "text": "Wait: the Pod will start on its own after a while.",
+                  "why": "The kubelet keeps retrying, but a wrong tag never appears by itself."
+                }
+              ],
+              "output": [
+                "$ kubectl describe pod web-5f7c8d9b6c-7xk2q",
+                "Events:",
+                "  Warning  Failed   2m  kubelet  Failed to pull image \"web:2.0\": not found",
+                "  Normal   BackOff  1m  kubelet  Back-off pulling image \"web:2.0\""
+              ]
+            },
+            {
+              "prompt": "The tag `web:2.0` was never pushed to the registry. The old Pods still serve users. What do you do now?",
+              "options": [
+                {
+                  "text": "`kubectl rollout undo deployment/web`, then push the image and roll out again.",
+                  "correct": true,
+                  "why": "Undo brings back the last good version cleanly; then you ship the fix."
+                },
+                {
+                  "text": "Nothing: Kubernetes rolls back after `progressDeadlineSeconds`.",
+                  "why": "ProgressDeadlineExceeded only reports the problem. Nothing rolls back by itself."
+                },
+                {
+                  "text": "Set `revisionHistoryLimit: 0` to remove the broken ReplicaSet.",
+                  "why": "That removes the old ReplicaSets too, and with them the version you need for undo."
+                }
+              ],
+              "output": [
+                "$ kubectl rollout undo deployment/web",
+                "deployment.apps/web rolled back"
+              ]
+            }
+          ],
+          "explain": "Confirm the rollout is stuck, read the new Pod's events, then undo and fix. The default limits kept the 3 old Pods serving the whole time."
         },
         {
           "type": "explain",

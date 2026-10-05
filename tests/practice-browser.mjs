@@ -103,6 +103,14 @@ async function answer(page, {wrong = false, guess = false, keyboard = false, lab
   } else if (step.type === "spot") {
     const index = wrong ? step.lines.findIndex((line, n) => line.trim() && !step.answers.includes(n)) : step.answers[0];
     await (await page.$$(".spot-line"))[index].click();
+  } else if (step.type === "type") {
+    await page.type("#type-answer", wrong ? "not the answer" : step.answer);
+  } else if (step.type === "scenario") {
+    for (const [n, stage] of step.stages.entries()) {
+      const right = stage.options.find(option => option.correct), miss = stage.options.find(option => !option.correct);
+      if (wrong && n === 0) await clickText(page, ".scenario-stage:last-of-type .option", plain(miss.text));
+      await clickText(page, ".scenario-stage:last-of-type .option", plain(right.text));
+    }
   } else if (step.type === "explain") {
     await page.type("#explain-text", "A synthetic answer typed only for the test.");
     assert.equal(await text(page, "#check"), "Compare with key points");
@@ -371,7 +379,7 @@ try {
       await page.click("#sum-home");
       await page.waitForSelector("#home:not([hidden])");
     }
-    for (const type of ["teach", "choice", "truefalse", "match", "order", "fill", "spot", "explain"]) {
+    for (const type of ["teach", "choice", "truefalse", "match", "order", "fill", "spot", "explain", "type", "scenario"]) {
       assert.ok(types.has(type), "the hand-crafted unit covers " + type);
     }
     const unit = await page.$eval(".unit.active", element => element.querySelector("h3").textContent);
@@ -396,7 +404,7 @@ try {
       if (step.type !== "explain" && step.type !== "teach") await next(page);
       await page.waitForFunction(() => !document.getElementById("summary").hidden || document.querySelector("#stage .step"));
     }
-    assert.ok(["guess", "teach", "choice", "match"].every(kind => derivedShots.has(kind)), [...derivedShots].join());
+    assert.ok(["guess", "teach", "choice", "truefalse", "match"].every(kind => derivedShots.has(kind)), [...derivedShots].join());
     assert.equal(await text(page, "#summary-title"), "Lesson complete");
     assert.match(await page.$eval("#sum-provenance", element => element.textContent), /Built automatically from this topic's course notes/);
     assert.deepEqual(await page.evaluate(() => window.__csp), []);
@@ -434,6 +442,99 @@ try {
     assert.equal(await shown(page, "#player"), false);
     state.failLesson = false;
     state.hostile = false;
+    assert.deepEqual(await page.evaluate(() => window.__csp), []);
+    assert.deepEqual(problems, []);
+    await page.close();
+  }
+
+  // 7. Hints, the simulated terminal and a troubleshooting scenario, in the Rollback lesson.
+  {
+    const {page, problems} = await open(1024, 800, "dark");
+    await page.goto(origin + "/web/practice");
+    await page.waitForSelector("#home:not([hidden])");
+    await page.evaluate((key, topic) => {
+      const lessons = {};
+      for (const id of ["pods", "replicasets", "rolling-updates"]) lessons[`${topic}|${id}`] = {at: "2026-10-01", accuracy: 100};
+      localStorage.setItem(key, JSON.stringify({v: 1, xp: {total: 0, day: "", today: 0}, streak: {count: 0, last: ""},
+                                                lessons, items: {}, module: ""}));
+    }, STORE_KEY, FEATURED);
+    await page.reload();
+    await page.waitForSelector("#home:not([hidden])");
+    await page.click("#continue");
+    await page.waitForSelector("#player:not([hidden]) .step");
+    assert.deepEqual(state.lessonBodies.at(-1), {topic: FEATURED, lesson: "rollback"});
+    let hintedChoice = null, typedWrong = false, typedRight = false, scenarioWrong = false, scenarioRight = false;
+    while (!(await shown(page, "#summary"))) {
+      const id = await item(page), step = stepOf(id);
+      if (step.pretest) {
+        assert.equal(await shown(page, "#hint"), false, "no hint on a guess before teaching");
+        await answer(page);
+        await next(page);
+      } else if (step.type === "choice" && !hintedChoice && step.options.length >= 3) {
+        hintedChoice = id;
+        await page.click("#hint");
+        assert.equal(await page.$eval("#hint", element => element.disabled), true, "one hint per question");
+        assert.equal(await page.$$eval("#stage .option.is-out", nodes => nodes.length), 1);
+        assert.equal(await text(page, ".hint-box"), "Hint: One wrong answer is crossed out.");
+        assert.equal(await page.$eval("#stage .option.is-out", element => element.disabled), true);
+        await answer(page);
+        assert.equal(await text(page, "#feedback-title"), "Correct, with a hint");
+        assert.match(await text(page, "#feedback-body"), /come back tomorrow/);
+        await next(page);
+      } else if (step.type === "type" && !typedWrong) {
+        typedWrong = true;
+        assert.equal(await text(page, "#check"), "Run");
+        await page.click("#hint");
+        assert.match(await text(page, ".hint-box"), /kubectl rollout subcommand/);
+        await page.type("#type-answer", "kubectl get pods");
+        await page.keyboard.press("Enter");
+        await page.waitForSelector("#feedback:not([hidden])");
+        assert.equal(await text(page, "#feedback-title"), "Not quite");
+        assert.match(await text(page, "#feedback-body"), /Answer: kubectl rollout history deployment\/web/);
+        assert.equal(await page.$$eval(".terminal-live .term-line", lines => lines.length), 0, "no output for a wrong command");
+        await snap(page, "practice-terminal-wrong-desktop-dark");
+        await next(page);
+      } else if (step.type === "type") {
+        typedRight = true;
+        assert.equal(await text(page, ".step-flag"), "Let's fix this one");
+        // Spaces and a pasted "$ " prompt don't matter; the command's words do.
+        await page.type("#type-answer", "$ kubectl   rollout history deploy/web ");
+        await page.keyboard.press("Enter");
+        await page.waitForSelector("#feedback:not([hidden])");
+        assert.equal(await page.$eval("#feedback", element => element.className), "feedback good");
+        assert.deepEqual(await page.$$eval(".terminal-live .term-line", lines => lines.map(line => line.textContent)), step.output);
+        await snap(page, "practice-terminal-desktop-dark");
+        await next(page);
+      } else if (step.type === "scenario" && !scenarioWrong) {
+        scenarioWrong = true;
+        assert.equal(await shown(page, "#hint"), false);
+        assert.equal(await page.$$eval(".scenario-stage", nodes => nodes.length), 1, "later steps stay hidden");
+        await answer(page, {wrong: true});
+        assert.equal(await page.$$eval(".scenario-stage", nodes => nodes.length), step.stages.length);
+        assert.equal(await page.$$eval(".scenario-stage .terminal", nodes => nodes.length), step.stages.length);
+        assert.equal(await text(page, "#feedback-title"), "Not quite");
+        assert.match(await text(page, "#feedback-body"), /Solved, with 1 wrong turn on the way/);
+        await snap(page, "practice-scenario-desktop-dark");
+        await next(page);
+      } else if (step.type === "scenario") {
+        scenarioRight = true;
+        await answer(page);
+        assert.match(await text(page, "#feedback-body"), /Solved with no wrong turns/);
+        await next(page);
+      } else {
+        await answer(page);
+        if (step.type !== "teach" && step.type !== "explain") await next(page);
+      }
+      await noOverflow(page, "desktop dark " + step.type);
+      await page.waitForFunction(() => !document.getElementById("summary").hidden || document.querySelector("#stage .step"));
+    }
+    assert.ok(hintedChoice && typedWrong && typedRight && scenarioWrong && scenarioRight);
+    const saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)), STORE_KEY);
+    // A hinted answer is right but not yet known: no mistake, and it returns tomorrow (box 1).
+    assert.deepEqual([saved.items[hintedChoice].b, saved.items[hintedChoice].w], [1, 0]);
+    assert.equal(saved.items[`${FEATURED}|rollback|history-command`].w, 1);
+    assert.equal(saved.items[`${FEATURED}|rollback|bad-tag`].w, 1);
+    assert.equal(JSON.stringify(saved).includes("kubectl get pods"), false, "typed answers are not stored");
     assert.deepEqual(await page.evaluate(() => window.__csp), []);
     assert.deepEqual(problems, []);
     await page.close();

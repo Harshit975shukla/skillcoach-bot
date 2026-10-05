@@ -9,6 +9,7 @@ Every step carries a stable item ID (topic|lesson|step) so spaced reviews can fe
 Text fields use the lesson Markdown subset and are sent as typed spans/blocks, never as HTML."""
 
 import re
+import zlib
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
@@ -31,6 +32,8 @@ Label = Annotated[str, Field(min_length=1, max_length=80)]
 Line = Annotated[str, Field(min_length=1, max_length=600)]
 Para = Annotated[str, Field(min_length=1, max_length=2000)]
 Token = Annotated[str, Field(min_length=1, max_length=40)]
+Hint = Annotated[str, Field(max_length=300)]
+Console = Annotated[str, Field(max_length=160)]
 
 
 # Visuals: small diagrams drawn by the browser from data (dual coding), each with a text caption that
@@ -95,6 +98,7 @@ class Choice(Model):
     options: list[Option] = Field(min_length=2, max_length=4)
     explain: Para
     pretest: bool = False
+    hint: Hint = ""
 
     @model_validator(mode="after")
     def one_answer(self):
@@ -111,6 +115,7 @@ class TrueFalse(Model):
     statement: Para
     answer: bool
     explain: Para
+    hint: Hint = ""
 
 
 class Match(Model):
@@ -134,6 +139,7 @@ class Order(Model):
     prompt: Line
     steps: list[Line] = Field(min_length=3, max_length=6)
     explain: Para
+    hint: Hint = ""
 
     @model_validator(mode="after")
     def distinct(self):
@@ -153,6 +159,7 @@ class Fill(Model):
     answer: list[Token] = Field(min_length=1, max_length=3)
     distractors: list[Token] = Field(min_length=1, max_length=5)
     explain: Para
+    hint: Hint = ""
 
     @model_validator(mode="after")
     def blanks(self):
@@ -174,6 +181,7 @@ class Spot(Model):
     lines: list[Annotated[str, Field(max_length=120)]] = Field(min_length=3, max_length=24)
     answers: list[Annotated[int, Field(ge=0)]] = Field(min_length=1, max_length=3)
     explain: Para
+    hint: Hint = ""
 
     @model_validator(mode="after")
     def in_range(self):
@@ -193,10 +201,65 @@ class Explain(Model):
     model: Annotated[str, Field(max_length=2000)] = ""
 
 
+def typed_key(text: str, terminal: bool) -> str:
+    """How typed answers are compared (practice.js mirrors this): commands keep case and symbols but
+    not extra spaces or a leading "$ "; terms ignore case, spaces and punctuation."""
+    if terminal:
+        return " ".join(re.sub(r"^\$\s*", "", text.strip()).split())
+    return re.sub(r"[^0-9a-z]", "", text.casefold())
+
+
+class Type(Model):
+    """Recall by typing (no word bank): a term, or a command run in a small simulated terminal that
+    prints its output once answered. Any of the accepted answers counts."""
+
+    type: Literal["type"]
+    id: Slug
+    prompt: Para
+    context: Annotated[str, Field(max_length=2000)] = ""
+    terminal: bool = False
+    answers: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(min_length=1, max_length=6)
+    output: list[Console] = Field(default_factory=list, max_length=12)
+    explain: Para
+    hint: Hint = ""
+
+    @model_validator(mode="after")
+    def answerable(self):
+        keys = [typed_key(answer, self.terminal) for answer in self.answers]
+        if not all(keys) or len(set(keys)) != len(keys):
+            raise ValueError("Typed answers must be non-empty and differ after normalising")
+        return self
+
+
+class Stage(Model):
+    prompt: Para
+    options: list[Option] = Field(min_length=2, max_length=4)
+    output: list[Console] = Field(default_factory=list, max_length=12)
+
+    @model_validator(mode="after")
+    def one_answer(self):
+        if sum(option.correct for option in self.options) != 1:
+            raise ValueError("A scenario stage needs exactly one correct option")
+        return self
+
+
+class Scenario(Model):
+    """A short troubleshooting case: each right decision reveals what you would see next."""
+
+    type: Literal["scenario"]
+    id: Slug
+    title: Label
+    situation: Para
+    log: list[Console] = Field(default_factory=list, max_length=12)
+    stages: list[Stage] = Field(min_length=2, max_length=4)
+    explain: Para
+
+
 Step = Annotated[
-    Teach | Choice | TrueFalse | Match | Order | Fill | Spot | Explain, Field(discriminator="type")
+    Teach | Choice | TrueFalse | Match | Order | Fill | Spot | Explain | Type | Scenario,
+    Field(discriminator="type"),
 ]
-CHECKED = ("choice", "truefalse", "match", "order", "fill", "spot", "explain")
+CHECKED = ("choice", "truefalse", "match", "order", "fill", "spot", "explain", "type", "scenario")
 
 
 class Lesson(Model):
@@ -313,6 +376,91 @@ def _identify(concepts, index: int, step_id: str) -> Choice:
     )
 
 
+def _concept_claim(concepts, seed: int) -> TrueFalse:
+    """True or false: does this description belong to the named idea? The seed (stable per topic)
+    decides which idea is named and whether the description is its own."""
+    named = seed % len(concepts)
+    truth = (seed >> 3) % 2 == 0
+    described = named if truth else (named + 1 + (seed >> 5) % (len(concepts) - 1)) % len(concepts)
+    explain = f"This describes **{concepts[described].name}**."
+    if not truth:
+        explain += f"\n\n**{concepts[named].name}** is about this: {_gist(concepts[named].body, 240)}"
+    return TrueFalse(
+        type="truefalse",
+        id="true-or-false",
+        statement=f"{_gist(concepts[described].body)}\n\nThis describes **{concepts[named].name}**.",
+        answer=truth,
+        explain=explain,
+    )
+
+
+def _flow_claim(flow, seed: int) -> TrueFalse:
+    """True or false: one step of the end-to-end flow happens before another."""
+    gap = 2 if len(flow) >= 4 else 1
+    first = seed % (len(flow) - gap)
+    later = first + gap + (seed >> 4) % (len(flow) - first - gap)
+    truth = (seed >> 7) % 2 == 0
+    before, after = (flow[first], flow[later]) if truth else (flow[later], flow[first])
+    return TrueFalse(
+        type="truefalse",
+        id="flow-claim",
+        statement=f"In the end-to-end flow, this step:\n\n- {before}\n\nhappens **before** this one:\n\n- {after}",
+        answer=truth,
+        explain=f"Step {first + 1} of the flow is: {flow[first]}\n\nStep {later + 1} is: {flow[later]}",
+    )
+
+
+def _terms(lesson) -> list[tuple[str, str]]:
+    pairs = [pair for pair in (_term(text) for text in lesson.key_terms) if pair]
+    # A definition that names its own term would give the answer away.
+    return [
+        pair
+        for pair in dict((pair[0].casefold(), pair) for pair in pairs).values()
+        if pair[0].casefold() not in pair[1].casefold()
+    ]
+
+
+def _term_fill(terms, seed: int) -> Fill | None:
+    bank = [pair for pair in terms if len(pair[0]) <= 40 and len(pair[1]) <= 500]
+    if len(bank) < 3:
+        return None
+    term, definition = bank[seed % len(bank)]
+    others = [pair[0] for pair in bank if pair[0] != term][:3]
+    return Fill(
+        type="fill",
+        id="term-fill",
+        prompt="Which term completes this definition?",
+        template="___: " + re.sub(r"[`*]", "", definition),
+        answer=[term],
+        distractors=others,
+        explain=f"**{term}**: {definition}",
+    )
+
+
+def _term_recall(terms, seed: int, skip: str) -> Type | None:
+    """Typing the term from its meaning: recall without options, which is harder and sticks better."""
+    typable = [
+        pair
+        for pair in terms
+        if pair[0] != skip
+        and len(pair[0]) <= 30
+        and len(pair[0].split()) <= 3
+        and not any(char in pair[0] for char in "/,()`*")
+        and typed_key(pair[0], False)
+    ]
+    if not typable:
+        return None
+    term, definition = typable[(seed >> 2) % len(typable)]
+    return Type(
+        type="type",
+        id="term-recall",
+        prompt="Type the term that means this.",
+        context=definition,
+        answers=[term],
+        explain=f"**{term}**: {definition}",
+    )
+
+
 @lru_cache(maxsize=256)
 def _derived(topic: str) -> tuple[Lesson, ...]:
     package = get_package(topic)
@@ -357,6 +505,8 @@ def _derived(topic: str) -> tuple[Lesson, ...]:
     # Checked in reverse order, so the newest idea is not always asked first.
     for number in reversed(range(2, len(concepts))):
         core.append(_identify(concepts, number, f"check-{number + 1}"))
+    seed = zlib.crc32(topic.encode())
+    core.append(_concept_claim(concepts, seed))
     pairs = [pair for pair in (_term(text) for text in lesson.key_terms) if pair]
     unique = list({pair[0]: pair for pair in pairs}.values())
     if len(unique) >= 3 and len({pair[1] for pair in unique[:5]}) == len(unique[:5]):
@@ -382,7 +532,17 @@ def _derived(topic: str) -> tuple[Lesson, ...]:
                 + "\n".join(f"{i}. {step}" for i, step in enumerate(flow, 1)),
             )
         )
+    terms = _terms(lesson)
+    fill = _term_fill(terms, seed)
+    if fill:
+        apply.append(fill)
     apply.append(_identify(concepts, len(concepts) - 1, f"recall-{len(concepts)}"))
+    if len(flow) >= 3:
+        # Asked a little after the ordering question, so it tests memory rather than the screen.
+        apply.append(_flow_claim(flow, seed))
+    recall = _term_recall(terms, seed, fill.answer[0] if fill else "")
+    if recall:
+        apply.append(recall)
     if lesson.interview_question and len(lesson.interview_points) >= 2:
         apply.append(
             Explain(
@@ -498,6 +658,36 @@ def step_view(topic: str, lesson_id: str, step) -> dict:
             points=[spans(point) for point in step.points],
             model=_blocks(step.model),
         )
+    elif isinstance(step, Type):
+        view.update(
+            prompt=_blocks(step.prompt),
+            context=_blocks(step.context),
+            terminal=step.terminal,
+            answer=step.answers[0],
+            accept=[typed_key(answer, step.terminal) for answer in step.answers],
+            output=step.output,
+            explain=_blocks(step.explain),
+        )
+    elif isinstance(step, Scenario):
+        view.update(
+            title=step.title,
+            situation=_blocks(step.situation),
+            log=step.log,
+            stages=[
+                {
+                    "prompt": _blocks(stage.prompt),
+                    "options": [
+                        {"text": spans(option.text), "correct": option.correct, "why": spans(option.why)}
+                        for option in stage.options
+                    ],
+                    "output": stage.output,
+                }
+                for stage in step.stages
+            ],
+            explain=_blocks(step.explain),
+        )
+    if getattr(step, "hint", ""):
+        view["hint"] = spans(step.hint)
     return view
 
 

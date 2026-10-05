@@ -453,7 +453,7 @@
   });
 
   // Lesson player -------------------------------------------------------------------------------------
-  let session = null, current = null, guessing = false, feedbackOpen = false, opening = false;
+  let session = null, current = null, guessing = false, hinted = false, feedbackOpen = false, opening = false;
 
   async function startLesson(topicId, lessonId, trigger) {
     if (opening) return;
@@ -536,6 +536,7 @@
     const entry = session.queue[session.index], step = entry.step;
     feedbackOpen = false;
     guessing = false;
+    hinted = false;
     $("feedback").hidden = true;
     $("guess").setAttribute("aria-pressed", "false");
     const wrap = el("article", "step step-" + step.type);
@@ -546,6 +547,8 @@
     current = RENDER[step.type](wrap, step);
     $("stage").replaceChildren(wrap);
     $("guess").hidden = !(GUESSABLE.has(step.type) && !step.pretest);
+    $("hint").hidden = !(current.hint && !step.pretest);
+    $("hint").disabled = false;
     $("check").textContent = current.label || "Check";
     $("check").disabled = current.mode === "check" ? !current.ready() : false;
     $("check").className = "chunky primary";
@@ -585,7 +588,9 @@
     }
     if (!current.ready()) return;
     const result = current.evaluate();
+    result.hinted = hinted && result.correct;
     result.guessed = guessing && result.correct;
+    $("hint").disabled = true;
     record(entry, result);
     feedback(entry, result);
   }
@@ -593,8 +598,9 @@
     const step = entry.step;
     if (step.pretest) { session.resolved.add(step.item); return; }
     if (!session.first.has(step.item)) {
-      session.first.set(step.item, result.correct ? (result.guessed ? "guessed" : "correct") : "wrong");
-      if (result.correct) session.xp += 2;
+      // An answer found by guessing or with a hint is not yet known, so it comes back tomorrow.
+      session.first.set(step.item, result.correct ? (result.guessed || result.hinted ? "guessed" : "correct") : "wrong");
+      if (result.correct) session.xp += result.hinted ? 1 : 2;
     } else if (result.correct) session.xp += 1;
     if (result.correct || entry.repeats >= MAX_REPEATS) session.resolved.add(step.item);
     else session.queue.push({step, repeats: entry.repeats + 1});
@@ -605,11 +611,13 @@
     box.className = "feedback " + (pretest ? "neutral" : result.correct ? "good" : "bad");
     $("feedback-title").textContent = pretest
       ? (result.correct ? "Good guess" : "Now you know")
-      : result.correct ? (result.guessed ? "Correct, but you guessed" : PRAISE[Math.floor(Math.random() * PRAISE.length)])
+      : result.correct ? (result.guessed ? "Correct, but you guessed" : result.hinted ? "Correct, with a hint"
+        : PRAISE[Math.floor(Math.random() * PRAISE.length)])
         : "Not quite";
     const body = $("feedback-body");
     body.replaceChildren(...result.body);
     if (result.guessed) body.append(el("p", "feedback-note", "Guessed answers come back tomorrow, so you can lock them in."));
+    else if (result.hinted) body.append(el("p", "feedback-note", "Answers found with a hint come back tomorrow, so you can recall them on your own."));
     if (!result.correct && !pretest) {
       body.append(el("p", "feedback-note", entry.repeats < MAX_REPEATS
         ? "You'll see this one again at the end of the lesson." : "It comes back in tomorrow's review."));
@@ -640,6 +648,19 @@
     guessing = !guessing;
     $("guess").setAttribute("aria-pressed", String(guessing));
   });
+  $("hint").addEventListener("click", () => {
+    if (!session || feedbackOpen || hinted || !current || !current.hint) return;
+    hinted = true;
+    $("hint").disabled = true;
+    const wrap = $("stage").querySelector(".step"), box = el("p", "hint-box");
+    box.setAttribute("role", "status");
+    box.append(el("strong", "", "Hint: "));
+    const step = session.queue[session.index].step;
+    if (step.hint) inline(box, step.hint);
+    else current.hint(box);
+    wrap.querySelector(".step-heading").after(box);
+  });
+  const hintText = (box, text) => box.append(document.createTextNode(text));
   function answerLine(label, spans) {
     const line = el("p", "answer-line");
     line.append(el("strong", "", label + " "));
@@ -678,7 +699,19 @@
         return choice;
       });
       wrap.append(group);
-      return {mode: "check", keys: buttons, ready: () => chosen !== null, evaluate() {
+      // The automatic hint crosses out one wrong answer (when at least two wrong ones are offered).
+      const crossOut = box => {
+        const wrong = buttons.filter((choice, n) => !options[n].correct);
+        const out = wrong[Math.floor(Math.random() * wrong.length)], index = buttons.indexOf(out);
+        out.disabled = true;
+        out.classList.add("is-out");
+        out.setAttribute("aria-pressed", "false");
+        out.setAttribute("aria-label", out.textContent + ", ruled out");
+        if (chosen === options[index]) { chosen = null; changed(); }
+        hintText(box, "One wrong answer is crossed out.");
+      };
+      const hint = step.hint ? true : options.length >= 3 ? crossOut : null;
+      return {mode: "check", keys: buttons, hint, ready: () => chosen !== null, evaluate() {
         const right = options.find(option => option.correct);
         buttons.forEach((choice, n) => {
           choice.disabled = true;
@@ -712,7 +745,7 @@
         return choice;
       });
       wrap.append(group);
-      return {mode: "check", keys: buttons, ready: () => chosen !== null, evaluate() {
+      return {mode: "check", keys: buttons, hint: Boolean(step.hint), ready: () => chosen !== null, evaluate() {
         const correct = chosen === step.answer;
         buttons.forEach((choice, n) => {
           choice.disabled = true;
@@ -823,7 +856,8 @@
         bank.append(node);
       }
       wrap.append(answer, hint, bank);
-      return {mode: "check", ready: () => placed.length === step.steps.length, evaluate() {
+      const clue = box => { hintText(box, "The first step is: "); inline(box, step.steps[0]); };
+      return {mode: "check", hint: clue, ready: () => placed.length === step.steps.length, evaluate() {
         const correct = placed.every((item, n) => item.i === n);
         placed.forEach((item, n) => {
           item.slot.classList.add(item.i === n ? "is-correct" : "is-wrong");
@@ -876,7 +910,8 @@
         bank.append(chip);
       }
       wrap.append(line, bank);
-      return {mode: "check", ready: () => blanks.every(b => b.token), evaluate() {
+      const hint = box => hintText(box, `The ${blanks.length > 1 ? "first blank" : "answer"} starts with “${step.answer[0][0]}”.`);
+      return {mode: "check", hint, ready: () => blanks.every(b => b.token), evaluate() {
         const correct = blanks.every((b, n) => b.textContent === step.answer[n]);
         blanks.forEach((b, n) => {
           b.disabled = true;
@@ -912,7 +947,7 @@
         return line;
       });
       wrap.append(listing);
-      return {mode: "check", ready: () => chosen !== null, evaluate() {
+      return {mode: "check", hint: Boolean(step.hint), ready: () => chosen !== null, evaluate() {
         const correct = step.answers.includes(chosen);
         lines.forEach((line, n) => {
           line.disabled = true;
@@ -969,7 +1004,138 @@
       }};
       return controller;
     },
+    type(wrap, step) {
+      heading(wrap, step.prompt);
+      if (step.context && step.context.length) wrap.append(blocks(el("div", "context prose"), step.context));
+      const input = el("input", "type-input");
+      input.type = "text";
+      input.id = "type-answer";
+      input.maxLength = 200;
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.setAttribute("autocapitalize", "off");
+      input.setAttribute("autocorrect", "off");
+      let screen = null;
+      if (step.terminal) {
+        screen = terminal([]);
+        screen.classList.add("terminal-live");
+        const row = el("label", "term-input-row");
+        row.htmlFor = input.id;
+        row.append(el("span", "term-prompt", "$"));
+        input.setAttribute("aria-label", "Command");
+        input.classList.add("term-input");
+        screen.append(row);
+        row.append(input);
+        wrap.append(screen);
+      } else {
+        const label = el("label", "explain-label", "Your answer");
+        label.htmlFor = input.id;
+        wrap.append(label, input);
+      }
+      input.addEventListener("input", changed);
+      input.addEventListener("keydown", event => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        if (feedbackOpen) proceed();
+        else if (!$("check").disabled) primary();
+      });
+      setTimeout(() => { if (input.isConnected) input.focus({preventScroll: true}); }, 0);
+      const hint = box => {
+        if (step.terminal) {
+          const words = step.answer.split(/\s+/);
+          hintText(box, "It starts with ");
+          box.append(el("code", "", words.slice(0, Math.min(2, words.length - 1) || 1).join(" ")), document.createTextNode("."));
+        } else {
+          const letters = step.answer.replace(/\s+/g, "").length;
+          hintText(box, `It starts with “${step.answer[0]}” and has ${plural(letters, "character")}.`);
+        }
+      };
+      return {mode: "check", label: step.terminal ? "Run" : "Check", hint, ready: () => input.value.trim() !== "", evaluate() {
+        const correct = step.accept.includes(typedKey(input.value, step.terminal));
+        input.readOnly = true;
+        input.classList.add(correct ? "is-correct" : "is-wrong");
+        if (screen && correct) {
+          for (const line of step.output) screen.append(el("div", "term-line", line));
+        }
+        const body = [];
+        if (!correct) {
+          const answer = el("p", "answer-line");
+          answer.append(el("strong", "", "Answer: "), el(step.terminal ? "code" : "span", "", step.answer));
+          body.push(answer);
+        }
+        return {correct, body, explain: step.explain};
+      }};
+    },
+    scenario(wrap, step) {
+      heading(wrap, step.title);
+      wrap.append(blocks(el("div", "prose scenario-situation"), step.situation));
+      if (step.log.length) wrap.append(terminal(step.log));
+      const controller = {mode: "check", label: "Finish", keys: [], done: 0, mistakes: 0,
+        ready: () => controller.done === step.stages.length,
+        evaluate() {
+          const correct = controller.mistakes === 0;
+          return {correct, body: [el("p", "why", correct ? "Solved with no wrong turns."
+            : `Solved, with ${plural(controller.mistakes, "wrong turn")} on the way.`)], explain: step.explain};
+        }};
+      const stage = index => {
+        const data = step.stages[index], box = el("section", "scenario-stage");
+        const title = el("h2", "stage-title", `Step ${index + 1} of ${step.stages.length}`);
+        title.tabIndex = -1;
+        box.append(title, blocks(el("div", "prose stage-prompt"), data.prompt));
+        const group = el("div", "options"), note = el("p", "why stage-why");
+        group.setAttribute("role", "group");
+        group.setAttribute("aria-label", "Choices");
+        note.setAttribute("aria-live", "polite");
+        const options = shuffle(data.options);
+        const buttons = options.map((option, n) => {
+          const choice = button("option");
+          const key = el("span", "key", n + 1);
+          key.setAttribute("aria-hidden", "true");
+          choice.append(key, inline(el("span", "option-text"), option.text));
+          choice.addEventListener("click", () => {
+            note.replaceChildren();
+            inline(note, option.why);
+            choice.disabled = true;
+            if (!option.correct) {
+              controller.mistakes += 1;
+              choice.classList.add("is-wrong");
+              return;
+            }
+            choice.classList.add("is-correct");
+            for (const other of buttons) other.disabled = true;
+            if (data.output.length) box.append(terminal(data.output));
+            controller.done += 1;
+            changed();
+            if (index + 1 < step.stages.length) stage(index + 1);
+            else { controller.keys = []; $("check").focus(); }
+          });
+          group.append(choice);
+          return choice;
+        });
+        box.append(group, note);
+        controller.keys = buttons;
+        wrap.append(box);
+        if (index) {
+          title.focus({preventScroll: true});
+          group.scrollIntoView({block: "nearest", behavior: motionOK() ? "smooth" : "auto"});
+        }
+      };
+      stage(0);
+      return controller;
+    },
   };
+  function typedKey(text, command) {
+    if (command) return text.trim().replace(/^\$\s*/, "").split(/\s+/).filter(Boolean).join(" ");
+    return text.toLowerCase().replace(/[^0-9a-z]/g, "");
+  }
+  // A read-only console: lines starting with "$ " are commands, the rest is output.
+  function terminal(lines) {
+    const screen = el("div", "terminal");
+    screen.setAttribute("role", "group");
+    screen.setAttribute("aria-label", "Terminal");
+    for (const line of lines) screen.append(el("div", "term-line" + (line.startsWith("$ ") ? " term-cmd" : ""), line));
+    return screen;
+  }
 
   // Diagrams drawn from lesson data; the caption is the text alternative.
   function visual(data) {
