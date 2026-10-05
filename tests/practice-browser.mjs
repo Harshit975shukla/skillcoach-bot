@@ -29,6 +29,8 @@ async function open(width, height, scheme = "light") {
         && !message.text().startsWith("Failed to load resource")
         && !message.text().startsWith("Manifest:")) problems.push("console: " + message.text());
   });
+  // PRACTICE_CPU_THROTTLE=4 (for example) slows the page like a busy CI runner, to shake out timing bugs.
+  if (process.env.PRACTICE_CPU_THROTTLE) await page.emulateCPUThrottling(Number(process.env.PRACTICE_CPU_THROTTLE));
   await page.setViewport({width, height, deviceScaleFactor: 1});
   await page.emulateMediaFeatures([{name: "prefers-reduced-motion", value: "reduce"},
                                    {name: "prefers-color-scheme", value: scheme}]);

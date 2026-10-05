@@ -241,6 +241,12 @@
     $("summary").hidden = name !== "summary";
     $("stats").hidden = name !== "home";
     document.body.classList.toggle("in-lesson", name === "player");
+    if (name !== "player") document.documentElement.style.removeProperty("scroll-padding-bottom");
+  }
+  // The sticky answer bar covers the bottom of the screen; scrolling must keep answers above it.
+  function padForBar() {
+    const bar = $("player").querySelector(".player-bar");
+    document.documentElement.style.setProperty("scroll-padding-bottom", `${bar.offsetHeight + 12}px`);
   }
   function pathNote(text) { $("path-note").textContent = text; }
   function signedOut(text) {
@@ -549,6 +555,7 @@
     $("guess").hidden = !(GUESSABLE.has(step.type) && !step.pretest);
     $("hint").hidden = !(current.hint && !step.pretest);
     $("hint").disabled = false;
+    padForBar();
     $("check").textContent = current.label || "Check";
     $("check").disabled = current.mode === "check" ? !current.ready() : false;
     $("check").className = "chunky primary";
