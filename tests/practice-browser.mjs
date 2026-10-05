@@ -53,7 +53,18 @@ async function clickText(page, selector, wanted) {
   for (const handle of handles) {
     const value = await handle.evaluate(element => element.hidden || element.disabled ? null
       : (element.querySelector(".option-text") || element).textContent.replace(/\s+/g, " ").trim());
-    if (value === wanted.replace(/\s+/g, " ").trim()) { await handle.click(); return; }
+    if (value === wanted.replace(/\s+/g, " ").trim()) {
+      // Tap it in the middle of the screen, and prove nothing (such as the sticky bar) covers it.
+      const cover = await handle.evaluate(element => {
+        element.scrollIntoView({block: "center"});
+        const box = element.getBoundingClientRect();
+        const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return top && (top === element || element.contains(top)) ? null : (top ? top.outerHTML.slice(0, 120) : "nothing");
+      });
+      assert.equal(cover, null, `"${wanted}" is covered`);
+      await handle.click();
+      return;
+    }
   }
   throw new Error(`No ${selector} reads "${wanted}"`);
 }
