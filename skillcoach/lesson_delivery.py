@@ -1,7 +1,8 @@
 """Compact lesson delivery, the full-reference view and controlled lesson feedback.
 
-A lesson arrives as a short mission, one architecture video, the required exercises and a closing
-interview prompt. The complete reference stays one tap away in chat and on the private lesson page.
+A lesson arrives as a short mission that opens in simple words (see plain_language), one architecture
+video, the required exercises and a closing interview prompt. The complete technical reference stays
+one tap away in chat and on the private lesson page.
 """
 
 import re
@@ -80,7 +81,9 @@ def review_note(lesson) -> str:
     return "Reviewed lesson · " + lesson.reviewed_at
 
 
-def mission(lesson, day, guide=None, reading=None, session=None, plan=None) -> str:
+def mission(lesson, day, guide=None, reading=None, session=None, plan=None, plain=None) -> str:
+    from skillcoach.plain_language import CHAT_NOTE, markdown
+
     lines = [f"**📘 {lesson.title}**", day.strftime("%A %d %b %Y")]
     if plan is not None and guide is not None:
         practice = plan.minutes - reading
@@ -88,7 +91,9 @@ def mission(lesson, day, guide=None, reading=None, session=None, plan=None) -> s
     if session is not None:
         lines.append(f"**Today's goal:** {session.objective}")
     lines.append("")
-    if guide is not None:
+    if plain is not None:
+        lines.append(markdown(plain))
+    elif guide is not None:
         lines.append(guide.explanation)
     else:
         lines += [f"**Why it matters**\n{lesson.why}", "", f"**What it is**\n{lesson.what}", ""]
@@ -98,7 +103,9 @@ def mission(lesson, day, guide=None, reading=None, session=None, plan=None) -> s
         "**Cost and safety** (read before you start)\n" + lesson.safety,
         "",
         review_note(lesson),
-        "The full lesson has all four concepts, the end-to-end flow and references.",
+        CHAT_NOTE
+        if plain is not None
+        else "The full lesson has all four concepts, the end-to-end flow and references.",
     ]
     return "\n".join(lines)
 
@@ -238,6 +245,7 @@ def reference_sections(lesson):
 
 
 def page(repo, state, ident, now):
+    from skillcoach.plain_language import page_section
     from skillcoach.resources import related_view
 
     key, record = find_lesson(state, ident)
@@ -255,6 +263,9 @@ def page(repo, state, ident, now):
             "resources": related_view(record.get("topic", "")) if record.get("topic") else [],
         }
     sections, notes = reference_sections(lesson)
+    simple = page_section(record.get("plain"))
+    if simple is not None:
+        sections = [simple, *sections]
     extension = extension_tasks(lesson, tasks)
     return {
         "id": ident,

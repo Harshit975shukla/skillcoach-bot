@@ -1,10 +1,11 @@
 import json
+import logging
 from datetime import date, timedelta
 from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import Field
 
-from skillcoach.clients import Budget, WorkDeferred, chunks
+from skillcoach.clients import Budget, ExternalError, WorkDeferred, chunks
 from skillcoach.commands import COMMANDS, help_text
 from skillcoach.export import public_export, skill_summary, stats
 from skillcoach.models import (
@@ -29,6 +30,8 @@ from skillcoach.models import (
     WeekPlan,
 )
 from skillcoach.timeutil import IST, monday, week_key
+
+log = logging.getLogger(__name__)
 
 
 class CoachingText(Model):
@@ -524,6 +527,7 @@ class Service:
 
             raise ExternalError("interactive_flow_in_progress")
         count = 5 if kind == "daily" else 10
+        scenarios = 2 if count == 5 else 4
 
         def exact(result):
             if len(result.questions) != count:
@@ -535,11 +539,15 @@ class Service:
             "assessment",
             f"Create EXACTLY {count} distinct multiple-choice questions for a {kind} assessment. "
             f"Topic(s): {topic}. Include correct answers and explanatory feedback. "
-            "Questions must be unambiguous with exactly one correct option. Mix styles: include at least "
-            "one realistic scenario or troubleshooting question, and where the topic has commands or "
-            "configuration, one question about what a command or config does or outputs. Test "
-            "understanding and application, not trivia. Explanations say why the answer is right and "
-            "why the most tempting wrong option is wrong. "
+            "Questions must be unambiguous with exactly one correct option. Lessons are taught in simple "
+            "words, but questions keep the learner's real level: write questions and options in clear, "
+            "simple English (short sentences, no unexplained jargon beyond the topic's own terms) and let "
+            "the difficulty come from reasoning, never from tricky wording. Mix styles: include at least "
+            f"{scenarios} realistic scenario or troubleshooting questions that apply the idea to a "
+            "situation, and where the topic has commands or configuration, one question about what a "
+            "command or config does or outputs. Make the last question the hardest. Test understanding "
+            "and application, not trivia. Explanations use plain words: why the answer is right and why "
+            "the most tempting wrong option is wrong. "
             "Use the learner's level and recent errors:\n" + self.context(),
             Questions,
             exact,
@@ -1021,7 +1029,10 @@ class Service:
                     "stating any cost; key terms; safety and cost notes; cleanup; 1-5 official vendor "
                     "documentation URLs. interview_question: one realistic scenario question an interviewer "
                     "would ask about this exact topic (not a template); interview_points: 3-5 points a strong "
-                    "answer covers. Use Markdown only as `code`, **bold**, '- ' bullets and ``` fences; no "
+                    "answer covers. Write why, what and the concepts in plain, simple English a newcomer can "
+                    "follow: short sentences, and explain each technical term the first time it appears, while "
+                    "keeping the technical detail and exact names in `code`. "
+                    "Use Markdown only as `code`, **bold**, '- ' bullets and ``` fences; no "
                     "tables or headings. Do not invent numbers, prices or limits; say to check current docs "
                     "when unsure. GitHub Actions examples must use current majors ("
                     + CURRENT_ACTIONS
@@ -1042,34 +1053,25 @@ class Service:
 
             guide, reading = build_session(self, lesson, session, study_plan, topic, package=package)
             tasks = guide.tasks
-        self.say(
-            delivery.mission(lesson, day, guide, reading, session, study_plan),
-            md=True,
-            buttons=delivery.open_buttons(self.config.private_dashboard_url, ident),
-        )
         if package:
-            self.messages.append(
-                {
-                    "kind": "media",
-                    "mode": self.state.media,
-                    "voice": self.state.voice and self.config.narration_enabled,
-                    "caption": "Prewritten walkthrough: " + lesson.title,
-                    "storyboard": package.storyboard.model_dump(mode="json"),
-                    "shared_reviewed": False,
-                    "shared_library": True,
-                }
-            )
+            media = {
+                "kind": "media",
+                "mode": self.state.media,
+                "voice": self.state.voice and self.config.narration_enabled,
+                "caption": "Prewritten walkthrough: " + lesson.title,
+                "storyboard": package.storyboard.model_dump(mode="json"),
+                "shared_reviewed": False,
+                "shared_library": True,
+            }
         elif self.state.media == "static":
-            self.messages.append(
-                {
-                    "kind": "media",
-                    "mode": "static",
-                    "code": architecture(topic),
-                    "caption": "Architecture: "
-                    + lesson.title
-                    + ("" if authored else " (study-workflow diagram)"),
-                }
-            )
+            media = {
+                "kind": "media",
+                "mode": "static",
+                "code": architecture(topic),
+                "caption": "Architecture: "
+                + lesson.title
+                + ("" if authored else " (study-workflow diagram)"),
+            }
         else:
             board = (
                 reviewed_architecture(topic)
@@ -1097,7 +1099,13 @@ class Service:
                 media.update(storyboard=board.model_dump(mode="json"), shared_reviewed=bool(authored))
             elif not authored:
                 media["caption"] += " (study-workflow diagram)"
-            self.messages.append(media)
+        plain = self.plain_lesson(lesson, guide.explanation if guide is not None else None)
+        self.say(
+            delivery.mission(lesson, day, guide, reading, session, study_plan, plain=plain),
+            md=True,
+            buttons=delivery.open_buttons(self.config.private_dashboard_url, ident),
+        )
+        self.messages.append(media)
         ids = []
         for index, task in enumerate(tasks):
             origin = f"{key}:{index}"
@@ -1129,8 +1137,23 @@ class Service:
             "id": ident,
             "job_id": self.job["id"],
             **({"topic_id": entry[0], "library_version": VERSION} if package else {}),
+            **({"plain": plain.model_dump(mode="json")} if plain is not None else {}),
         }
         self.messages[-1]["lesson_key"] = key
+
+    def plain_lesson(self, lesson, explanation=None):
+        """Today's lesson in simple words, or None to keep its original text. It runs after every
+        other AI step of the lesson, so when the provider fails here the lesson still goes out."""
+        from skillcoach.plain_language import PlainLesson, prompt, validate
+
+        try:
+            return self.structured("plain-lesson", prompt(lesson, explanation), PlainLesson, validate)
+        except (ExternalError, ValueError) as exc:
+            log.warning(
+                "plain_lesson_unavailable code=%s",
+                exc.code if isinstance(exc, ExternalError) else "invalid_operation",
+            )
+            return None
 
     def schedule(self):
         from skillcoach.reengage import Reengage

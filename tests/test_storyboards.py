@@ -237,15 +237,17 @@ def test_slow_multicall_lesson_checkpoints_resume_without_exhausting_failures(pg
         config, pg_repo, ai, FakeTelegram(), FakePublisher(), lambda: datetime(2026, 9, 25, 9, tzinfo=IST)
     )
     pg_repo.enqueue("slow-lesson", {"type": "schedule", "kind": "lesson", "date": "2026-09-25"})
-    for turn in range(3):
+    # Plan, lesson and storyboard each take their own turn. The plain-language opening runs last, in
+    # a fourth turn; this fake has none to give, so the lesson keeps its original text.
+    for turn in range(4):
         assert runtime.process_one(TimedBudget())
         with pg_repo.connection() as conn:
             job = conn.execute("SELECT status,attempts FROM jobs WHERE id='slow-lesson'").fetchone()
-            assert job["status"] == ("done" if turn == 2 else "pending")
-            assert job["attempts"] == (1 if turn == 2 else 0)
-        if turn < 2:
+            assert job["status"] == ("done" if turn == 3 else "pending")
+            assert job["attempts"] == (1 if turn == 3 else 0)
+        if turn < 3:
             assert pg_repo.read()[1].tasks == {}
-    assert len(ai.calls) == 3 and not ai.responses
+    assert len(ai.calls) == 3 and not ai.responses and len(ai.plain_calls) == 1
     assert len(pg_repo.read()[1].tasks) == 3
     with pg_repo.connection() as conn:
         assert (
@@ -253,7 +255,7 @@ def test_slow_multicall_lesson_checkpoints_resume_without_exhausting_failures(pg
             == 3
         )
         assert (
-            conn.execute("SELECT count(*) AS n FROM ai_usage WHERE job_id='slow-lesson'").fetchone()["n"] == 3
+            conn.execute("SELECT count(*) AS n FROM ai_usage WHERE job_id='slow-lesson'").fetchone()["n"] == 4
         )
         assert (
             conn.execute("SELECT count(*) AS n FROM outbox WHERE id='slow-lesson:failure'").fetchone()["n"]
@@ -336,7 +338,8 @@ def test_failed_terraform_storyboard_resumes_cached_lesson_without_regrading(pg_
         assert (
             conn.execute("SELECT count(*) AS n FROM ai_results WHERE job_id='learning'").fetchone()["n"] == 2
         )
-        assert conn.execute("SELECT count(*) AS n FROM ai_usage WHERE job_id='learning'").fetchone()["n"] == 1
+        # The storyboard, then the (unavailable) plain-language opening in its own turn.
+        assert conn.execute("SELECT count(*) AS n FROM ai_usage WHERE job_id='learning'").fetchone()["n"] == 2
         assert (
             conn.execute(
                 "SELECT count(*) AS n FROM outbox WHERE status NOT IN ('sent','suppressed')"

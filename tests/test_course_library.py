@@ -92,23 +92,25 @@ def test_malformed_bundle_is_explicit_and_never_falls_back_to_ai(tmp_path, monke
 
 
 @pytest.mark.parametrize("module", [m.id for m in MODULES])
-def test_delivery_from_each_module_uses_no_ai_and_is_idempotent(harness, module):
+def test_delivery_from_each_module_generates_no_lesson_content_and_is_idempotent(harness, module):
     h = harness
     topic = topic_in(module)
     first = command(h, "/learn " + topic)
-    assert not h.ai.calls
+    # Only the optional plain-language opening asks the AI (unavailable here); the lesson is stored.
+    assert not h.ai.calls and len(h.ai.plain_calls) == 1
     assert len(h.repo.state.lessons) == 1 and len(h.repo.state.tasks) == 4
     record = next(iter(h.repo.state.lessons.values()))
     if reviewed_entry(TOPICS[topic][1]) is None:
         assert record["source"] == "library" and record["library_version"] == courses.VERSION
         assert record["topic_id"] == topic
+    assert "plain" not in record
     media = [
         r["body"] for r in h.repo.outbox.values() if r["job_id"] == first and r["body"]["kind"] == "media"
     ]
     assert len(media) == 1 and media[0]["mode"] == "video" and media[0]["storyboard"]
     before = h.repo.state.model_dump(mode="json")
     command(h, "/learn " + topic)
-    assert h.repo.state.model_dump(mode="json") == before and not h.ai.calls
+    assert h.repo.state.model_dump(mode="json") == before and not h.ai.calls and len(h.ai.plain_calls) == 1
     assert stored_lesson(h.repo, "unused", record).title == courses.get_package(topic).lesson.title
 
 

@@ -41,12 +41,22 @@ class FakeAI:
     def __init__(self):
         self.responses = []
         self.calls = []
+        # The plain-language opening of a lesson is optional help: unless a test queues one here, the
+        # provider behaves as unavailable for it and the lesson keeps its original text, as in production.
+        self.plain = []
+        self.plain_calls = []
 
     def structured(self, prompt, model, budget, validate=None):
-        self.calls.append((prompt, model.__name__))
-        if not self.responses:
-            raise AssertionError("Unexpected AI invocation: " + model.__name__)
-        response = self.responses.pop(0)
+        if model.__name__ == "PlainLesson":
+            self.plain_calls.append(prompt)
+            if not self.plain:
+                raise ExternalError("ai_unavailable_or_invalid")
+            response = self.plain.pop(0)
+        else:
+            self.calls.append((prompt, model.__name__))
+            if not self.responses:
+                raise AssertionError("Unexpected AI invocation: " + model.__name__)
+            response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
         result = model.model_validate(response)

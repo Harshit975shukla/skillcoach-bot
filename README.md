@@ -688,7 +688,8 @@ later `/portfolio on` issues a new one. Revoked learners' pages stop working.
 
 A lesson arrives as at most four Telegram messages, formatted with bold text and code blocks:
 
-1. **Mission**: title, time split, today's goal, the core explanation, and cost and safety notes to
+1. **Mission**: title, time split, today's goal, the lesson in simple words (see *Plain-language
+   teaching* below; the original core explanation if that is unavailable), and cost and safety notes to
    read before starting. Buttons: **Open lesson page** (private dashboard) and **Read the full lesson
    here** (sends the complete reference in chat, with no AI call).
 2. **One architecture video** (animated by default; `/media static` for an image).
@@ -700,6 +701,24 @@ A lesson arrives as at most four Telegram messages, formatted with bold text and
 The private lesson page (`/app?lesson=<id>`, opened from the button or the dashboard's Lessons list)
 shows the whole lesson with copyable code blocks. It is authorized with the same signed Telegram launch
 as the dashboard and only returns lessons in the signed learner's own history.
+
+### Plain-language teaching
+
+Learners said the lessons read like notes for experienced engineers (October 2026). So every lesson
+now opens in simple words, for every learner and level: **In simple words** (2-3 sentences with one
+everyday analogy), **Words to know** (2-4 terms in plain words), **How it works** (3-5 short points)
+and **Common mistake**. One AI call writes it from that lesson's own content only (no profile,
+documents or answers), as the last AI step of the lesson job. It is validated (no links, headings or
+code blocks, sentences under 30 words, under 2,400 characters) and labelled as AI-written, and it is
+saved with the lesson so the lesson page shows it first. If the AI is unavailable, invalid or over the
+daily budget, the lesson goes out unchanged with its original core explanation; it never blocks or
+delays a lesson. The stored and reviewed lessons stay the exact technical reference, one tap away.
+
+The idea is "teach simply, test for real": quizzes keep the learner's real level. Questions and
+options use clear, simple English; the difficulty comes from reasoning, not wording. A daily quiz has
+at least two scenario or troubleshooting questions (a weekly assessment at least four), the last
+question is the hardest, and answer explanations use plain words. Plan goals and AI-written lessons
+are also asked for in plain English. The animated videos are unchanged.
 
 Feedback stores only the button pressed: Useful / Not useful, or one of five fixed report reasons
 (wrong, outdated, confusing, too hard, too easy). No free text is collected. The owner's `/admin` view
@@ -713,10 +732,10 @@ references. Accepted lessons are upgraded to current action majors deterministic
 
 Ten lessons are human-reviewed against official documentation: the six AWS topics below, plus CI
 pipeline design, Kubernetes Pods/Deployments/ReplicaSets, Terraform providers/resources/modules and
-GitHub Actions OIDC. Those four use a fixed reviewed core and exercises (no AI call) scaled to the
-approved minutes; for the AWS lessons the core session is condensed by AI from the reviewed reference
-and validated. Other topics are AI-generated, checked automatically and labelled **not
-human-reviewed**.
+GitHub Actions OIDC. Those four use a fixed reviewed core and exercises (no AI call to build them)
+scaled to the approved minutes; for the AWS lessons the core session is condensed by AI from the
+reviewed reference and validated. Other topics are AI-generated, checked automatically and labelled
+**not human-reviewed**. Every lesson's simple-words opening is AI-written and labelled as such.
 
 ### Explanatory media and offline narration
 

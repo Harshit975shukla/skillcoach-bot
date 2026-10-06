@@ -66,6 +66,8 @@ trivia.
 2. Mistakes are material for learning: they are explained and practiced again, never punished.
 3. Honest content: provenance and review status stay visible; hypothetical scenarios are labelled.
 4. Private by default: no personal data leaves the device for practice, and nothing is shared publicly.
+5. Teach simply, test for real: lessons explain ideas in plain words for a newcomer, with the exact
+   technical lesson one tap away; quizzes keep the learner's real level, in clear wording.
 
 ## Accessibility & Inclusion
 

@@ -376,7 +376,8 @@ class Learning:
             "journey-plan",
             "Propose FIVE learning sessions (one study week). Choose exact supplied topic IDs; preserve "
             "prerequisites and realistic practice. The requested minutes are a pacing target; full lessons "
-            "remain available. Each objective and practice should fit that pacing. Dates, lesson_key and "
+            "remain available. Each objective and practice should fit that pacing, written in plain, simple "
+            "English a newcomer understands. Dates, lesson_key and "
             "understood_at must be null: the application schedules and tracks these. Give a concise private "
             "rationale with uncertainty, not a promise of mastery. No fabricated credentials. "
             "Adapt to the evidence: include a 'revision' session for a topic under 60% in "
