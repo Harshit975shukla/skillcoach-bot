@@ -14,6 +14,16 @@ image:
 imagePullSecrets:
   - name: ocir-pull-secret
 
+# -- Kubernetes-enforced security for every pod that runs the app image.
+#    appUid must match `useradd --uid` in deploy-oci/docker/Dockerfile.
+security:
+  appUid: 10001
+  tmpSize: 256Mi
+
+# -- Firewall rule: only app pods may reach PostgreSQL (needs an enforcing CNI such as Calico).
+networkPolicy:
+  enabled: true
+
 # -- Flask web tier.
 web:
   replicaCount: 1
@@ -26,6 +36,14 @@ web:
       cpu: 500m
       memory: 768Mi
   # gunicorn already defined in the image CMD; override here only if needed.
+  probes:
+    timeoutSeconds: 5
+    # Up to 5 s x 24 = 2 minutes for the first start on a small ARM node.
+    startupFailures: 24
+    # Restart only after 15 s x 8 = 120 s without an answer, longer than
+    # gunicorn's --timeout 90 for one slow request.
+    livenessPeriodSeconds: 15
+    livenessFailures: 8
 
 # -- Ingress (NGINX ingress controller must be installed in the cluster).
 ingress:
@@ -37,9 +55,12 @@ ingress:
   tls: false
   tlsSecretName: ""
 
-# -- Scheduled CronJobs. Schedules are in UTC and mirror the app's IST slots.
-#    renderMedia=false keeps jobs text-only so they fit the slim image / node.
+# -- Scheduled CronJobs. Schedules are written in timeZone (India time), so
+#    they read exactly like the product: 09:00 lesson, 18:00 quiz.
+#    renderMedia=false adds the app's --no-media flag: the slim image has no
+#    ffmpeg/Mermaid, so videos are left for the media worker.
 cron:
+  timeZone: "Asia/Kolkata"
   renderMedia: false
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 300
@@ -53,30 +74,74 @@ cron:
   jobs:
     lesson:
       enabled: true
-      schedule: "30 3 * * 1-5"   # Mon-Fri 09:00 IST
+      schedule: "0 9 * * 1-5"    # Mon-Fri 09:00 IST
       args: ["schedule", "lesson"]
+      media: true                # lesson text and its video go out together
     quiz:
       enabled: true
-      schedule: "30 12 * * 1-5"  # Mon-Fri 18:00 IST
+      schedule: "0 18 * * 1-5"   # Mon-Fri 18:00 IST
       args: ["schedule", "quiz"]
     weekly:
       enabled: true
-      schedule: "30 3 * * 6"     # Sat 09:00 IST
+      schedule: "0 9 * * 6"      # Sat 09:00 IST
       args: ["schedule", "weekly"]
     review:
       enabled: true
-      schedule: "30 4 * * 0"     # Sun 10:00 IST
+      schedule: "0 10 * * 0"     # Sun 10:00 IST
       args: ["schedule", "review"]
     recovery:
       enabled: true
       schedule: "*/5 * * * *"    # every 5 minutes
       args: ["recover"]
+      media: true                # finishes any video still waiting
+
+# -- Database migration Job (runs `python -m skillcoach.cli migrate`).
+migration:
+  enabled: true
+  timeoutSeconds: 600
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 384Mi
+
+# -- Media worker image (deploy-oci/docker/Dockerfile.media), used by CronJobs
+#    with `media: true`. It shares image.tag with the app image.
+media:
+  repository: REPLACE_WITH_OCIR_MEDIA_REPO
+  shmSize: 256Mi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1536Mi
+
+# -- Nightly backup to OCI Object Storage (time is in cron.timeZone).
+#    Needs secrets.backupUploadUrl: a write-only bucket PAR URL ending in "/o/".
+backup:
+  enabled: true
+  schedule: "30 2 * * *"   # 02:30 IST, far from the 09:00 and 18:00 slots
+  uploaderImage: curlimages/curl:8.16.0
+  scratchSize: 2Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
 
 # -- In-cluster PostgreSQL (Option 1: hand-written StatefulSet + PVC).
 #    NOT for production data; this is a learning data tier.
 postgresql:
   enabled: true
   image: postgres:16-alpine
+  # The alpine image's postgres user. Change to 999 for the Debian image.
+  uid: 70
   database: skillcoach
   username: skillcoach
   # Password is supplied via the Secret (see secrets below), never hard-coded.
@@ -125,3 +190,5 @@ secrets:
   ownerEmail: ""
   webPushPublicKey: ""
   webPushPrivateKey: ""
+  # Write-only Object Storage PAR URL for nightly backups (ends in "/o/").
+  backupUploadUrl: ""

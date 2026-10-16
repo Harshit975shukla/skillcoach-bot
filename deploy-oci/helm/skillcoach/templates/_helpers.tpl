@@ -33,3 +33,38 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $pg := .Values.postgresql -}}
 {{- printf "postgresql://%s:$(POSTGRES_PASSWORD)@%s:%v/%s?sslmode=disable" $pg.username (include "skillcoach.pg.fullname" .) $pg.port $pg.database -}}
 {{- end -}}
+
+{{/* Pod-level security shared by every pod that runs the app image. */}}
+{{- define "skillcoach.appPodSecurity" -}}
+automountServiceAccountToken: false
+securityContext:
+  runAsNonRoot: true
+  runAsUser: {{ .Values.security.appUid }}
+  runAsGroup: {{ .Values.security.appUid }}
+  fsGroup: {{ .Values.security.appUid }}
+  seccompProfile:
+    type: RuntimeDefault
+{{- end -}}
+
+{{/* Container-level security: no root, no extra rights, read-only files. */}}
+{{- define "skillcoach.containerSecurity" -}}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+{{- end -}}
+
+{{/* The only writable folder: Python's tempfile and gunicorn use /tmp. */}}
+{{- define "skillcoach.tmpMount" -}}
+volumeMounts:
+  - name: tmp
+    mountPath: /tmp
+{{- end -}}
+
+{{- define "skillcoach.tmpVolume" -}}
+volumes:
+  - name: tmp
+    emptyDir:
+      sizeLimit: {{ .Values.security.tmpSize }}
+{{- end -}}

@@ -5,6 +5,9 @@ metadata:
   labels:
     {{- include "skillcoach.labels" . | nindent 4 }}
     app.kubernetes.io/component: web
+  annotations:
+    # Starts after the migration Job (wave 0) has finished.
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   replicas: {{ .Values.web.replicaCount }}
   selector:
@@ -16,11 +19,14 @@ spec:
       labels:
         {{- include "skillcoach.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: web
+        skillcoach.io/database-client: "true"
       annotations:
         # Roll the pods when secret/config change.
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
     spec:
+      {{- include "skillcoach.appPodSecurity" . | nindent 6 }}
+      {{- include "skillcoach.tmpVolume" . | nindent 6 }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -29,6 +35,8 @@ spec:
         - name: web
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- include "skillcoach.containerSecurity" . | nindent 10 }}
+          {{- include "skillcoach.tmpMount" . | nindent 10 }}
           ports:
             - name: http
               containerPort: {{ .Values.web.port }}
@@ -50,20 +58,34 @@ spec:
                 name: {{ include "skillcoach.fullname" . }}-secrets
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}
-          # The app exposes GET / returning {"service":"skillcoach","live":true}
-          # with no auth, so it is a safe probe target.
+          # GET / returns {"service":"skillcoach","live":true} with no auth and no
+          # database call. /health/ready needs the webhook secret in a header, which
+          # would put the secret in plain text in this spec, so it is not used here.
+          {{- with .Values.web.probes }}
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: {{ .startupFailures }}
           readinessProbe:
             httpGet:
               path: /
               port: http
-            initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: 3
+          # Slow AI calls can fill every gunicorn slot. Only restart a pod that has not
+          # answered for longer than gunicorn's own request timeout.
           livenessProbe:
             httpGet:
               path: /
               port: http
-            initialDelaySeconds: 20
-            periodSeconds: 15
+            periodSeconds: {{ .livenessPeriodSeconds }}
+            timeoutSeconds: {{ .timeoutSeconds }}
+            failureThreshold: {{ .livenessFailures }}
+          {{- end }}
 ---
 apiVersion: v1
 kind: Service

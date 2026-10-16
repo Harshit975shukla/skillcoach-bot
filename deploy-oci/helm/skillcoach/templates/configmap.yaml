@@ -4,6 +4,8 @@ metadata:
   name: {{ include "skillcoach.fullname" . }}-config
   labels:
     {{- include "skillcoach.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
 data:
   {{- range $key, $value := .Values.config }}
   {{ $key }}: {{ $value | quote }}

@@ -9,7 +9,12 @@ metadata:
   labels:
     {{- include "skillcoach.labels" $root | nindent 4 }}
     app.kubernetes.io/component: cron-{{ $name }}
+  annotations:
+    # Scheduled work starts only after the migration Job (wave 0) has finished.
+    argocd.argoproj.io/sync-wave: "1"
 spec:
+  # Needs Kubernetes 1.27+. Without it, schedules would silently run in UTC.
+  timeZone: {{ required "cron.timeZone is required" $root.Values.cron.timeZone | quote }}
   schedule: {{ $job.schedule | quote }}
   # Forbid overlapping runs; recovery runs every 5 min and must not pile up.
   concurrencyPolicy: {{ $root.Values.cron.concurrencyPolicy }}
@@ -26,21 +31,54 @@ spec:
           labels:
             {{- include "skillcoach.selectorLabels" $root | nindent 12 }}
             app.kubernetes.io/component: cron-{{ $name }}
+            skillcoach.io/database-client: "true"
         spec:
           restartPolicy: Never
+          {{- $media := $job.media | default false }}
+          {{- include "skillcoach.appPodSecurity" $root | nindent 10 }}
+          {{- include "skillcoach.tmpVolume" $root | nindent 10 }}
+          {{- if $media }}
+            # Chromium needs more shared memory than the container default (64 MB).
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: {{ $root.Values.media.shmSize }}
+          {{- end }}
           {{- with $root.Values.imagePullSecrets }}
           imagePullSecrets:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           containers:
             - name: {{ $name }}
+              {{- if $media }}
+              # Media worker image: Mermaid CLI + Chromium + ffmpeg render the lesson videos.
+              image: "{{ $root.Values.media.repository }}:{{ $root.Values.image.tag }}"
+              {{- else }}
               image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag }}"
+              {{- end }}
               imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+              {{- include "skillcoach.containerSecurity" $root | nindent 14 }}
+              {{- include "skillcoach.tmpMount" $root | nindent 14 }}
+              {{- if $media }}
+                - name: dshm
+                  mountPath: /dev/shm
+              {{- end }}
               # Reuse the app image but run the worker CLI instead of gunicorn.
+              # The slim image has no ffmpeg/Mermaid, so it passes the app's real
+              # --no-media flag and leaves videos for the media worker.
               command: ["python", "-m", "skillcoach.cli"]
               args:
-                {{- toYaml $job.args | nindent 16 }}
+                {{- $args := $job.args }}
+                {{- if and (not $media) (not $root.Values.cron.renderMedia) }}
+                {{- $args = append $args "--no-media" }}
+                {{- end }}
+                {{- toYaml $args | nindent 16 }}
               env:
+                {{- if $media }}
+                # Read-only root filesystem: Chromium writes its profile under HOME.
+                - name: HOME
+                  value: /tmp
+                {{- end }}
                 - name: POSTGRES_PASSWORD
                   valueFrom:
                     secretKeyRef:
@@ -48,14 +86,12 @@ spec:
                       key: POSTGRES_PASSWORD
                 - name: DATABASE_URL
                   value: {{ include "skillcoach.databaseUrl" $root | quote }}
-                - name: SKILLCOACH_RENDER_MEDIA
-                  value: {{ $root.Values.cron.renderMedia | quote }}
               envFrom:
                 - configMapRef:
                     name: {{ include "skillcoach.fullname" $root }}-config
                 - secretRef:
                     name: {{ include "skillcoach.fullname" $root }}-secrets
               resources:
-                {{- toYaml $root.Values.cron.resources | nindent 16 }}
+                {{- toYaml (ternary $root.Values.media.resources $root.Values.cron.resources $media) | nindent 16 }}
 {{- end }}
 {{- end }}

@@ -1,0 +1,84 @@
+{{- if and .Values.postgresql.enabled .Values.backup.enabled }}
+# Nightly PostgreSQL backup to a private OCI Object Storage bucket.
+# 1) initContainer (postgres image) writes a compressed pg_dump to a shared emptyDir.
+# 2) container (curl image) uploads it with a write-only pre-authenticated request (PAR)
+#    URL from the Secret: it can add new objects but cannot read, list or delete them.
+# Old backups are removed by the bucket's lifecycle rule (Terraform), not by this job.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "skillcoach.fullname" . }}-backup
+  labels:
+    {{- include "skillcoach.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  timeZone: {{ required "cron.timeZone is required" .Values.cron.timeZone | quote }}
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            {{- include "skillcoach.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+            skillcoach.io/database-client: "true"
+        spec:
+          restartPolicy: Never
+          {{- include "skillcoach.appPodSecurity" . | nindent 10 }}
+          volumes:
+            - name: backup
+              emptyDir:
+                sizeLimit: {{ .Values.backup.scratchSize }}
+          initContainers:
+            - name: dump
+              image: {{ .Values.postgresql.image | quote }}
+              {{- include "skillcoach.containerSecurity" . | nindent 14 }}
+              command:
+                - sh
+                - -ec
+                - pg_dump -h {{ include "skillcoach.pg.fullname" . }} -p {{ .Values.postgresql.port }} -U {{ .Values.postgresql.username }} -d {{ .Values.postgresql.database }} -Fc -f /backup/db.dump
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "skillcoach.fullname" . }}-secrets
+                      key: POSTGRES_PASSWORD
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
+          containers:
+            - name: upload
+              image: {{ .Values.backup.uploaderImage | quote }}
+              {{- include "skillcoach.containerSecurity" . | nindent 14 }}
+              command:
+                - sh
+                - -ec
+                - |
+                  if [ -z "$BACKUP_UPLOAD_URL" ]; then echo "BACKUP_UPLOAD_URL is not set"; exit 1; fi
+                  if [ ! -s /backup/db.dump ]; then echo "empty dump"; exit 1; fi
+                  name="skillcoach-$(date -u +%Y%m%dT%H%M%SZ).dump"
+                  curl --fail --silent --show-error --retry 3 -T /backup/db.dump "${BACKUP_UPLOAD_URL}${name}"
+                  echo "uploaded ${name} ($(wc -c < /backup/db.dump) bytes)"
+              env:
+                - name: BACKUP_UPLOAD_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "skillcoach.fullname" . }}-backup
+                      key: BACKUP_UPLOAD_URL
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                  readOnly: true
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
+{{- end }}

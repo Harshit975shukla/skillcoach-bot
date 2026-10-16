@@ -1,0 +1,28 @@
+{{- if and .Values.postgresql.enabled .Values.networkPolicy.enabled }}
+# Firewall for PostgreSQL: only pods labelled skillcoach.io/database-client=true
+# in this namespace may connect, and only on the database port.
+# Kubernetes only stores this rule; the network plugin enforces it. OKE's default
+# flannel does not, so the cluster also needs Calico (or another enforcing CNI).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "skillcoach.pg.fullname" . }}
+  labels:
+    {{- include "skillcoach.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "skillcoach.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgresql
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              skillcoach.io/database-client: "true"
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgresql.port }}
+{{- end }}
