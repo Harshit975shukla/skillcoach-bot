@@ -1,0 +1,7 @@
+apiVersion: v2
+name: skillcoach
+description: SkillCoach bot - Flask web app, 5 scheduled CronJobs and in-cluster PostgreSQL for an OKE learning deployment.
+type: application
+# Chart version (bump on manifest changes) and the app version it ships.
+version: 0.1.0
+appVersion: "1.0.0"

@@ -1,0 +1,89 @@
+{{- if .Values.postgresql.enabled }}
+# ---------------------------------------------------------------------------
+# In-cluster PostgreSQL (Option 1): hand-written StatefulSet + PVC + Services.
+# Learning data tier only - not for production-grade durability/HA.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "skillcoach.pg.fullname" . }}
+  labels:
+    {{- include "skillcoach.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  # Headless service gives the StatefulSet pod a stable DNS name.
+  clusterIP: None
+  selector:
+    {{- include "skillcoach.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+  ports:
+    - name: postgres
+      port: {{ .Values.postgresql.port }}
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "skillcoach.pg.fullname" . }}
+  labels:
+    {{- include "skillcoach.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  serviceName: {{ include "skillcoach.pg.fullname" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "skillcoach.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgresql
+  template:
+    metadata:
+      labels:
+        {{- include "skillcoach.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgresql
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: {{ .Values.postgresql.image | quote }}
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.postgresql.port }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgresql.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgresql.username | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "skillcoach.fullname" . }}-secrets
+                  key: POSTGRES_PASSWORD
+            # Keep PGDATA in a subdir so the mounted volume root can hold lost+found.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U {{ .Values.postgresql.username }} -d {{ .Values.postgresql.database }}"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U {{ .Values.postgresql.username }} -d {{ .Values.postgresql.database }}"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.postgresql.storage.storageClassName | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.storage.size | quote }}
+{{- end }}

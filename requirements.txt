@@ -9,3 +9,4 @@ pypdf==6.19.0
 cryptography==50.0.2
 http-ece==1.2.1
 py-vapid==1.9.4
+gunicorn==23.0.0

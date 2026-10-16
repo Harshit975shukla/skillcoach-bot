@@ -1,0 +1,61 @@
+{{- $root := . }}
+{{- range $name, $job := .Values.cron.jobs }}
+{{- if $job.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "skillcoach.fullname" $root }}-{{ $name }}
+  labels:
+    {{- include "skillcoach.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: cron-{{ $name }}
+spec:
+  schedule: {{ $job.schedule | quote }}
+  # Forbid overlapping runs; recovery runs every 5 min and must not pile up.
+  concurrencyPolicy: {{ $root.Values.cron.concurrencyPolicy }}
+  startingDeadlineSeconds: {{ $root.Values.cron.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      # Don't retry a slot forever; the app's own recovery handles misses.
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            {{- include "skillcoach.selectorLabels" $root | nindent 12 }}
+            app.kubernetes.io/component: cron-{{ $name }}
+        spec:
+          restartPolicy: Never
+          {{- with $root.Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: {{ $name }}
+              image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag }}"
+              imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+              # Reuse the app image but run the worker CLI instead of gunicorn.
+              command: ["python", "-m", "skillcoach.cli"]
+              args:
+                {{- toYaml $job.args | nindent 16 }}
+              env:
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "skillcoach.fullname" $root }}-secrets
+                      key: POSTGRES_PASSWORD
+                - name: DATABASE_URL
+                  value: {{ include "skillcoach.databaseUrl" $root | quote }}
+                - name: SKILLCOACH_RENDER_MEDIA
+                  value: {{ $root.Values.cron.renderMedia | quote }}
+              envFrom:
+                - configMapRef:
+                    name: {{ include "skillcoach.fullname" $root }}-config
+                - secretRef:
+                    name: {{ include "skillcoach.fullname" $root }}-secrets
+              resources:
+                {{- toYaml $root.Values.cron.resources | nindent 16 }}
+{{- end }}
+{{- end }}

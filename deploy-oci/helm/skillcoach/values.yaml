@@ -1,0 +1,127 @@
+# SkillCoach Helm values - sized for a single OCI Always Free A1 node
+# (2 OCPU / 12 GB total). Keep replicas at 1 and resource requests small so
+# the app, PostgreSQL, ArgoCD and the ingress controller all fit.
+
+# -- Container image. GitLab CI pushes to OCIR and bumps `image.tag` here,
+#    which ArgoCD then syncs. Repository is set at deploy time (see README).
+image:
+  # e.g. bom.ocir.io/<tenancy-namespace>/skillcoach/app
+  repository: REPLACE_WITH_OCIR_REPO
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# -- Image pull secret for OCIR (created out-of-band; see README).
+imagePullSecrets:
+  - name: ocir-pull-secret
+
+# -- Flask web tier.
+web:
+  replicaCount: 1
+  port: 8080
+  resources:
+    requests:
+      cpu: 150m
+      memory: 384Mi
+    limits:
+      cpu: 500m
+      memory: 768Mi
+  # gunicorn already defined in the image CMD; override here only if needed.
+
+# -- Ingress (NGINX ingress controller must be installed in the cluster).
+ingress:
+  enabled: true
+  className: nginx
+  # Set to your DNS name, or leave blank to serve on the LB IP via a catch-all.
+  host: ""
+  # TLS is left to the cluster/LB for the learning build; add a secret here later.
+  tls: false
+  tlsSecretName: ""
+
+# -- Scheduled CronJobs. Schedules are in UTC and mirror the app's IST slots.
+#    renderMedia=false keeps jobs text-only so they fit the slim image / node.
+cron:
+  renderMedia: false
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 400m
+      memory: 512Mi
+  jobs:
+    lesson:
+      enabled: true
+      schedule: "30 3 * * 1-5"   # Mon-Fri 09:00 IST
+      args: ["schedule", "lesson"]
+    quiz:
+      enabled: true
+      schedule: "30 12 * * 1-5"  # Mon-Fri 18:00 IST
+      args: ["schedule", "quiz"]
+    weekly:
+      enabled: true
+      schedule: "30 3 * * 6"     # Sat 09:00 IST
+      args: ["schedule", "weekly"]
+    review:
+      enabled: true
+      schedule: "30 4 * * 0"     # Sun 10:00 IST
+      args: ["schedule", "review"]
+    recovery:
+      enabled: true
+      schedule: "*/5 * * * *"    # every 5 minutes
+      args: ["recover"]
+
+# -- In-cluster PostgreSQL (Option 1: hand-written StatefulSet + PVC).
+#    NOT for production data; this is a learning data tier.
+postgresql:
+  enabled: true
+  image: postgres:16-alpine
+  database: skillcoach
+  username: skillcoach
+  # Password is supplied via the Secret (see secrets below), never hard-coded.
+  port: 5432
+  storage:
+    # OCI block volume via the default oci-bv storage class.
+    storageClassName: oci-bv
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 150m
+      memory: 384Mi
+    limits:
+      cpu: 500m
+      memory: 768Mi
+
+# -- Non-secret application config (goes into a ConfigMap).
+config:
+  DELIVERY_CHANNEL: "telegram"
+  MAX_LEARNERS: "10"
+  ACCESS_REQUESTS_ENABLED: "false"
+  DAILY_AI_OPERATIONS: "40"
+  NARRATION_ENABLED: "false"
+  LABS_ENABLED: "false"
+  GROQ_MODEL: "openai/gpt-oss-120b,openai/gpt-oss-20b"
+  SMTP_PORT: "587"
+  # WEB_APP_URL and similar public URLs are set at deploy time if web mode is used.
+
+# -- Secret values. LEAVE BLANK in Git. Supply at deploy time with
+#    `helm upgrade --set-string secrets.telegramBotToken=...` or a sealed/
+#    external secret. The chart renders a Secret with these keys regardless.
+secrets:
+  # Internal DB password for the in-cluster PostgreSQL + the app's DATABASE_URL.
+  postgresPassword: ""
+  telegramBotToken: ""
+  telegramWebhookSecret: ""
+  groqApiKey: ""
+  cronSecret: ""
+  ownerId: ""
+  telegramBotUsername: ""
+  # Optional (web/email/push); leave blank unless enabling those features.
+  smtpHost: ""
+  smtpUsername: ""
+  smtpPassword: ""
+  emailFrom: ""
+  ownerEmail: ""
+  webPushPublicKey: ""
+  webPushPrivateKey: ""

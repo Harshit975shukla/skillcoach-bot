@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "skillcoach.fullname" . }}-web
+  labels:
+    {{- include "skillcoach.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "skillcoach.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        {{- include "skillcoach.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+      annotations:
+        # Roll the pods when secret/config change.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: web
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.web.port }}
+          env:
+            - name: PORT
+              value: {{ .Values.web.port | quote }}
+            # Compose DATABASE_URL from the in-cluster Postgres + secret password.
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "skillcoach.fullname" . }}-secrets
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: {{ include "skillcoach.databaseUrl" . | quote }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "skillcoach.fullname" . }}-config
+            - secretRef:
+                name: {{ include "skillcoach.fullname" . }}-secrets
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          # The app exposes GET / returning {"service":"skillcoach","live":true}
+          # with no auth, so it is a safe probe target.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "skillcoach.fullname" . }}-web
+  labels:
+    {{- include "skillcoach.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "skillcoach.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

@@ -16,6 +16,8 @@ dependencies = [
     "cryptography==50.0.2",
     "http-ece==1.2.1",
     "py-vapid==1.9.4",
+    # Production WSGI server for the container image (Vercel ignores it).
+    "gunicorn==23.0.0",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,47 @@
+# Keep the build context small and never ship secrets, local state or
+# test/dev tooling into the image.
+
+# Secrets and local env
+.env
+.env.*
+!.env.example
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+
+# Virtualenv
+.venv/
+
+# Node / test-only tooling (not used by the web image)
+node_modules/
+tests/
+labs_template/
+
+# Local media / scratch
+*.mp4
+*.db
+*.sqlite*
+
+# VCS and editor / assistant local files
+.git/
+.github/
+.vercel/
+.vercelignore
+.impeccable/
+.claude/
+CLAUDE.md
+
+# Infra/deploy files are not needed inside the app image
+deploy-oci/
+docs/
+infra/
+deploy/
+argocd/
