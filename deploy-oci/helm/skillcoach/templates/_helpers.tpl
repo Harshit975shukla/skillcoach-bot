@@ -68,3 +68,8 @@ volumes:
     emptyDir:
       sizeLimit: {{ .Values.security.tmpSize }}
 {{- end -}}
+
+{{/* The Secret that holds the HTTPS certificate. */}}
+{{- define "skillcoach.tlsSecretName" -}}
+{{- .Values.ingress.tls.secretName | default (printf "%s-tls" (include "skillcoach.fullname" .)) -}}
+{{- end -}}

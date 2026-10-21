@@ -1,0 +1,32 @@
+{{- if .Values.ingress.certManager.createIssuers }}
+{{- if not .Values.ingress.certManager.email }}
+{{- fail "ingress.certManager.createIssuers needs ingress.certManager.email for Let's Encrypt expiry notices" }}
+{{- end }}
+{{- $issuers := dict "letsencrypt-staging" "https://acme-staging-v02.api.letsencrypt.org/directory" "letsencrypt-prod" "https://acme-v02.api.letsencrypt.org/directory" }}
+{{- range $name := list "letsencrypt-staging" "letsencrypt-prod" }}
+---
+# Cluster-wide: tells cert-manager how to get certificates from Let's Encrypt.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "skillcoach.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  acme:
+    server: {{ get $issuers $name }}
+    email: {{ $.Values.ingress.certManager.email | quote }}
+    # cert-manager keeps the Let's Encrypt account key in this Secret.
+    privateKeySecretRef:
+      name: {{ $name }}-account-key
+    solvers:
+      # HTTP-01: Let's Encrypt fetches a token from http://<host>/.well-known/acme-challenge/
+      # through the same Traefik ingress, so port 80 must be open on the load balancer
+      # (Let's Encrypt follows the HTTP-to-HTTPS redirect).
+      - http01:
+          ingress:
+            ingressClassName: {{ $.Values.ingress.className }}
+{{- end }}
+{{- end }}

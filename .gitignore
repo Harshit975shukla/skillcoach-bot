@@ -27,3 +27,6 @@ private*.json
 .vercel/
 # Local design-hook cache (machine-specific paths)
 .impeccable/hook.cache.json
+# Claude Code handoff notes and imported Copilot history (local only)
+CLAUDE.md
+.claude/

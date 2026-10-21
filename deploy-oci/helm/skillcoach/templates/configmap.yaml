@@ -10,3 +10,6 @@ data:
   {{- range $key, $value := .Values.config }}
   {{ $key }}: {{ $value | quote }}
   {{- end }}
+  {{- if and .Values.ingress.enabled .Values.ingress.tls.enabled (not (hasKey .Values.config "WEB_APP_URL")) }}
+  WEB_APP_URL: {{ printf "https://%s" .Values.ingress.host | quote }}
+  {{- end }}

@@ -1,17 +1,26 @@
 {{- if .Values.ingress.enabled }}
+{{- $tls := .Values.ingress.tls.enabled }}
+{{- if and $tls (not .Values.ingress.host) }}
+{{- fail "ingress.tls.enabled needs ingress.host: certificates are issued for names, not IPs (try <ip-with-dashes>.sslip.io)" }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "skillcoach.fullname" . }}
   labels:
     {{- include "skillcoach.labels" . | nindent 4 }}
+  {{- /* HTTP-to-HTTPS redirect lives on Traefik's "web" entrypoint, not here. */}}
+  {{- if and $tls .Values.ingress.certManager.enabled }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.certManager.clusterIssuer | quote }}
+  {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
-  {{- if and .Values.ingress.tls .Values.ingress.host }}
+  {{- if $tls }}
   tls:
     - hosts:
         - {{ .Values.ingress.host | quote }}
-      secretName: {{ .Values.ingress.tlsSecretName | quote }}
+      secretName: {{ include "skillcoach.tlsSecretName" . | quote }}
   {{- end }}
   rules:
     - {{- if .Values.ingress.host }}

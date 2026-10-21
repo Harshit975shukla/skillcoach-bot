@@ -128,7 +128,9 @@ def test_slim_cronjobs_pass_the_apps_real_no_media_flag(monkeypatch):
         assert container["command"] == ["python", "-m", "skillcoach.cli"]
         media = name in ("lesson", "recovery")
         assert ("--no-media" in container["args"]) is not media, name
-        assert container["image"].startswith("REPLACE_WITH_OCIR_MEDIA_REPO:" if media else "REPLACE_WITH_OCIR_REPO:")
+        assert container["image"].startswith(
+            "REPLACE_WITH_GHCR_MEDIA_REPO:" if media else "REPLACE_WITH_GHCR_REPO:"
+        )
         assert not any(e["name"] == "SKILLCOACH_RENDER_MEDIA" for e in container["env"])
         with pytest.raises(Parsed):
             cli.main(container["args"])  # argparse exits with an error for an unknown flag
@@ -269,3 +271,72 @@ def test_media_jobs_render_videos_and_share_the_app_image_tag():
         assert container["resources"]["limits"]["memory"] == "1536Mi"
     quiz = jobs["quiz"]["spec"]["jobTemplate"]["spec"]["template"]["spec"]["containers"][0]
     assert quiz["image"].endswith(":9f3c2a1")
+
+
+HTTPS = ("--set", "ingress.tls.enabled=true", "--set", "ingress.host=141-148-10-20.sslip.io")
+
+
+def kinds(docs, kind):
+    return [doc for doc in docs if doc["kind"] == kind]
+
+
+def test_https_is_off_until_a_host_is_chosen_and_then_gets_a_renewed_certificate():
+    plain = documents(render().stdout)
+    (ingress,) = kinds(plain, "Ingress")
+    assert "tls" not in ingress["spec"] and not ingress["metadata"].get("annotations")
+    assert not kinds(plain, "ClusterIssuer")
+
+    docs = documents(render(*HTTPS).stdout)
+    (ingress,) = kinds(docs, "Ingress")
+    assert ingress["spec"]["tls"] == [{"hosts": ["141-148-10-20.sslip.io"], "secretName": "skillcoach-tls"}]
+    assert ingress["spec"]["rules"][0]["host"] == "141-148-10-20.sslip.io"
+    notes = ingress["metadata"]["annotations"]
+    # Staging first: Let's Encrypt's test certificates have generous limits while things are being fixed.
+    assert notes == {"cert-manager.io/cluster-issuer": "letsencrypt-staging"}
+    # Traefik (maintained; ingress-nginx is retired) redirects HTTP on its entrypoint, so no NGINX notes.
+    assert ingress["spec"]["ingressClassName"] == "traefik"
+    # The app refuses a non-HTTPS WEB_APP_URL, so it follows the host unless set by hand.
+    config = next(
+        doc for doc in docs if doc["kind"] == "ConfigMap" and doc["metadata"]["name"] == "skillcoach-config"
+    )
+    assert config["data"]["WEB_APP_URL"] == "https://141-148-10-20.sslip.io"
+    own = documents(render(*HTTPS, "--set", "config.WEB_APP_URL=https://coach.example.app").stdout)
+    own_config = next(
+        doc for doc in own if doc["kind"] == "ConfigMap" and doc["metadata"]["name"] == "skillcoach-config"
+    )
+    assert own_config["data"]["WEB_APP_URL"] == "https://coach.example.app"
+    named = documents(render(*HTTPS, "--set", "ingress.tls.secretName=coach-cert").stdout)
+    assert kinds(named, "Ingress")[0]["spec"]["tls"][0]["secretName"] == "coach-cert"
+
+
+def test_https_without_a_host_fails_because_certificates_need_a_name():
+    result = render("--set", "ingress.tls.enabled=true")
+    assert result.returncode != 0 and "ingress.tls.enabled needs ingress.host" in result.stderr
+
+
+def test_the_chart_can_create_both_lets_encrypt_issuers_with_an_email():
+    missing = render("--set", "ingress.certManager.createIssuers=true")
+    assert missing.returncode != 0 and "needs ingress.certManager.email" in missing.stderr
+    docs = documents(
+        render(
+            *HTTPS,
+            "--set",
+            "ingress.certManager.createIssuers=true",
+            "--set",
+            "ingress.certManager.email=owner@example.test",
+        ).stdout
+    )
+    issuers = {doc["metadata"]["name"]: doc["spec"]["acme"] for doc in kinds(docs, "ClusterIssuer")}
+    assert (
+        issuers["letsencrypt-staging"]["server"] == "https://acme-staging-v02.api.letsencrypt.org/directory"
+    )
+    assert issuers["letsencrypt-prod"]["server"] == "https://acme-v02.api.letsencrypt.org/directory"
+    for name, acme in issuers.items():
+        assert acme["email"] == "owner@example.test"
+        assert acme["privateKeySecretRef"] == {"name": f"{name}-account-key"}
+        assert acme["solvers"] == [{"http01": {"ingress": {"ingressClassName": "traefik"}}}]
+    prod = documents(render(*HTTPS, "--set", "ingress.certManager.clusterIssuer=letsencrypt-prod").stdout)
+    assert (
+        kinds(prod, "Ingress")[0]["metadata"]["annotations"]["cert-manager.io/cluster-issuer"]
+        == "letsencrypt-prod"
+    )

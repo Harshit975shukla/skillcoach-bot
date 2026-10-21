@@ -2,17 +2,17 @@
 # (2 OCPU / 12 GB total). Keep replicas at 1 and resource requests small so
 # the app, PostgreSQL, ArgoCD and the ingress controller all fit.
 
-# -- Container image. GitLab CI pushes to OCIR and bumps `image.tag` here,
-#    which ArgoCD then syncs. Repository is set at deploy time (see README).
+# -- Container image. GitHub Actions publishes an immutable commit-SHA tag to
+#    GHCR; Argo CD reads the selected tag from values-oci.yaml.
 image:
-  # e.g. bom.ocir.io/<tenancy-namespace>/skillcoach/app
-  repository: REPLACE_WITH_OCIR_REPO
+  # e.g. ghcr.io/harshit975shukla/skillcoach-bot
+  repository: REPLACE_WITH_GHCR_REPO
   tag: "latest"
   pullPolicy: IfNotPresent
 
-# -- Image pull secret for OCIR (created out-of-band; see README).
+# -- GHCR pull secret for private images (created out-of-band; see README).
 imagePullSecrets:
-  - name: ocir-pull-secret
+  - name: ghcr-pull-secret
 
 # -- Kubernetes-enforced security for every pod that runs the app image.
 #    appUid must match `useradd --uid` in deploy-oci/docker/Dockerfile.
@@ -45,15 +45,34 @@ web:
     livenessPeriodSeconds: 15
     livenessFailures: 8
 
-# -- Ingress (NGINX ingress controller must be installed in the cluster).
+# -- Ingress (the Traefik ingress controller must be installed in the cluster; it
+#    redirects HTTP to HTTPS on its "web" entrypoint, set when Traefik is installed).
+#    The app needs HTTPS: WEB_APP_URL must be https://, the sign-in cookies are
+#    __Host- cookies (browsers send them only over HTTPS) and Telegram calls
+#    only HTTPS webhooks.
 ingress:
   enabled: true
-  className: nginx
-  # Set to your DNS name, or leave blank to serve on the LB IP via a catch-all.
+  className: traefik
+  # A DNS name that points at the load balancer IP. Without a domain, use sslip.io:
+  # for the IP 141.148.10.20 the host is "141-148-10-20.sslip.io". Leave blank to
+  # answer on the bare IP (HTTP only, for a first smoke test).
   host: ""
-  # TLS is left to the cluster/LB for the learning build; add a secret here later.
-  tls: false
-  tlsSecretName: ""
+  tls:
+    enabled: false
+    # The Secret that holds the certificate; cert-manager creates and renews it.
+    # Blank means "<release>-skillcoach-tls".
+    secretName: ""
+  # cert-manager (installed with the cluster add-ons) asks Let's Encrypt for a free
+  # certificate through an HTTP-01 check on port 80, then renews it before expiry.
+  certManager:
+    enabled: true
+    # Start with letsencrypt-staging (test certificates, generous rate limits);
+    # switch to letsencrypt-prod once staging works.
+    clusterIssuer: letsencrypt-staging
+    # Also create both ClusterIssuers (needs the cert-manager CRDs in the cluster).
+    createIssuers: false
+    # Let's Encrypt sends expiry warnings here. Required when createIssuers is true.
+    email: ""
 
 # -- Scheduled CronJobs. Schedules are written in timeZone (India time), so
 #    they read exactly like the product: 09:00 lesson, 18:00 quiz.
@@ -110,7 +129,7 @@ migration:
 # -- Media worker image (deploy-oci/docker/Dockerfile.media), used by CronJobs
 #    with `media: true`. It shares image.tag with the app image.
 media:
-  repository: REPLACE_WITH_OCIR_MEDIA_REPO
+  repository: REPLACE_WITH_GHCR_MEDIA_REPO
   shmSize: 256Mi
   resources:
     requests:
@@ -168,7 +187,7 @@ config:
   LABS_ENABLED: "false"
   GROQ_MODEL: "openai/gpt-oss-120b,openai/gpt-oss-20b"
   SMTP_PORT: "587"
-  # WEB_APP_URL and similar public URLs are set at deploy time if web mode is used.
+  # WEB_APP_URL defaults to https://<ingress.host> when ingress.tls.enabled is true.
 
 # -- Secret values. LEAVE BLANK in Git. Supply at deploy time with
 #    `helm upgrade --set-string secrets.telegramBotToken=...` or a sealed/
