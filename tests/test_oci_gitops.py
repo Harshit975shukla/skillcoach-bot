@@ -23,6 +23,8 @@ def test_image_publication_is_manual_and_requires_an_explicit_yes():
     assert triggers["push"]["branches"] == ["oci-learning"]
     assert triggers["push"]["paths"] == expected_paths
     assert triggers["pull_request"]["paths"] == expected_paths
+    checkout = workflow["jobs"]["validate"]["steps"][0]["with"]
+    assert checkout["ref"] == "${{ github.event_name == 'pull_request' && 'oci-learning' || github.ref }}"
     choice = triggers["workflow_dispatch"]["inputs"]["publish_images"]
     assert choice["required"] == "true"
     assert choice["default"] == "no"
