@@ -1,5 +1,6 @@
 """Offline checks for the OCI image publishing and Argo CD learning manifests."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -65,7 +66,7 @@ def test_argocd_tracks_the_learning_branch_and_preserves_stateful_resources():
 def test_oci_values_use_the_same_immutable_tag_for_both_ghcr_packages():
     values = yaml.safe_load(VALUES.read_text(encoding="utf-8"))
     assert values["image"]["repository"] == "ghcr.io/harshit975shukla/skillcoach-bot"
-    assert values["image"]["tag"] == "set-by-publish-workflow"
+    assert re.fullmatch(r"[0-9a-f]{40}", values["image"]["tag"])
     assert values["media"]["repository"] == "ghcr.io/harshit975shukla/skillcoach-bot-media"
     assert values["imagePullSecrets"] == [{"name": "ghcr-pull-secret"}]
     assert "password" not in VALUES.read_text(encoding="utf-8").lower()
