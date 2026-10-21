@@ -11,6 +11,8 @@ on:
       - "tests/test_oci_gitops.py"
       - ".github/workflows/publish-oci-images.yml"
   pull_request:
+    branches:
+      - oci-learning
     paths:
       - "deploy-oci/**"
       - "tests/test_helm_chart.py"
@@ -42,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && 'oci-learning' || github.ref }}
+          ref: ${{ github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
