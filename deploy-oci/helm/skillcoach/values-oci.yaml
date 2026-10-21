@@ -1,0 +1,9 @@
+# OCI learning deployment overrides. Do not put credentials in this file.
+# The GitHub Actions publish workflow updates this immutable commit-SHA tag.
+image:
+  repository: ghcr.io/harshit975shukla/skillcoach-bot
+  tag: "set-by-publish-workflow"
+media:
+  repository: ghcr.io/harshit975shukla/skillcoach-bot-media
+imagePullSecrets:
+  - name: ghcr-pull-secret

@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: skillcoach
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Harshit975shukla/skillcoach-bot.git
+    targetRevision: oci-learning
+    path: deploy-oci/helm/skillcoach
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-oci.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: skillcoach
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
