@@ -1,0 +1,54 @@
+flowchart TB
+    subgraph CLIENTS["Clients"]
+        TGU["Telegram learner"]
+        WEBU["Web learner / installable PWA"]
+        ADMU["Owner /admin console"]
+    end
+
+    subgraph OCI["Proposed OCI learning deployment (not live; free capacity must be verified)"]
+        LB["OCI public load balancer"]
+        subgraph OKE["OKE cluster"]
+            TRAEFIK["Traefik ingress + HTTPS"]
+            CERT["cert-manager<br/>Let's Encrypt certificate"]
+            subgraph APP["Tier 2 · Application"]
+                WEB["Flask + gunicorn<br/>web pod"]
+                CRONS["CronJobs<br/>lesson · quiz · weekly · review · recovery"]
+                MEDIA["Media jobs<br/>Mermaid · Chromium · ffmpeg"]
+                SERVICE["SkillCoach logic<br/>lessons · quizzes · practice"]
+            end
+            subgraph DATA["Tier 3 · Data"]
+                PG[("PostgreSQL<br/>StatefulSet")]
+                PVC[(Persistent volume)]
+                BK["Nightly pg_dump"]
+            end
+            VAULT["OCI Vault<br/>secrets"]
+            POLICY["NetworkPolicy<br/>app pods → PostgreSQL"]
+        end
+        OBJ[(Private Object Storage<br/>database backups)]
+    end
+
+    TGU -->|HTTPS webhook| LB
+    WEBU -->|HTTPS| LB
+    ADMU -->|HTTPS| LB
+    LB --> TRAEFIK --> WEB
+    CERT -.issues and renews.-> TRAEFIK
+    WEB --> SERVICE
+    CRONS --> SERVICE
+    MEDIA --> SERVICE
+    WEB & CRONS & MEDIA --> PG
+    SERVICE --> PG
+    PG --- PVC
+    BK -->|write-only upload| OBJ
+    VAULT -.secret sync.-> WEB
+    VAULT -.secret sync.-> CRONS
+    VAULT -.secret sync.-> MEDIA
+    POLICY -.limits access.-> PG
+
+    subgraph EXT["External services"]
+        GROQ["Groq AI"]
+        TGAPI["Telegram Bot API"]
+        SMTP["Email SMTP"]
+    end
+    SERVICE --> GROQ
+    SERVICE --> TGAPI
+    SERVICE --> SMTP

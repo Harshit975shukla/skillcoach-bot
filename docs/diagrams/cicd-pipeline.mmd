@@ -1,0 +1,31 @@
+flowchart TB
+    DEV(["Developer<br/>git push"])
+
+    subgraph GITHUB["GitHub"]
+        REPO["skillcoach-bot<br/>application + Helm desired state"]
+        subgraph ACTIONS["GitHub Actions"]
+            TEST["Existing CI<br/>pytest + ruff"]
+            PUBLISH["Manual image publish<br/>explicit yes required"]
+        end
+        BUILD["Build two ARM64 images<br/>web + media"]
+        GHCR[(GitHub Container Registry<br/>GHCR)]
+        BUMP["Write full commit SHA<br/>to values-oci.yaml"]
+        REPO --> TEST
+        REPO -.owner starts workflow_dispatch.-> PUBLISH
+        PUBLISH --> BUILD --> GHCR
+        BUILD --> BUMP --> REPO
+    end
+    DEV --> REPO
+
+    subgraph OCI["Proposed OCI learning deployment (not live; free capacity must be verified)"]
+        subgraph OKE["OKE cluster"]
+            ARGO["Argo CD<br/>pulls desired state from GitHub"]
+            RES["Kubernetes resources<br/>web · CronJobs · PostgreSQL"]
+            ARGO -->|reconcile| RES
+        end
+        TF["Terraform<br/>operator runs after reviewing plan"]
+        RES -.pull immutable SHA images.-> GHCR
+    end
+
+    ARGO -->|watches Helm source| REPO
+    TF -.creates only after human approval.-> OKE

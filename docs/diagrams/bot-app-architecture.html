@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SkillCoach — Bot App Architecture</title>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f4f6fb;
+      color: #1b2733;
+    }
+    header {
+      background: #0b2545;
+      color: #fff;
+      padding: 20px 28px;
+    }
+    header h1 { margin: 0 0 4px; font-size: 20px; }
+    header p { margin: 0; font-size: 13px; opacity: 0.85; }
+    .toolbar {
+      padding: 12px 28px;
+      background: #fff;
+      border-bottom: 1px solid #e2e8f0;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .toolbar button {
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .toolbar button:hover { background: #eef2f7; }
+    .toolbar span { font-size: 12px; color: #64748b; }
+    .diagram-wrap {
+      padding: 24px;
+      overflow: auto;
+    }
+    .mermaid {
+      background: #fff;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 24px;
+      transform-origin: top left;
+    }
+    footer { padding: 16px 28px; font-size: 12px; color: #64748b; }
+    a { color: #2563eb; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>SkillCoach — Bot Application Architecture</h1>
+    <p>Proposed learning deployment: Traefik HTTPS ingress → Flask and scheduled jobs → PostgreSQL. No OCI resources have been provisioned.</p>
+  </header>
+
+  <div class="toolbar">
+    <button onclick="zoom(0.1)">Zoom +</button>
+    <button onclick="zoom(-0.1)">Zoom −</button>
+    <button onclick="resetZoom()">Reset</button>
+    <span>Tip: open in any browser. If the diagram stays blank, check your internet connection (Mermaid loads from a CDN).</span>
+  </div>
+
+  <div class="diagram-wrap">
+    <pre class="mermaid" id="diagram">
+flowchart TB
+    subgraph CLIENTS["Clients"]
+        TGU["Telegram learner"]
+        WEBU["Web learner / installable PWA"]
+        ADMU["Owner /admin console"]
+    end
+
+    subgraph OCI["Proposed OCI learning deployment (not live; free capacity must be verified)"]
+        LB["OCI public load balancer"]
+        subgraph OKE["OKE cluster"]
+            TRAEFIK["Traefik ingress + HTTPS"]
+            CERT["cert-manager<br/>Let's Encrypt certificate"]
+            subgraph APP["Tier 2 · Application"]
+                WEB["Flask + gunicorn<br/>web pod"]
+                CRONS["CronJobs<br/>lesson · quiz · weekly · review · recovery"]
+                MEDIA["Media jobs<br/>Mermaid · Chromium · ffmpeg"]
+                SERVICE["SkillCoach logic<br/>lessons · quizzes · practice"]
+            end
+            subgraph DATA["Tier 3 · Data"]
+                PG[("PostgreSQL<br/>StatefulSet")]
+                PVC[(Persistent volume)]
+                BK["Nightly pg_dump"]
+            end
+            VAULT["OCI Vault<br/>secrets"]
+            POLICY["NetworkPolicy<br/>app pods → PostgreSQL"]
+        end
+        OBJ[(Private Object Storage<br/>database backups)]
+    end
+
+    TGU -->|HTTPS webhook| LB
+    WEBU -->|HTTPS| LB
+    ADMU -->|HTTPS| LB
+    LB --> TRAEFIK --> WEB
+    CERT -.issues and renews.-> TRAEFIK
+    WEB --> SERVICE
+    CRONS --> SERVICE
+    MEDIA --> SERVICE
+    WEB & CRONS & MEDIA --> PG
+    SERVICE --> PG
+    PG --- PVC
+    BK -->|write-only upload| OBJ
+    VAULT -.secret sync.-> WEB
+    VAULT -.secret sync.-> CRONS
+    VAULT -.secret sync.-> MEDIA
+    POLICY -.limits access.-> PG
+
+    subgraph EXT["External services"]
+        GROQ["Groq AI"]
+        TGAPI["Telegram Bot API"]
+        SMTP["Email SMTP"]
+    end
+    SERVICE --> GROQ
+    SERVICE --> TGAPI
+    SERVICE --> SMTP
+    </pre>
+  </div>
+
+  <footer>
+    Proposed SkillCoach OCI architecture · region and Always Free eligibility are not yet verified.
+  </footer>
+
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { useMaxWidth: false } });
+  </script>
+  <script>
+    let scale = 1;
+    const el = () => document.getElementById("diagram");
+    function apply() { el().style.transform = `scale(${scale})`; }
+    function zoom(d) { scale = Math.min(2.5, Math.max(0.4, scale + d)); apply(); }
+    function resetZoom() { scale = 1; apply(); }
+  </script>
+</body>
+</html>
