@@ -12,12 +12,23 @@ VALUES = Path("deploy-oci/helm/skillcoach/values-oci.yaml")
 def test_image_publication_is_manual_and_requires_an_explicit_yes():
     workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     triggers = workflow["on"]
-    assert set(triggers) == {"workflow_dispatch"}
+    assert set(triggers) == {"push", "pull_request", "workflow_dispatch"}
+    expected_paths = [
+        "deploy-oci/**",
+        "tests/test_helm_chart.py",
+        "tests/test_container_image.py",
+        "tests/test_oci_gitops.py",
+        ".github/workflows/publish-oci-images.yml",
+    ]
+    assert triggers["push"]["branches"] == ["oci-learning"]
+    assert triggers["push"]["paths"] == expected_paths
+    assert triggers["pull_request"]["paths"] == expected_paths
     choice = triggers["workflow_dispatch"]["inputs"]["publish_images"]
     assert choice["required"] == "true"
     assert choice["default"] == "no"
     assert choice["options"] == ["no", "yes"]
     publish = workflow["jobs"]["publish"]
+    assert "github.event_name == 'workflow_dispatch'" in publish["if"]
     assert "inputs.publish_images == 'yes'" in publish["if"]
     assert "github.ref == 'refs/heads/oci-learning'" in publish["if"]
 

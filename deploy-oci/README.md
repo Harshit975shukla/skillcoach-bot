@@ -6,13 +6,21 @@ not changed by these files.
 
 ## Image pipeline
 
-`.github/workflows/publish-oci-images.yml` is manual-only. It first validates the
-Helm chart and container checks. It publishes only if you select `yes` for
-`publish_images`, and only when you run it on the `oci-learning` branch. The two
-ARM64 images are tagged with the selected Git commit's full SHA; the workflow
-checks GHCR's package versions and refuses to reuse a tag. It then updates
-`helm/skillcoach/values-oci.yaml` with that SHA. Argo CD can see the new Git commit
-and reconcile the chart.
+`.github/workflows/publish-oci-images.yml` validates the Helm chart and container
+checks automatically when relevant files change on `oci-learning`, and for
+matching pull requests. These triggers only run validation. Publishing is
+separately gated to a manual `workflow_dispatch` run on `oci-learning` where you
+explicitly select `yes` for `publish_images`. The two ARM64 images are tagged
+with the selected Git commit's full SHA; the workflow checks GHCR's package
+versions and refuses to reuse a tag. It then updates
+`helm/skillcoach/values-oci.yaml` with that SHA. Argo CD can see the new Git
+commit and reconcile the chart.
+
+GitHub only makes a manually dispatched workflow available when its workflow
+file exists on the repository's default branch. This file is currently on
+`oci-learning`, so validation runs automatically there, but manual publishing
+will be available only after this workflow is merged to `main` through a
+separately approved pull request. No such pull request is open.
 
 The images are:
 
@@ -59,13 +67,14 @@ retire Supabase before a separately approved and verified cutover.
 
 1. Read `values-oci.yaml`. It selects GHCR repositories, the image tag, and the
    image-pull Secret. The workflow replaces the tag with the full source commit SHA.
-2. On GitHub, open **Actions → Publish OCI learning images → Run workflow**.
-   Run it on `oci-learning`; leave `publish_images` as `no` to validate without
-   publishing. Publishing uploads both images to GitHub Packages but does not
-   deploy to OCI. The source repository is public; package visibility depends on
-   GHCR settings, so choose `yes` only after reviewing who can pull the images.
-3. After a successful publish, compare the SHA shown in the Actions run with
-   `image.tag` in `values-oci.yaml`. Explain why the tag is not `latest`.
+2. Push a relevant change to `oci-learning` and check the automatic validation
+   run in **Actions**. The path filters intentionally exclude
+   `values-oci.yaml`, so the publishing workflow's own tag update does not start
+   another validation run.
+3. Manual publishing is not available yet: GitHub requires this workflow to be
+   on the default branch (`main`). It can be enabled only by merging the workflow
+   through a separately approved pull request. Do not publish images during this
+   validation lab.
 4. Read `argocd/skillcoach.yaml`. Point out which Git branch and folder Argo CD
    watches, and where it will create the app.
 5. Do not apply it to OCI yet. Next, we will learn how Argo CD fetches a Git

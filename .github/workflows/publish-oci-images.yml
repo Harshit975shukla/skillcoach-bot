@@ -1,6 +1,22 @@
 name: Publish OCI learning images
 
 on:
+  push:
+    branches:
+      - oci-learning
+    paths:
+      - "deploy-oci/**"
+      - "tests/test_helm_chart.py"
+      - "tests/test_container_image.py"
+      - "tests/test_oci_gitops.py"
+      - ".github/workflows/publish-oci-images.yml"
+  pull_request:
+    paths:
+      - "deploy-oci/**"
+      - "tests/test_helm_chart.py"
+      - "tests/test_container_image.py"
+      - "tests/test_oci_gitops.py"
+      - ".github/workflows/publish-oci-images.yml"
   workflow_dispatch:
     inputs:
       publish_images:
