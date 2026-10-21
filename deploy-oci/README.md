@@ -17,10 +17,11 @@ versions and refuses to reuse a tag. It then updates
 commit and reconcile the chart.
 
 GitHub only makes a manually dispatched workflow available when its workflow
-file exists on the repository's default branch. This file is currently on
-`oci-learning`, so validation runs automatically there, but manual publishing
-will be available only after this workflow is merged to `main` through a
-separately approved pull request. No such pull request is open.
+file exists on the repository's default branch. The workflow is now on `main`
+through [PR #1](https://github.com/Harshit975shukla/skillcoach-bot/pull/1), so
+manual dispatch is available. Run it on `oci-learning`; choose `no` to validate
+without publishing. Choosing `yes` uploads the two images to GHCR and updates
+`values-oci.yaml`; it does not deploy to OCI.
 
 The images are:
 
@@ -71,10 +72,11 @@ retire Supabase before a separately approved and verified cutover.
    run in **Actions**. The path filters intentionally exclude
    `values-oci.yaml`, so the publishing workflow's own tag update does not start
    another validation run.
-3. Manual publishing is not available yet: GitHub requires this workflow to be
-   on the default branch (`main`). It can be enabled only by merging the workflow
-   through a separately approved pull request. Do not publish images during this
-   validation lab.
+3. The workflow is available from **Actions → Publish OCI learning images → Run
+   workflow** because its file is on `main`. Select `oci-learning` and keep
+   `publish_images` as `no` for validation. Before selecting `yes`, review who
+   can pull the GHCR packages; publishing uploads both images and updates
+   `values-oci.yaml` but does not deploy.
 4. Read `argocd/skillcoach.yaml`. Point out which Git branch and folder Argo CD
    watches, and where it will create the app.
 5. Do not apply it to OCI yet. Next, we will learn how Argo CD fetches a Git
